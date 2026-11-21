@@ -348,6 +348,16 @@ var sensitiveExfilEndpoints = []sensitiveExfilEndpoint{
 			{path: "/libpod/images/scp/sockguard-test/untag", identifierShape: catalogIdentifierPath},
 		},
 	},
+	// Moby installs its debug router on every API listener, with or without
+	// --debug. /debug/vars is expvar (the daemon's full command line, memory
+	// statistics and runtime counters), and /debug/pprof/* serves the pprof
+	// index, cmdline, CPU/heap/goroutine profiles and traces. The profile name
+	// is one arbitrary segment (/debug/pprof/{name}), so it takes the default
+	// shape. A trailing slash is normalized away before matching, which is why
+	// the index is spelled without one.
+	{method: http.MethodGet, path: "/debug/vars"},
+	{method: http.MethodGet, path: "/debug/pprof"},
+	{method: http.MethodGet, path: "/debug/pprof/sockguard-test"},
 	{method: http.MethodGet, path: "/libpod/generate/kube"},
 	// GET /libpod/kube/generate is Podman's alias of the route above, served
 	// by the same handler, so it carries the same exfiltration risk.
@@ -552,7 +562,7 @@ func validateReadExfiltrationRulesForPolicy(scope string, insecure bool, configu
 
 	if scope == "" {
 		return fmt.Errorf(
-			"rules allow raw archive/export, process-list, log/attach streaming, checkpoint export, container rootfs mount, or registry push endpoints "+
+			"rules allow raw archive/export, process-list, log/attach streaming, checkpoint export, container rootfs mount, daemon debug/profiling, or registry push endpoints "+
 				"(these can exfiltrate container files, container memory, images, plugins, process arguments, environment variables, secrets, and daemon-host filesystem paths); "+
 				"either tighten the allow rules to omit these paths or set "+
 				"insecure_allow_read_exfiltration: true to acknowledge the risk. "+
@@ -562,7 +572,7 @@ func validateReadExfiltrationRulesForPolicy(scope string, insecure bool, configu
 	}
 
 	return fmt.Errorf(
-		"client profile %q allows raw archive/export, process-list, log/attach streaming, checkpoint export, container rootfs mount, or registry push endpoints "+
+		"client profile %q allows raw archive/export, process-list, log/attach streaming, checkpoint export, container rootfs mount, daemon debug/profiling, or registry push endpoints "+
 			"(these can exfiltrate container files, container memory, images, plugins, process arguments, environment variables, secrets, and daemon-host filesystem paths); "+
 			"either tighten the profile's allow rules to omit these paths or set the "+
 			"top-level insecure_allow_read_exfiltration: true to acknowledge the risk "+

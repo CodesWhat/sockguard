@@ -183,6 +183,34 @@
     },
     {
       "method": "GET",
+      "path": "/debug/pprof/"
+    },
+    {
+      "method": "GET",
+      "path": "/debug/pprof/cmdline"
+    },
+    {
+      "method": "GET",
+      "path": "/debug/pprof/profile"
+    },
+    {
+      "method": "GET",
+      "path": "/debug/pprof/symbol"
+    },
+    {
+      "method": "GET",
+      "path": "/debug/pprof/trace"
+    },
+    {
+      "method": "GET",
+      "path": "/debug/pprof/{name}"
+    },
+    {
+      "method": "GET",
+      "path": "/debug/vars"
+    },
+    {
+      "method": "GET",
       "path": "/distribution/{name:.*}/json"
     },
     {
@@ -716,6 +744,10 @@
     {
       "method": "POST",
       "path": "/containers/{name}/wait"
+    },
+    {
+      "method": "POST",
+      "path": "/debug/pprof/symbol"
     },
     {
       "method": "POST",

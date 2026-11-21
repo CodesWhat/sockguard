@@ -48,6 +48,19 @@ def main():
                     if method not in methods:
                         raise ValueError(f"unknown HTTP method {method}")
                     routes.add((methods[method], match[1]))
+    # The Engine OpenAPI does not enumerate the daemon's debug router, which
+    # moby installs on every API listener (daemon/server/router/debug).
+    for method, path in [
+        ("GET", "/debug/vars"),
+        ("GET", "/debug/pprof/"),
+        ("GET", "/debug/pprof/cmdline"),
+        ("GET", "/debug/pprof/profile"),
+        ("GET", "/debug/pprof/symbol"),
+        ("POST", "/debug/pprof/symbol"),
+        ("GET", "/debug/pprof/trace"),
+        ("GET", "/debug/pprof/{name}"),
+    ]:
+        routes.add((method, path))
     # The Engine OpenAPI does not enumerate BuildKit's hijacked/RPC paths.
     for path in ["/session", "/grpc"]:
         routes.add(("POST", path))

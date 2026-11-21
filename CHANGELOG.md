@@ -23,6 +23,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Security
 
 - Docker's experimental checkpoint routes are now in the catalogs. `POST /containers/{name}/checkpoints` and `DELETE /containers/{name}/checkpoints/{checkpoint}` need `insecure_allow_body_blind_writes`, and `GET /containers/{name}/checkpoints` needs `insecure_allow_read_exfiltration`. With the daemon's experimental routes on, the delete joins a caller-chosen `dir` and checkpoint name and removes the result, so `DELETE /containers/x/checkpoints/etc?dir=/` removed `/etc` on the daemon host, and an `ALLOW_DELETE=1` rule admitted it without any acknowledgment. Built-in defaults and every shipped preset except Portainer (which already sets both opt-outs) still deny these routes.
+- The daemon's debug routes are now in the read-exfiltration catalog. `GET /debug/vars` and `GET /debug/pprof/*` expose the daemon's command line, runtime counters, profiles and traces, and Docker serves them on every API listener whether or not `--debug` is set, but a custom allow rule admitted them with no acknowledgment. Rules reaching them now need `insecure_allow_read_exfiltration: true`. The built-in default rules still deny them, and the readonly preset already sets that option.
 
 ## [3.0.0-rc.8] - 2026-11-19
 
