@@ -3,7 +3,6 @@ package filter
 import (
 	"bytes"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -177,18 +176,22 @@ func dockerNetworkModeRefs(mode string, into *networkRefs) {
 // ---------------------------------------------------------------------------
 
 // exposurePortBinding and exposurePortMapping read the host IP of one
-// published port and refuse an entry holding a key beyond the real fields.
-// Podman decodes with jsoniter, which for a struct of ten or fewer fields
-// compares a 64-bit hash of each key, so a key this decoder treats as unknown
-// could still bind to the host IP in Podman and hide a different address from
-// the gate (see libpodNamespace.UnmarshalJSON). The allowed keys are the
-// fields of Docker's PortBinding and Podman's PortMapping.
+// published port and record a key beyond the real fields. Podman decodes with
+// jsoniter, which for a struct of ten or fewer fields compares a 64-bit hash
+// of each key, so a key this decoder treats as unknown could still bind to the
+// host IP in Podman and hide a different address from the gate (see
+// libpodNamespace.UnmarshalJSON). The allowed keys are the fields of Docker's
+// PortBinding and Podman's PortMapping. The key is recorded rather than
+// returned as an error so the decode succeeds and the network check still
+// runs; the guards refuse it while a port gate is set.
 type exposurePortBinding struct {
-	HostIP string
+	HostIP     string
+	unknownKey string
 }
 
 type exposurePortMapping struct {
-	HostIP string
+	HostIP     string
+	unknownKey string
 }
 
 var (
@@ -197,71 +200,67 @@ var (
 )
 
 func (b *exposurePortBinding) UnmarshalJSON(data []byte) error {
-	ip, err := decodePortEntryHostIP(data, portBindingKeys, "HostIp")
-	b.HostIP = ip
+	var err error
+	b.HostIP, b.unknownKey, err = decodePortEntryHostIP(data, portBindingKeys, "HostIp")
 	return err
 }
 
 func (m *exposurePortMapping) UnmarshalJSON(data []byte) error {
-	ip, err := decodePortEntryHostIP(data, portMappingKeys, "host_ip")
-	m.HostIP = ip
+	var err error
+	m.HostIP, m.unknownKey, err = decodePortEntryHostIP(data, portMappingKeys, "host_ip")
 	return err
 }
 
-func decodePortEntryHostIP(data []byte, allowed []string, hostIPKey string) (string, error) {
+// decodePortEntryHostIP returns the host IP and the first key (sorted) not in
+// allowed, or "" when there is none.
+func decodePortEntryHostIP(data []byte, allowed []string, hostIPKey string) (ip, unknownKey string, err error) {
 	if bytes.Equal(bytes.TrimSpace(data), []byte("null")) {
-		return "", nil
+		return "", "", nil
 	}
 	var keys map[string]json.RawMessage
 	if err := json.Unmarshal(data, &keys); err != nil {
-		return "", fmt.Errorf("port entry: %w", err)
+		return "", "", fmt.Errorf("port entry: %w", err)
 	}
+	names := make([]string, 0, len(keys))
 	for key := range keys {
-		if !slices.ContainsFunc(allowed, func(a string) bool { return strings.EqualFold(a, key) }) {
-			return "", &portEntryKeyError{key: key}
-		}
+		names = append(names, key)
 	}
-	var ip string
-	for key, raw := range keys {
+	slices.Sort(names)
+	for _, key := range names {
+		if !slices.ContainsFunc(allowed, func(a string) bool { return strings.EqualFold(a, key) }) {
+			if unknownKey == "" {
+				unknownKey = key
+			}
+			continue
+		}
 		if strings.EqualFold(key, hostIPKey) {
-			if err := json.Unmarshal(raw, &ip); err != nil {
-				return "", fmt.Errorf("port entry: %w", err)
+			if err := json.Unmarshal(keys[key], &ip); err != nil {
+				return "", "", fmt.Errorf("port entry: %w", err)
 			}
 		}
 	}
-	return ip, nil
+	return ip, unknownKey, nil
 }
 
-// portEntryKeyError is the refusal of a port entry holding an unknown key.
-type portEntryKeyError struct{ key string }
-
-func (e *portEntryKeyError) Error() string {
-	return fmt.Sprintf("port entry has unknown key %q", e.key)
-}
-
-// portEntryKeyReason returns the deny reason when err is, or wraps, a
-// portEntryKeyError, and "" otherwise.
-func portEntryKeyReason(subject string, err error) string {
-	var keyErr *portEntryKeyError
-	if !errors.As(err, &keyErr) {
-		return ""
-	}
-	return fmt.Sprintf("%s denied: %s, so its host IP can't be read reliably", subject, keyErr.Error())
-}
-
-// denyUndecodable writes the refusal for a body whose port entry holds an
-// unknown key while a port gate is set, and reports whether the request can
-// carry on. Any other decode failure is forwarded: the daemon's own decoder
-// refuses it.
-func (g *resourceLimitGuard) denyUndecodable(w http.ResponseWriter, r *http.Request, subject string, opts NetworkExposureOptions, err error, verbosity DenyResponseVerbosity) bool {
-	if !opts.portsActive() {
+// denyUnknownPortKey refuses a port entry with an unknown key while a port
+// gate is set, and reports whether the request can carry on. With no port gate
+// the key is harmless and the network check runs as usual.
+func (g *resourceLimitGuard) denyUnknownPortKey(w http.ResponseWriter, r *http.Request, subject string, opts NetworkExposureOptions, key string, verbosity DenyResponseVerbosity) bool {
+	if key == "" || !opts.portsActive() {
 		return true
 	}
-	reason := portEntryKeyReason(subject, err)
-	if reason == "" {
-		return true
-	}
-	return !g.exposureDeny(w, r, http.StatusForbidden, reasonCodeRequestBodyPolicyDenied, reason, verbosity)
+	return !g.exposureDeny(w, r, http.StatusForbidden, reasonCodeRequestBodyPolicyDenied,
+		fmt.Sprintf("%s denied: port entry has unknown key %q, so its host IP can't be read reliably", subject, key), verbosity)
+}
+
+// denyUndecodable refuses a body this guard can't decode while any exposure
+// gate is set. Forwarding it would skip the network check, and a decoder that
+// disagrees with the daemon's is exactly how one could be slipped past it.
+// It reports whether the request can carry on.
+func (g *resourceLimitGuard) denyUndecodable(w http.ResponseWriter, r *http.Request, subject string, err error, verbosity DenyResponseVerbosity) bool {
+	logRequestError(g.logger, r, slog.LevelDebug, "network exposure body undecodable", err)
+	return !g.exposureDeny(w, r, http.StatusForbidden, reasonCodeRequestBodyPolicyDenied,
+		subject+" denied: the request body could not be decoded, so it can't be held to the network exposure gates", verbosity)
 }
 
 // ---------------------------------------------------------------------------
@@ -306,6 +305,17 @@ func (req exposureDockerCreate) hostStackOptionsReason() string {
 	return ""
 }
 
+func (req exposureDockerCreate) unknownPortKey() string {
+	for _, entry := range req.HostConfig.PortBindings {
+		for _, b := range entry {
+			if b.unknownKey != "" {
+				return b.unknownKey
+			}
+		}
+	}
+	return ""
+}
+
 func (req exposureDockerCreate) networks() networkRefs {
 	var refs networkRefs
 	dockerNetworkModeRefs(req.HostConfig.NetworkMode, &refs)
@@ -319,9 +329,13 @@ func (req exposureDockerCreate) networks() networkRefs {
 		var endpoint struct {
 			NetworkID string `json:"NetworkID"`
 		}
-		if json.Unmarshal(req.NetworkingConfig.EndpointsConfig[key], &endpoint) == nil {
-			refs.bind(key, endpoint.NetworkID)
+		if err := json.Unmarshal(req.NetworkingConfig.EndpointsConfig[key], &endpoint); err != nil {
+			if refs.refusal == "" {
+				refs.refusal = fmt.Sprintf("endpoint config for %q could not be decoded", key)
+			}
+			continue
 		}
+		refs.bind(key, endpoint.NetworkID)
 	}
 	return refs
 }
@@ -356,6 +370,15 @@ func (req exposureLibpodCreate) hostStackOptionsReason() string {
 	}
 	if isHostStackMode(req.NetNS.NSMode) && strings.TrimSpace(req.NetNS.Value) != "" {
 		return fmt.Sprintf("netns %q with a value can forward host ports the port gates can't read", req.NetNS.NSMode)
+	}
+	return ""
+}
+
+func (req exposureLibpodCreate) unknownPortKey() string {
+	for _, m := range req.PortMappings {
+		if m.unknownKey != "" {
+			return m.unknownKey
+		}
 	}
 	return ""
 }
@@ -619,7 +642,10 @@ func (g *resourceLimitGuard) guardContainerCreateExposure(w http.ResponseWriter,
 	if libpod {
 		var req exposureLibpodCreate
 		if err := json.Unmarshal(body, &req); err != nil {
-			return g.denyUndecodable(w, r, "libpod container create", opts, err, policy.DenyResponseVerbosity)
+			return g.denyUndecodable(w, r, "libpod container create", err, policy.DenyResponseVerbosity)
+		}
+		if !g.denyUnknownPortKey(w, r, "libpod container create", opts, req.unknownPortKey(), policy.DenyResponseVerbosity) {
+			return false
 		}
 		if !g.denyHostStackOptions(w, r, "libpod container create", opts, req.hostStackOptionsReason(), policy.DenyResponseVerbosity) {
 			return false
@@ -630,7 +656,10 @@ func (g *resourceLimitGuard) guardContainerCreateExposure(w http.ResponseWriter,
 	}
 	var req exposureDockerCreate
 	if err := json.Unmarshal(body, &req); err != nil {
-		return g.denyUndecodable(w, r, "container create", opts, err, policy.DenyResponseVerbosity)
+		return g.denyUndecodable(w, r, "container create", err, policy.DenyResponseVerbosity)
+	}
+	if !g.denyUnknownPortKey(w, r, "container create", opts, req.unknownPortKey(), policy.DenyResponseVerbosity) {
+		return false
 	}
 	if !g.denyHostStackOptions(w, r, "container create", opts, req.hostStackOptionsReason(), policy.DenyResponseVerbosity) {
 		return false
@@ -692,7 +721,10 @@ func (g *resourceLimitGuard) guardNetworkConnectExposure(w http.ResponseWriter, 
 				NetworkID string `json:"NetworkID"`
 			} `json:"EndpointConfig"`
 		}
-		if json.Unmarshal(body, &req) == nil {
+		if len(bytes.TrimSpace(body)) > 0 {
+			if err := json.Unmarshal(body, &req); err != nil {
+				return g.denyUndecodable(w, r, "network connect", err, policy.DenyResponseVerbosity)
+			}
 			refs.bind(target, req.EndpointConfig.NetworkID)
 		}
 	}
@@ -750,8 +782,11 @@ func (g *resourceLimitGuard) guardServiceExposure(w http.ResponseWriter, r *http
 		return false
 	}
 	var req exposureServiceSpec
-	if len(strings.TrimSpace(string(body))) == 0 || json.Unmarshal(body, &req) != nil {
+	if len(strings.TrimSpace(string(body))) == 0 {
 		return true
+	}
+	if err := json.Unmarshal(body, &req); err != nil {
+		return g.denyUndecodable(w, r, subject, err, verbosity)
 	}
 	published, bindings := servicePortBindings(req.published())
 	if !g.enforceExposure(w, r, subject, opts, published, bindings, serviceNetworkRefs(req.targets()), policy.Service.AllowHostNetwork, verbosity) {
@@ -802,7 +837,10 @@ func (g *resourceLimitGuard) guardPodCreateExposure(w http.ResponseWriter, r *ht
 	}
 	var req exposureLibpodCreate
 	if err := json.Unmarshal(body, &req); err != nil {
-		return g.denyUndecodable(w, r, "libpod pod create", opts, err, policy.DenyResponseVerbosity)
+		return g.denyUndecodable(w, r, "libpod pod create", err, policy.DenyResponseVerbosity)
+	}
+	if !g.denyUnknownPortKey(w, r, "libpod pod create", opts, req.unknownPortKey(), policy.DenyResponseVerbosity) {
+		return false
 	}
 	if !g.denyHostStackOptions(w, r, "libpod pod create", opts, req.hostStackOptionsReason(), policy.DenyResponseVerbosity) {
 		return false

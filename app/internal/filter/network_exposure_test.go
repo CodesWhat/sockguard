@@ -486,10 +486,9 @@ func TestNetworkExposureEnforceRecordsDenial(t *testing.T) {
 func TestNetworkExposureUnreadableAndOversizedBodies(t *testing.T) {
 	opts := ResourceLimitGuardOptions{}
 	applyDocker(&opts, NetworkExposureOptions{DenyPublishedPorts: true}, false)
-	// Undecodable bodies get no verdict from this guard: the inspectors and the
-	// daemon refuse them.
-	if out := runResourceGuardRequest(t, opts, http.MethodPost, "/containers/create", `{`, ""); out.status != ok {
-		t.Fatalf("undecodable body status = %d, want it forwarded", out.status)
+	// An undecodable body can't be held to the gates, so it is refused.
+	if out := runResourceGuardRequest(t, opts, http.MethodPost, "/containers/create", `{`, ""); out.status != deny {
+		t.Fatalf("undecodable body status = %d, want it refused", out.status)
 	}
 	big := `{"HostConfig":{"PublishAllPorts":true},"Pad":"` + strings.Repeat("a", maxContainerCreateBodyBytes) + `"}`
 	if out := runResourceGuardRequest(t, opts, http.MethodPost, "/containers/create", big, ""); out.status != http.StatusRequestEntityTooLarge {
@@ -769,7 +768,8 @@ func TestNetworkExposureEndpointNetworkID(t *testing.T) {
 		{"connect: matching NetworkID", "/v1.45/networks/proxy/connect", fmtConnect(connectBody, proxyNetworkID), ok, []string{"proxy", proxyNetworkID}},
 		{"connect: empty NetworkID", "/networks/proxy/connect", fmtConnect(connectBody, ""), ok, []string{"proxy"}},
 		{"connect: no EndpointConfig", "/networks/proxy/connect", `{"Container":"c1"}`, ok, []string{"proxy"}},
-		{"connect: undecodable body", "/networks/proxy/connect", `{`, ok, []string{"proxy"}},
+		{"connect: undecodable body", "/networks/proxy/connect", `{`, deny, nil},
+		{"connect: empty body", "/networks/proxy/connect", ``, ok, []string{"proxy"}},
 		{"connect: unknown NetworkID", "/networks/proxy/connect", fmtConnect(connectBody, "missing"), deny, []string{"proxy", "missing"}},
 		{"connect: NetworkID lookup failure", "/networks/proxy/connect", fmtConnect(connectBody, "boom"), bad, []string{"proxy", "boom"}},
 		{"libpod connect: body is not read", "/libpod/networks/proxy/connect", fmtConnect(connectBody, "backend"), ok, []string{"proxy"}},
@@ -818,15 +818,15 @@ func TestNetworkExposurePortEntryUnknownKeys(t *testing.T) {
 		{name: "libpod: key case folds", path: "/libpod/containers/create", body: `{"portmappings":[{"Host_IP":"127.0.0.1"}]}`, opts: hostIPs, wantStatus: ok},
 		{name: "libpod: unknown key", path: "/libpod/containers/create", body: libpodEntry(`,"host_ipx":"0.0.0.0"`), opts: hostIPs, wantStatus: deny},
 		{name: "libpod: unknown key under deny_published_ports", path: "/libpod/containers/create", body: libpodEntry(`,"zz":1`), opts: deny1, wantStatus: deny},
-		{name: "libpod: unknown key with the ports gates off", path: "/libpod/containers/create", body: libpodEntry(`,"zz":1`), opts: nets("proxy"), wantStatus: ok, skipLookupCk: true},
+		{name: "libpod: unknown key with the ports gates off", path: "/libpod/containers/create", body: `{"networks":{"proxy":{}},"portmappings":[{"zz":1}]}`, opts: nets("proxy"), wantStatus: ok, skipLookupCk: true},
 		{name: "libpod: null entry binds every interface", path: "/libpod/containers/create", body: `{"portmappings":[null]}`, opts: hostIPs, wantStatus: deny},
-		{name: "libpod: non-string host_ip is the daemon's to refuse", path: "/libpod/containers/create", body: `{"portmappings":[{"host_ip":1}]}`, opts: hostIPs, wantStatus: ok},
+		{name: "libpod: non-string host_ip is undecodable", path: "/libpod/containers/create", body: `{"portmappings":[{"host_ip":1}]}`, opts: hostIPs, wantStatus: deny},
 		{name: "pod: unknown key", path: "/libpod/pods/create", body: libpodEntry(`,"zz":1`), opts: hostIPs, wantStatus: deny},
 	}, applyLibpod)
 	checkExposureCases(t, []exposureCase{
 		{name: "docker: only real keys", path: "/containers/create", body: `{"HostConfig":{"PortBindings":{"80/tcp":[{"HostIp":"127.0.0.1","HostPort":"8080"}]}}}`, opts: hostIPs, wantStatus: ok},
 		{name: "docker: unknown key", path: "/containers/create", body: `{"HostConfig":{"PortBindings":{"80/tcp":[{"HostIp":"127.0.0.1","HostIpx":"0.0.0.0"}]}}}`, opts: hostIPs, wantStatus: deny},
-		{name: "docker: unknown key with the ports gates off", path: "/containers/create", body: `{"HostConfig":{"PortBindings":{"80/tcp":[{"zz":1}]}}}`, opts: nets("proxy"), wantStatus: ok, skipLookupCk: true},
+		{name: "docker: unknown key with the ports gates off", path: "/containers/create", body: `{"HostConfig":{"NetworkMode":"proxy","PortBindings":{"80/tcp":[{"zz":1}]}}}`, opts: nets("proxy"), wantStatus: ok, skipLookupCk: true},
 	}, applyDocker)
 	for _, mode := range []string{"warn", "audit"} {
 		t.Run(mode, func(t *testing.T) {
@@ -892,4 +892,32 @@ func TestNetworkExposureRestore(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestNetworkExposureUnknownPortKeyKeepsNetworkCheck(t *testing.T) {
+	only := nets("proxy")
+	docker := func(network string) string {
+		return `{"Image":"alpine","HostConfig":{"NetworkMode":"` + network + `","PortBindings":{"80/tcp":[{"HostPort":"8080","x":1}]}}}`
+	}
+	libpod := func(network string) string {
+		return `{"image":"alpine","portmappings":[{"container_port":80,"zz":1}],"networks":{"` + network + `":{}}}`
+	}
+	checkExposureCases(t, []exposureCase{
+		{name: "docker: unlisted network", path: "/containers/create", body: docker("backend"), opts: only, wantStatus: deny, wantLookups: []string{"backend"}},
+		{name: "docker: listed network, no port gate", path: "/containers/create", body: docker("proxy"), opts: only, wantStatus: ok, wantLookups: []string{"proxy"}},
+	}, applyDocker)
+	checkExposureCases(t, []exposureCase{
+		{name: "libpod: unlisted network", path: "/libpod/containers/create", body: libpod("backend"), opts: only, wantStatus: deny, wantLookups: []string{"backend"}},
+		{name: "libpod: listed network, no port gate", path: "/libpod/containers/create", body: libpod("proxy"), opts: only, wantStatus: ok, wantLookups: []string{"proxy"}},
+		{name: "pod: unlisted network", path: "/libpod/pods/create", body: libpod("backend"), opts: only, wantStatus: deny, wantLookups: []string{"backend"}},
+		{name: "pod: listed network, no port gate", path: "/libpod/pods/create", body: libpod("proxy"), opts: only, wantStatus: ok, wantLookups: []string{"proxy"}},
+		{name: "libpod: unknown netns key with the network gate", path: "/libpod/containers/create", body: `{"netns":{"nsmode":"bridge","zz":1},"networks":{"backend":{}}}`, opts: only, wantStatus: deny},
+		{name: "libpod: wrong type with the network gate", path: "/libpod/containers/create", body: `{"portmappings":"x","networks":{"backend":{}}}`, opts: only, wantStatus: deny},
+	}, applyLibpod)
+	checkExposureCases(t, []exposureCase{
+		{name: "docker: undecodable endpoint config", path: "/containers/create", body: `{"NetworkingConfig":{"EndpointsConfig":{"proxy":5}}}`, opts: only, wantStatus: deny},
+	}, applyDocker)
+	checkExposureCases(t, []exposureCase{
+		{name: "service: undecodable body", path: "/services/create", body: `{`, opts: only, wantStatus: deny},
+	}, applyService)
 }
