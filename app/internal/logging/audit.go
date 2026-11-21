@@ -24,6 +24,18 @@ type AuditOptions struct {
 	Listener          string
 	OwnershipOwner    string
 	OwnershipLabelKey string
+	// ProfileOwnership overrides OwnershipOwner and the scope for requests
+	// whose selected profile has its own effective ownership, keyed by profile
+	// name. Profiles absent from the map report the root ownership.
+	ProfileOwnership map[string]AuditOwnership
+}
+
+// AuditOwnership is a client profile's effective ownership for audit events.
+// Scope is "owner" (the profile's own resources) or "all" (owner scoping
+// lifted).
+type AuditOwnership struct {
+	Owner string
+	Scope string
 }
 
 // AuditLogger writes stable JSON audit events to a dedicated sink.
@@ -154,6 +166,9 @@ type auditOwnershipContext struct {
 	Enabled  bool   `json:"enabled"`
 	Owner    string `json:"owner"`
 	LabelKey string `json:"label_key"`
+	// Scope is "owner" when owner scoping applies, "all" when the selected
+	// profile lifted it, and empty when ownership is off for the request.
+	Scope string `json:"ownership_scope"`
 }
 
 // auditResourcePolicyContext is the audit-log shape of ResourcePolicyMeta.
@@ -224,6 +239,22 @@ func newAuditMutationRecord(rec *MutationRecord) *auditMutationRecord {
 	return &auditMutationRecord{Rules: rules, ActualChanged: rec.ActualChanged}
 }
 
+// auditOwnershipFor returns the ownership context for a request, applying the
+// selected profile's effective ownership over the root context.
+func auditOwnershipFor(root auditOwnershipContext, opts AuditOptions, profile string) auditOwnershipContext {
+	override, ok := opts.ProfileOwnership[profile]
+	if !ok || profile == "" {
+		return root
+	}
+	root.Enabled = override.Owner != ""
+	root.Owner = override.Owner
+	root.Scope = override.Scope
+	if !root.Enabled {
+		root.Scope = ""
+	}
+	return root
+}
+
 // AuditLogMiddleware emits a dedicated audit event after each request.
 func AuditLogMiddleware(logger *AuditLogger, opts AuditOptions) func(http.Handler) http.Handler {
 	if logger == nil {
@@ -234,6 +265,9 @@ func AuditLogMiddleware(logger *AuditLogger, opts AuditOptions) func(http.Handle
 		Enabled:  opts.OwnershipOwner != "",
 		Owner:    opts.OwnershipOwner,
 		LabelKey: opts.OwnershipLabelKey,
+	}
+	if ownershipContext.Enabled {
+		ownershipContext.Scope = "owner"
 	}
 	listener := auditListener(opts.Listener)
 
@@ -285,7 +319,7 @@ func AuditLogMiddleware(logger *AuditLogger, opts AuditOptions) func(http.Handle
 				TransportScheme:   transportScheme,
 				TransportProtocol: transportProtocol,
 				ListenerName:      listenerName,
-				OwnershipContext:  ownershipContext,
+				OwnershipContext:  auditOwnershipFor(ownershipContext, opts, meta.Profile),
 				ResourcePolicy:    auditResourcePolicyContextFrom(meta.ResourcePolicy),
 				Mutation:          mutationRecord,
 			}

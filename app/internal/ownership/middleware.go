@@ -163,6 +163,15 @@ type Options struct {
 	// is denied if the referenced container is missing or does not belong to
 	// the configured owner. Set true to restore the old unchecked behavior.
 	AllowCrossOwnerNamespaceSharing bool
+	// AllOwners lifts owner scoping for the requests these options serve
+	// (client profile ownership.scope: all). Owner is still required: creates
+	// are stamped with it. Reads are not narrowed, no owner check is made on
+	// any resource a request names or references, and the owner-scoping
+	// refusals (host-wide libpod reads and writes, the Podman compat secret
+	// list) do not apply. The build refusals stay, because a build stamps its
+	// output with Owner. Body and path policy is not this layer's concern and
+	// is untouched.
+	AllOwners bool
 	// UpstreamFlavor is the engine behind the upstream socket, resolved at
 	// startup from upstream.flavor (see internal/upstreamflavor). It changes
 	// two things here. The Docker-compat GET /secrets is refused on Podman,
@@ -314,7 +323,7 @@ func middlewareWithPullCheck(
 			// serveOwnershipAllowed gives for the two disk-usage reads:
 			// nothing here has a body-filtering step HEAD could legitimately
 			// need, so gating on GET alone would forward it to the daemon.
-			if r.Method == http.MethodGet || r.Method == http.MethodHead {
+			if !opts.AllOwners && (r.Method == http.MethodGet || r.Method == http.MethodHead) {
 				if read, ok := filter.LookupLibpodUnscopeableRead(normPath); ok {
 					denyUnscopeableLibpodRead(w, r, read)
 					return
@@ -339,7 +348,7 @@ func middlewareWithPullCheck(
 			// names what it removes in a YAML body nothing parses. Like the
 			// read refusals above it is unconditional — a warn-mode
 			// measurement is worth nothing once the pods are gone.
-			if write, ok := filter.LookupLibpodUnscopeableWrite(r.Method, normPath); ok {
+			if write, ok := filter.LookupLibpodUnscopeableWrite(r.Method, normPath); ok && !opts.AllOwners {
 				denyUnscopeableLibpodWrite(w, r, write)
 				return
 			}
@@ -364,6 +373,17 @@ func middlewareWithPullCheck(
 				return
 			}
 
+			if opts.AllOwners {
+				// Stamp creates, check nothing. mutateOwnershipRequest skips
+				// the list-filter injection for AllOwners.
+				if _, err := mutateOwnershipRequest(r, normPath, opts); err != nil {
+					denyOwnershipMutation(w, r, err)
+					return
+				}
+				next.ServeHTTP(w, r)
+				return
+			}
+
 			ownerFilterApplies := needsOwnerFilter(r.Method, normPath) || libpodNeedsOwnerFilter(r.Method, normPath)
 			if ownerFilterApplies && refuseInvalidFilterKeys(w, r) {
 				return
@@ -379,13 +399,7 @@ func middlewareWithPullCheck(
 
 			refs, err := mutateOwnershipRequest(r, normPath, opts)
 			if err != nil {
-				reasonCode := reasonCodeOwnerRequestInvalid
-				var ambiguous *ambiguousBodyKeyError
-				if errors.As(err, &ambiguous) {
-					reasonCode = filter.ReasonCodeRequestBodyAmbiguous
-				}
-				logging.SetDeniedWithCode(w, r, reasonCode, err.Error(), nil)
-				_ = httpjson.Write(w, http.StatusBadRequest, httpjson.ErrorResponse{Message: err.Error()})
+				denyOwnershipMutation(w, r, err)
 				return
 			}
 
@@ -500,10 +514,25 @@ func mutateOwnershipRequest(r *http.Request, normPath string, opts Options) (*ow
 	case r.Method == http.MethodPost && normPath == libpodSecretCreatePath:
 		return mutateLibpodSecretCreateOwnershipRequest(r, opts)
 	case needsOwnerFilter(r.Method, normPath), libpodNeedsOwnerFilter(r.Method, normPath):
+		if opts.AllOwners {
+			return nil, nil
+		}
 		return nil, addOwnerLabelFilter(r, normPath, opts.LabelKey, opts.Owner, opts.UpstreamFlavor == upstreamflavor.Podman)
 	default:
 		return nil, nil
 	}
+}
+
+// denyOwnershipMutation writes the 400 for a request body the ownership layer
+// could not rewrite.
+func denyOwnershipMutation(w http.ResponseWriter, r *http.Request, err error) {
+	reasonCode := reasonCodeOwnerRequestInvalid
+	var ambiguous *ambiguousBodyKeyError
+	if errors.As(err, &ambiguous) {
+		reasonCode = filter.ReasonCodeRequestBodyAmbiguous
+	}
+	logging.SetDeniedWithCode(w, r, reasonCode, err.Error(), nil)
+	_ = httpjson.Write(w, http.StatusBadRequest, httpjson.ErrorResponse{Message: err.Error()})
 }
 
 func extractNetworkMembershipOwnershipReferences(r *http.Request) (*ownershipRequestReferences, error) {
