@@ -121,6 +121,22 @@ type networkRefs struct {
 	// refusal is a mode that can't be shown to stay on a listed network, such
 	// as joining another container's namespace. It is refused outright.
 	refusal string
+	// bound maps a ref to the EndpointConfig.NetworkID sent beside it. The
+	// daemon prefers that ID to the key, so it has to resolve to the same
+	// network as the key.
+	bound map[string]string
+}
+
+// bind records the NetworkID an endpoint carries beside its key.
+func (n *networkRefs) bind(ref, networkID string) {
+	networkID = strings.TrimSpace(networkID)
+	if ref == "" || networkID == "" {
+		return
+	}
+	if n.bound == nil {
+		n.bound = map[string]string{}
+	}
+	n.bound[ref] = networkID
 }
 
 func (n *networkRefs) add(ref string) {
@@ -208,6 +224,12 @@ func (req exposureDockerCreate) networks() networkRefs {
 	slices.Sort(keys)
 	for _, key := range keys {
 		refs.add(key)
+		var endpoint struct {
+			NetworkID string `json:"NetworkID"`
+		}
+		if json.Unmarshal(req.NetworkingConfig.EndpointsConfig[key], &endpoint) == nil {
+			refs.bind(key, endpoint.NetworkID)
+		}
 	}
 	return refs
 }
@@ -365,8 +387,12 @@ func (g *resourceLimitGuard) enforceNetworkRefs(w http.ResponseWriter, r *http.R
 			fmt.Sprintf("%s denied: %s", subject, refs.refusal), verbosity)
 	}
 	for _, ref := range refs.refs {
+		bound := refs.bound[ref]
 		if strings.EqualFold(ref, "host") {
 			if allowHost {
+				if !g.requireSameNetwork(w, r, subject, ref, bound, NetworkInspectResult{Name: "host", Driver: "host"}, verbosity) {
+					return false
+				}
 				continue
 			}
 			if g.exposureDeny(w, r, http.StatusForbidden, reasonCodeRequestBodyPolicyDenied,
@@ -396,6 +422,9 @@ func (g *resourceLimitGuard) enforceNetworkRefs(w http.ResponseWriter, r *http.R
 		}
 		if strings.EqualFold(strings.TrimSpace(network.Driver), "host") || strings.EqualFold(network.Name, "host") {
 			if allowHost {
+				if !g.requireSameNetwork(w, r, subject, ref, bound, network, verbosity) {
+					return false
+				}
 				continue
 			}
 			if g.exposureDeny(w, r, http.StatusForbidden, reasonCodeRequestBodyPolicyDenied,
@@ -409,9 +438,49 @@ func (g *resourceLimitGuard) enforceNetworkRefs(w http.ResponseWriter, r *http.R
 				fmt.Sprintf("%s denied: network %q is not in allowed_networks", subject, network.Name), verbosity) {
 				return false
 			}
+			continue
+		}
+		if !g.requireSameNetwork(w, r, subject, ref, bound, network, verbosity) {
+			return false
 		}
 	}
 	return true
+}
+
+// requireSameNetwork checks an endpoint's NetworkID against the network its
+// key resolved to. dockerd prefers EndpointConfig.NetworkID to the key, so a
+// NetworkID that resolves elsewhere would join a network the key's check never
+// saw. An empty NetworkID passes, and so does one that resolves to the same
+// network, which is what recreate tools replay from an inspect. It returns
+// false when a response was written.
+func (g *resourceLimitGuard) requireSameNetwork(w http.ResponseWriter, r *http.Request, subject, key, networkID string, resolvedKey NetworkInspectResult, verbosity DenyResponseVerbosity) bool {
+	if networkID == "" || networkID == key {
+		return true
+	}
+	if g.inspectNetwork == nil {
+		g.exposureDeny(w, r, http.StatusBadGateway, reasonCodeRequestBodyInspectionFailed,
+			subject+" denied: network verification unavailable", verbosity)
+		return false
+	}
+	network, found, err := g.inspectNetwork(r.Context(), networkID)
+	if err != nil {
+		logRequestError(g.logger, r, slog.LevelError, "failed to inspect endpoint NetworkID for allowed_networks", err)
+		g.exposureDeny(w, r, http.StatusBadGateway, reasonCodeRequestBodyInspectionFailed,
+			subject+" denied: network verification unavailable", verbosity)
+		return false
+	}
+	if found && sameNetwork(resolvedKey, network) {
+		return true
+	}
+	return !g.exposureDeny(w, r, http.StatusForbidden, reasonCodeRequestBodyPolicyDenied,
+		fmt.Sprintf("%s denied: endpoint NetworkID %q does not resolve to network %q", subject, networkID, key), verbosity)
+}
+
+func sameNetwork(a, b NetworkInspectResult) bool {
+	if a.ID != "" && b.ID != "" {
+		return a.ID == b.ID
+	}
+	return a.Name == b.Name
 }
 
 // denyHostStackOptions refuses pasta and slirp4netns options while a port
@@ -499,7 +568,8 @@ func networkConnectTarget(normalizedPath string) (target string, libpod bool, ok
 // guardNetworkConnectExposure holds POST /networks/{id}/connect and
 // POST /libpod/networks/{name}/connect to the create-side allowed_networks of
 // the same family, since a connect after create would otherwise put the
-// container on any network. The target is in the path, so the body isn't read.
+// container on any network. The target is in the path, but a Docker connect's EndpointConfig.NetworkID
+// overrides it, so that body is read too.
 func (g *resourceLimitGuard) guardNetworkConnectExposure(w http.ResponseWriter, r *http.Request, normalizedPath string, policy PolicyConfig) bool {
 	target, libpod, ok := networkConnectTarget(normalizedPath)
 	if !ok {
@@ -514,6 +584,28 @@ func (g *resourceLimitGuard) guardNetworkConnectExposure(w http.ResponseWriter, 
 	}
 	var refs networkRefs
 	refs.add(target)
+	if !libpod {
+		// The daemon prefers EndpointConfig.NetworkID to the path's network.
+		body, err := readBoundedBodyUnchecked(r, maxNetworkBodyBytes)
+		if err != nil {
+			if isBodyTooLargeError(err) {
+				g.exposureDeny(w, r, http.StatusRequestEntityTooLarge, reasonCodeRequestBodyTooLarge,
+					fmt.Sprintf("network connect denied: request body exceeds %d byte limit", maxNetworkBodyBytes), policy.DenyResponseVerbosity)
+				return false
+			}
+			g.exposureDeny(w, r, http.StatusBadRequest, reasonCodeRequestBodyInspectionFailed,
+				"network connect denied: request body could not be read", policy.DenyResponseVerbosity)
+			return false
+		}
+		var req struct {
+			EndpointConfig struct {
+				NetworkID string `json:"NetworkID"`
+			} `json:"EndpointConfig"`
+		}
+		if json.Unmarshal(body, &req) == nil {
+			refs.bind(target, req.EndpointConfig.NetworkID)
+		}
+	}
 	return g.enforceNetworkRefs(w, r, "network connect", refs, opts.AllowedNetworks, allowHost, policy.DenyResponseVerbosity)
 }
 

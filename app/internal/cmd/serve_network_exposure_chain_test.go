@@ -34,21 +34,21 @@ func (d *exposureChainDaemon) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	if ref, ok := strings.CutPrefix(normPath, "/networks/"); r.Method == http.MethodGet && ok {
-		name := ""
+		name, id := "", ""
 		switch {
 		case ref == "proxy" || strings.HasPrefix(exposureChainProxyID, ref) && len(ref) >= 8:
-			name = "proxy"
+			name, id = "proxy", exposureChainProxyID
 		case ref == "backend" || strings.HasPrefix(exposureChainBackendID, ref) && len(ref) >= 8:
-			name = "backend"
+			name, id = "backend", exposureChainBackendID
 		case ref == "bridge":
-			name = "bridge"
+			name, id = "bridge", "dd44ee55ff660011223344556677aabb"
 		}
 		if name == "" {
 			w.WriteHeader(http.StatusNotFound)
 			_, _ = w.Write([]byte(`{"message":"network not found"}`))
 			return
 		}
-		_ = json.NewEncoder(w).Encode(map[string]string{"Name": name, "Driver": "bridge"})
+		_ = json.NewEncoder(w).Encode(map[string]string{"Id": id, "Name": name, "Driver": "bridge"})
 		return
 	}
 	_, _ = io.Copy(io.Discard, r.Body)
@@ -109,6 +109,8 @@ func TestServeChainNetworkExposure(t *testing.T) {
 		{name: "compat: all-interface port", configure: on, path: compatPath, body: compat("proxy", bind("")), wantStatus: http.StatusForbidden},
 		{name: "compat: default bridge", configure: on, path: compatPath, body: compat("default", ""), wantStatus: http.StatusForbidden},
 		{name: "compat: joined container namespace", configure: on, path: compatPath, body: compat("container:web", ""), wantStatus: http.StatusForbidden},
+		{name: "compat: NetworkID overrides the key", configure: on, path: compatPath, body: `{"Image":"alpine","HostConfig":{"NetworkMode":"proxy"},"NetworkingConfig":{"EndpointsConfig":{"proxy":{"NetworkID":"backend"}}}}`, wantStatus: http.StatusForbidden},
+		{name: "compat: matching NetworkID", configure: on, path: compatPath, body: `{"Image":"alpine","HostConfig":{"NetworkMode":"proxy"},"NetworkingConfig":{"EndpointsConfig":{"proxy":{"NetworkID":"` + exposureChainProxyID + `"}}}}`, wantStatus: http.StatusCreated, wantSeen: created},
 		{name: "compat: unknown network", configure: on, path: compatPath, body: compat("nope", ""), wantStatus: http.StatusForbidden},
 		{name: "compat: pasta options publish a port", configure: func(b *gates) { b.ContainerCreate.AllowedPortHostIPs = []string{"127.0.0.1"} }, path: compatPath, body: compat("pasta:-t,0.0.0.0/8080:80", ""), wantStatus: http.StatusForbidden},
 
@@ -129,6 +131,8 @@ func TestServeChainNetworkExposure(t *testing.T) {
 		{name: "connect: proxy", configure: on, path: "/v1.41/networks/proxy/connect", body: `{"Container":"c1"}`, wantStatus: http.StatusCreated, wantSeen: []string{"POST /networks/proxy/connect"}},
 		{name: "connect: other network", configure: on, path: "/v1.41/networks/backend/connect", body: `{"Container":"c1"}`, wantStatus: http.StatusForbidden},
 		{name: "connect: other network by ID", configure: on, path: "/v1.41/networks/" + exposureChainBackendID + "/connect", body: `{"Container":"c1"}`, wantStatus: http.StatusForbidden},
+		{name: "connect: NetworkID overrides the path", configure: on, path: "/v1.41/networks/proxy/connect", body: `{"Container":"c1","EndpointConfig":{"NetworkID":"backend"}}`, wantStatus: http.StatusForbidden},
+		{name: "connect: matching NetworkID", configure: on, path: "/v1.41/networks/proxy/connect", body: `{"Container":"c1","EndpointConfig":{"NetworkID":"` + exposureChainProxyID + `"}}`, wantStatus: http.StatusCreated, wantSeen: []string{"POST /networks/proxy/connect"}},
 		{name: "connect: gates off", path: "/v1.41/networks/backend/connect", body: `{"Container":"c1"}`, wantStatus: http.StatusCreated, wantSeen: []string{"POST /networks/backend/connect"}},
 	}
 	for _, tt := range tests {

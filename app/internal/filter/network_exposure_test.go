@@ -32,11 +32,11 @@ func (f *exposureNetworks) inspect(_ context.Context, ref string) (NetworkInspec
 		// "abc123" is an ID prefix of the proxy network. It is also a name an
 		// operator could have listed, and must still resolve by what it is.
 		if ref == "abc123" {
-			return NetworkInspectResult{Name: "other", Driver: "bridge"}, true, nil
+			return NetworkInspectResult{ID: "dd44ee55ff66", Name: "other", Driver: "bridge"}, true, nil
 		}
-		return NetworkInspectResult{Name: "proxy", Driver: "bridge"}, true, nil
+		return NetworkInspectResult{ID: proxyNetworkID, Name: "proxy", Driver: "bridge"}, true, nil
 	case "backend", backendNetworkID:
-		return NetworkInspectResult{Name: "backend", Driver: "bridge"}, true, nil
+		return NetworkInspectResult{ID: backendNetworkID, Name: "backend", Driver: "bridge"}, true, nil
 	case "bridge":
 		return NetworkInspectResult{Name: "bridge", Driver: "bridge"}, true, nil
 	case "podman":
@@ -735,4 +735,74 @@ func TestNetworkExposureHostStackOptions(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestNetworkExposureEndpointNetworkID(t *testing.T) {
+	const docker = "/containers/create"
+	only := nets("proxy")
+	create := func(key, networkID string) string {
+		return `{"Image":"alpine","HostConfig":{"NetworkMode":"` + key + `"},"NetworkingConfig":{"EndpointsConfig":{"` + key + `":{"NetworkID":"` + networkID + `"}}}}`
+	}
+	checkExposureCases(t, []exposureCase{
+		{name: "create: NetworkID overrides the key", path: docker, body: create("proxy", "backend"), opts: only, wantStatus: deny, wantLookups: []string{"proxy", "backend"}},
+		{name: "create: NetworkID of an unlisted network by ID", path: docker, body: create("proxy", backendNetworkID), opts: only, wantStatus: deny, wantLookups: []string{"proxy", backendNetworkID}},
+		{name: "create: matching NetworkID by full ID", path: docker, body: create("proxy", proxyNetworkID), opts: only, wantStatus: ok, wantLookups: []string{"proxy", proxyNetworkID}},
+		{name: "create: matching NetworkID by prefix", path: docker, body: create("proxy", proxyNetworkID[:8]), opts: only, wantStatus: ok, wantLookups: []string{"proxy", proxyNetworkID[:8]}},
+		{name: "create: NetworkID equal to the key", path: docker, body: create("proxy", "proxy"), opts: only, wantStatus: ok, wantLookups: []string{"proxy"}},
+		{name: "create: empty NetworkID", path: docker, body: create("proxy", ""), opts: only, wantStatus: ok, wantLookups: []string{"proxy"}},
+		{name: "create: unknown NetworkID", path: docker, body: create("proxy", "missing"), opts: only, wantStatus: deny, wantLookups: []string{"proxy", "missing"}},
+		{name: "create: NetworkID lookup failure", path: docker, body: create("proxy", "boom"), opts: only, wantStatus: bad, wantLookups: []string{"proxy", "boom"}},
+		{name: "create: NetworkID with no inspector", path: docker, body: create("proxy", "backend"), opts: only, noInspector: true, wantStatus: bad},
+		{name: "create: host key with another NetworkID", path: docker, body: create("host", "backend"), opts: only, allowHost: true, wantStatus: deny, wantLookups: []string{"backend"}},
+		{name: "create: NetworkID ignored while the list is off", path: docker, body: create("proxy", "backend"), opts: NetworkExposureOptions{}, wantStatus: ok},
+	}, applyDocker)
+
+	const connectBody = `{"Container":"c1","EndpointConfig":{"NetworkID":"%s"}}`
+	connect := []struct {
+		name        string
+		path        string
+		body        string
+		wantStatus  int
+		wantLookups []string
+	}{
+		{"connect: NetworkID overrides the path", "/networks/proxy/connect", fmtConnect(connectBody, "backend"), deny, []string{"proxy", "backend"}},
+		{"connect: matching NetworkID", "/v1.45/networks/proxy/connect", fmtConnect(connectBody, proxyNetworkID), ok, []string{"proxy", proxyNetworkID}},
+		{"connect: empty NetworkID", "/networks/proxy/connect", fmtConnect(connectBody, ""), ok, []string{"proxy"}},
+		{"connect: no EndpointConfig", "/networks/proxy/connect", `{"Container":"c1"}`, ok, []string{"proxy"}},
+		{"connect: undecodable body", "/networks/proxy/connect", `{`, ok, []string{"proxy"}},
+		{"connect: unknown NetworkID", "/networks/proxy/connect", fmtConnect(connectBody, "missing"), deny, []string{"proxy", "missing"}},
+		{"connect: NetworkID lookup failure", "/networks/proxy/connect", fmtConnect(connectBody, "boom"), bad, []string{"proxy", "boom"}},
+		{"libpod connect: body is not read", "/libpod/networks/proxy/connect", fmtConnect(connectBody, "backend"), ok, []string{"proxy"}},
+	}
+	for _, tt := range connect {
+		t.Run(tt.name, func(t *testing.T) {
+			fake := &exposureNetworks{}
+			opts := ResourceLimitGuardOptions{InspectNetwork: fake.inspect}
+			applyDocker(&opts, only, false)
+			applyLibpod(&opts, only, false)
+			out := runResourceGuardRequest(t, opts, http.MethodPost, tt.path, tt.body, "")
+			if out.status != tt.wantStatus {
+				t.Fatalf("status = %d, want %d; body: %s", out.status, tt.wantStatus, out.body)
+			}
+			if tt.wantStatus == ok && out.forwardedBody != tt.body {
+				t.Fatalf("forwarded body = %q, want it unchanged", out.forwardedBody)
+			}
+			if !slices.Equal(fake.lookups, tt.wantLookups) {
+				t.Fatalf("lookups = %v, want %v", fake.lookups, tt.wantLookups)
+			}
+		})
+	}
+	t.Run("connect: oversized body", func(t *testing.T) {
+		opts := ResourceLimitGuardOptions{InspectNetwork: (&exposureNetworks{}).inspect}
+		applyDocker(&opts, only, false)
+		body := `{"Container":"` + strings.Repeat("a", maxNetworkBodyBytes) + `"}`
+		out := runResourceGuardRequest(t, opts, http.MethodPost, "/networks/proxy/connect", body, "")
+		if out.status != http.StatusRequestEntityTooLarge {
+			t.Fatalf("status = %d, want 413", out.status)
+		}
+	})
+}
+
+func fmtConnect(format, networkID string) string {
+	return strings.Replace(format, "%s", networkID, 1)
 }
