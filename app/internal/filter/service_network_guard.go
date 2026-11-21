@@ -81,7 +81,17 @@ type serviceNetworkTargets struct {
 	TaskTemplate struct {
 		Networks []serviceNetwork `json:"Networks"`
 	} `json:"TaskTemplate"`
-	Networks []serviceNetwork `json:"Networks"`
+	Networks     []serviceNetwork `json:"Networks"`
+	UpdateConfig *struct {
+		FailureAction string `json:"FailureAction"`
+	} `json:"UpdateConfig"`
+}
+
+// failureActionIsRollback reports whether the body asks for the daemon's
+// automatic rollback, which reactivates the service's current (pre-update)
+// spec when the update fails.
+func (req serviceNetworkTargets) failureActionIsRollback() bool {
+	return req.UpdateConfig != nil && strings.EqualFold(strings.TrimSpace(req.UpdateConfig.FailureAction), "rollback")
 }
 
 func (req serviceNetworkTargets) targets() []string {
@@ -152,36 +162,78 @@ func (g *resourceLimitGuard) guardServiceNetworks(w http.ResponseWriter, r *http
 		return true
 	}
 
-	return g.guardNetworkTargets(w, r, req.targets(), policy.DenyResponseVerbosity)
+	if !g.guardNetworkTargets(w, r, req.targets(), policy.DenyResponseVerbosity) {
+		return false
+	}
+
+	// An update with UpdateConfig.FailureAction=rollback can fail and make the
+	// daemon reactivate the service's current spec, which this request never
+	// carries. That spec may name the host network (created before the policy
+	// tightened, or out of band), so its targets get the same resolution.
+	// With a resource requirement configured, guardServiceWrite inspects the
+	// service for the automatic rollback anyway and resolves them there.
+	if id, isUpdate := serviceUpdateIdentifier(normalizedPath); isUpdate && req.failureActionIsRollback() &&
+		serviceRequirementsList(policy.Service) == "" {
+		return g.guardServiceAutomaticRollbackNetworks(w, r, id, policy)
+	}
+	return true
+}
+
+// guardServiceAutomaticRollbackNetworks resolves the networks of the service's
+// current spec, which an automatic rollback re-applies. A missing inspector or
+// a failed lookup fails closed with 502.
+func (g *resourceLimitGuard) guardServiceAutomaticRollbackNetworks(w http.ResponseWriter, r *http.Request, id string, policy PolicyConfig) bool {
+	current, ok := g.inspectServiceForRollbackNetworks(w, r, id, policy, "automatic")
+	if !ok {
+		return false
+	}
+	if current == nil {
+		return true
+	}
+	return g.guardNetworkTargets(w, r, current.SpecNetworkTargets, policy.DenyResponseVerbosity)
+}
+
+// inspectServiceForRollbackNetworks looks the service up for a rollback
+// host-network check and pins it to the version the caller sent. It returns
+// ok=false when a response was written, and a nil result with ok=true when the
+// service does not exist (the daemon will 404 it itself).
+func (g *resourceLimitGuard) inspectServiceForRollbackNetworks(w http.ResponseWriter, r *http.Request, id string, policy PolicyConfig, kind string) (*ServiceInspectResult, bool) {
+	if g.inspectService == nil {
+		g.denyServiceNetwork(w, r, http.StatusBadGateway, reasonCodeRequestBodyInspectionFailed,
+			"service denied: network verification unavailable", policy.DenyResponseVerbosity)
+		return nil, false
+	}
+	current, found, err := g.inspectService(r.Context(), id)
+	if err != nil {
+		logRequestError(g.logger, r, slog.LevelError, "failed to inspect service for "+kind+" rollback host-network guard", err)
+		g.denyServiceNetwork(w, r, http.StatusBadGateway, reasonCodeRequestBodyInspectionFailed,
+			"service denied: network verification unavailable", policy.DenyResponseVerbosity)
+		return nil, false
+	}
+	if !found {
+		return nil, true
+	}
+	// Pin the targets resolved here to the version the caller sent, so a
+	// service that changed since the caller inspected it is refused rather
+	// than judged on a spec the caller never saw.
+	if version, ok := serviceVersionQuery(r); ok && version != current.Version {
+		g.denyServiceNetwork(w, r, http.StatusConflict, reasonCodeResourceLimitPolicyStateChanged,
+			"service update denied: the service state changed since it was inspected; retry with the current version", policy.DenyResponseVerbosity)
+		return nil, false
+	}
+	return &current, true
 }
 
 // guardServiceRollbackNetworks resolves the networks of the service's stored
 // PreviousSpec, which ?rollback=previous re-applies in place of the body. A
 // missing inspector or a failed lookup fails closed with 502.
 func (g *resourceLimitGuard) guardServiceRollbackNetworks(w http.ResponseWriter, r *http.Request, id string, policy PolicyConfig) bool {
-	if g.inspectService == nil {
-		g.denyServiceNetwork(w, r, http.StatusBadGateway, reasonCodeRequestBodyInspectionFailed,
-			"service denied: network verification unavailable", policy.DenyResponseVerbosity)
+	current, ok := g.inspectServiceForRollbackNetworks(w, r, id, policy, "manual")
+	if !ok {
 		return false
 	}
-	current, found, err := g.inspectService(r.Context(), id)
-	if err != nil {
-		logRequestError(g.logger, r, slog.LevelError, "failed to inspect service for rollback host-network guard", err)
-		g.denyServiceNetwork(w, r, http.StatusBadGateway, reasonCodeRequestBodyInspectionFailed,
-			"service denied: network verification unavailable", policy.DenyResponseVerbosity)
-		return false
-	}
-	if !found {
-		// The daemon will itself 404 an unknown service.
+	if current == nil {
 		return true
-	}
-	// Pin the targets resolved here to the version the caller sent, so a
-	// service that changed since the caller inspected it is refused rather
-	// than judged on a PreviousSpec the caller never saw.
-	if version, ok := serviceVersionQuery(r); ok && version != current.Version {
-		g.denyServiceNetwork(w, r, http.StatusConflict, reasonCodeResourceLimitPolicyStateChanged,
-			"service update denied: the service state changed since it was inspected; retry with the current version", policy.DenyResponseVerbosity)
-		return false
 	}
 	return g.guardNetworkTargets(w, r, current.PreviousSpecNetworkTargets, policy.DenyResponseVerbosity)
 }

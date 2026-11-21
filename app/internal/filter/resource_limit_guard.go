@@ -793,10 +793,15 @@ func (g *resourceLimitGuard) guardServiceRollbackTarget(w http.ResponseWriter, r
 		return false
 	}
 
-	if stateSource == "previous_spec" && !svc.AllowHostNetwork {
-		// The daemon re-applies the stored PreviousSpec whole, so its networks
-		// get the same host resolution a submitted body would.
-		host, err := g.resolvesToHostNetwork(r, current.PreviousSpecNetworkTargets)
+	if (stateSource == "previous_spec" || stateSource == "current_spec") && !svc.AllowHostNetwork {
+		// The daemon re-applies the stored PreviousSpec whole on a manual
+		// rollback, and the current Spec whole on an automatic one, so that
+		// spec's networks get the same host resolution a submitted body would.
+		targets := current.PreviousSpecNetworkTargets
+		if stateSource == "current_spec" {
+			targets = current.SpecNetworkTargets
+		}
+		host, err := g.resolvesToHostNetwork(r, targets)
 		if err != nil {
 			g.respondHardDeny(w, r, http.StatusBadGateway, reasonCodeResourceLimitPolicyLookupFailed,
 				"service update denied: resource requirement verification unavailable", verbosity, rp)
@@ -837,6 +842,10 @@ type ServiceInspectResult struct {
 	// PreviousSpecNetworkTargets lists PreviousSpec.TaskTemplate.Networks and
 	// PreviousSpec.Networks targets, which a manual rollback re-applies.
 	PreviousSpecNetworkTargets []string
+	// SpecNetworkTargets lists the current Spec.TaskTemplate.Networks and
+	// Spec.Networks targets, which an automatic rollback re-applies when an
+	// update fails.
+	SpecNetworkTargets []string
 }
 
 // ServiceInspectFunc looks up a service's current version/spec/previous-spec
@@ -899,15 +908,17 @@ func NewDockerServiceInspectorWithRoundTripper(rt http.RoundTripper) ServiceInsp
 			Version:      decoded.Version.Index,
 			SpecNanoCPUs: decoded.Spec.TaskTemplate.Resources.Limits.NanoCPUs,
 		}
+		var networks struct {
+			Spec         serviceNetworkTargets  `json:"Spec"`
+			PreviousSpec *serviceNetworkTargets `json:"PreviousSpec"`
+		}
+		if err := json.Unmarshal(body, &networks); err != nil {
+			return ServiceInspectResult{}, false, err
+		}
+		result.SpecNetworkTargets = networks.Spec.targets()
 		if decoded.PreviousSpec != nil {
 			result.HasPreviousSpec = true
 			result.PreviousSpecNanoCPUs = decoded.PreviousSpec.TaskTemplate.Resources.Limits.NanoCPUs
-			var networks struct {
-				PreviousSpec *serviceNetworkTargets `json:"PreviousSpec"`
-			}
-			if err := json.Unmarshal(body, &networks); err != nil {
-				return ServiceInspectResult{}, false, err
-			}
 			if networks.PreviousSpec != nil {
 				result.PreviousSpecNetworkTargets = networks.PreviousSpec.targets()
 			}
