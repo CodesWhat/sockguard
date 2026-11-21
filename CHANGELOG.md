@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.4.8] - 2026-11-19
+
+v2.4.8 backports security fixes and a Buildx fix to the v2.4 line. It carries v2.4.7.
+
 ### Security
 
 - Apply reloaded `clients.allowed_cidrs` to the dedicated admin listener. It kept the startup allowlist, so a reload that removed a source left it admitted to the admin endpoints. The admin chain is now rebuilt from the same validated config on every successful reload, and a rejected reload changes neither chain.
