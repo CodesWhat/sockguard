@@ -52,6 +52,7 @@ export const DOCS_SEARCH_ITEMS: [page: number, heading: string, anchor: string][
   [2,"Validation","validation"],
   [2,"Observability","observability"],
   [2,"Owner Label Isolation","owner-label-isolation"],
+  [2,"Per-profile ownership","per-profile-ownership"],
   [2,"Admission Mutations","admission-mutations"],
   [2,"Rollout Modes","rollout-modes"],
   [2,"Policy Discovery Workflow","policy-discovery-workflow"],
