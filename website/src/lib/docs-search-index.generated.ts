@@ -71,6 +71,7 @@ export const DOCS_SEARCH_ITEMS: [page: number, heading: string, anchor: string][
   [2,"Rule sets without GET /_ping","rule-sets-without-get-_ping"],
   [2,"Path Patterns","path-patterns"],
   [2,"Methods","methods"],
+  [2,"Query Constraints","query-constraints"],
   [2,"Environment Variables","environment-variables"],
   [2,"Listener and upstream","listener-and-upstream"],
   [2,"Logging","logging"],
