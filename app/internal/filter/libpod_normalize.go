@@ -210,6 +210,12 @@ func isLibpodContainerUpdatePath(normalizedPath string) bool {
 	return ok && libpod
 }
 
+// isLibpodContainerRestorePath matches POST /libpod/containers/{name}/restore.
+func isLibpodContainerRestorePath(normalizedPath string) bool {
+	libpod, ok := containerSubresourcePath(normalizedPath, "restore")
+	return ok && libpod
+}
+
 // isLibpodContainerRemovePath matches DELETE /libpod/containers/{name}, which
 // Podman 5.8.6 registers on the same compat.RemoveContainer handler as the
 // Docker-compatible DELETE /containers/{name}

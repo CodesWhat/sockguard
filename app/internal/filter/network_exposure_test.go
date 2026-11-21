@@ -840,3 +840,56 @@ func TestNetworkExposurePortEntryUnknownKeys(t *testing.T) {
 		})
 	}
 }
+
+func TestNetworkExposureRestore(t *testing.T) {
+	for _, path := range []string{"/libpod/containers/c1/restore", "/v6.1.3/libpod/containers/c1/restore?import=true", "/libpod/containers/c1/restore?publishPorts=8080:80"} {
+		for name, e := range map[string]NetworkExposureOptions{
+			"deny_published_ports":  {DenyPublishedPorts: true},
+			"allowed_port_host_ips": ports("127.0.0.1"),
+			"allowed_networks":      nets("proxy"),
+		} {
+			t.Run(path+"/"+name, func(t *testing.T) {
+				opts := ResourceLimitGuardOptions{}
+				applyLibpod(&opts, e, false)
+				out := runResourceGuardRequest(t, opts, http.MethodPost, path, "", "")
+				if out.status != deny || out.forwarded != 0 || !strings.Contains(out.body, "container restore denied") {
+					t.Fatalf("status %d forwarded %d body %s", out.status, out.forwarded, out.body)
+				}
+			})
+		}
+		t.Run(path+"/gates off", func(t *testing.T) {
+			if out := runResourceGuardRequest(t, ResourceLimitGuardOptions{}, http.MethodPost, path, "", ""); out.status != ok {
+				t.Fatalf("status %d, want it forwarded", out.status)
+			}
+		})
+		t.Run(path+"/docker gates only", func(t *testing.T) {
+			opts := ResourceLimitGuardOptions{}
+			applyDocker(&opts, NetworkExposureOptions{DenyPublishedPorts: true}, false)
+			if out := runResourceGuardRequest(t, opts, http.MethodPost, path, "", ""); out.status != ok {
+				t.Fatalf("status %d, want it forwarded", out.status)
+			}
+		})
+		for _, mode := range []string{"warn", "audit"} {
+			t.Run(mode+path, func(t *testing.T) {
+				opts := ResourceLimitGuardOptions{}
+				applyLibpod(&opts, NetworkExposureOptions{DenyPublishedPorts: true}, false)
+				out := runResourceGuardRequest(t, opts, http.MethodPost, path, "", mode)
+				if out.status != ok || out.forwarded != 1 {
+					t.Fatalf("status %d forwarded %d", out.status, out.forwarded)
+				}
+				if out.meta.Decision != logging.DecisionWouldDeny || out.meta.ReasonCode != reasonCodeRequestBodyPolicyDenied {
+					t.Fatalf("decision/reason code = %q/%q", out.meta.Decision, out.meta.ReasonCode)
+				}
+			})
+		}
+	}
+	for _, path := range []string{"/libpod/containers/c1/checkpoint", "/libpod/containers/c1/restore/x", "/containers/c1/restore"} {
+		t.Run("untouched "+path, func(t *testing.T) {
+			opts := ResourceLimitGuardOptions{}
+			applyLibpod(&opts, NetworkExposureOptions{DenyPublishedPorts: true}, false)
+			if out := runResourceGuardRequest(t, opts, http.MethodPost, path, "", ""); out.status != ok {
+				t.Fatalf("status %d, want it forwarded", out.status)
+			}
+		})
+	}
+}

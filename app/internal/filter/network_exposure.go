@@ -825,3 +825,16 @@ func (g *resourceLimitGuard) guardPlayKubeExposure(w http.ResponseWriter, r *htt
 	return !g.exposureDeny(w, r, http.StatusForbidden, reasonCodeRequestBodyPolicyDenied,
 		"libpod play kube denied: the YAML body is not inspected, so it can't be held to the libpod port and network gates", policy.DenyResponseVerbosity)
 }
+
+// guardRestoreExposure refuses POST /libpod/containers/{name}/restore while
+// any libpod port or network gate is set. A restore with import creates a
+// container from a checkpoint archive that carries its own ports and
+// networks, and publishPorts publishes ports on any restore, none of which
+// sockguard reads. It returns false when a response was written.
+func (g *resourceLimitGuard) guardRestoreExposure(w http.ResponseWriter, r *http.Request, policy PolicyConfig) bool {
+	if !policy.LibpodContainerCreate.NetworkExposure.active() {
+		return true
+	}
+	return !g.exposureDeny(w, r, http.StatusForbidden, reasonCodeRequestBodyPolicyDenied,
+		"libpod container restore denied: a checkpoint archive and publishPorts carry their own ports and networks, so a restore can't be held to the libpod port and network gates", policy.DenyResponseVerbosity)
+}

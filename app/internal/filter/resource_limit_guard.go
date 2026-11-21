@@ -158,6 +158,10 @@ func (g *resourceLimitGuard) serve(w http.ResponseWriter, r *http.Request, next 
 		if g.guardPodCreateExposure(w, r, policy) {
 			next.ServeHTTP(w, r)
 		}
+	case isLibpodContainerRestorePath(normPath):
+		if g.guardRestoreExposure(w, r, policy) {
+			next.ServeHTTP(w, r)
+		}
 	case isLibpodPlayKubeCreatePath(normPath):
 		if g.guardPlayKubeExposure(w, r, policy) {
 			next.ServeHTTP(w, r)
