@@ -71,6 +71,9 @@ func TestServeChainRuleQueryConstrainsKill(t *testing.T) {
 		{name: "repeated signal smuggles KILL first", target: "/containers/app/kill?signal=KILL&signal=USR1", wantStatus: http.StatusForbidden},
 		{name: "unparseable query", target: "/containers/app/kill?signal=USR1&x=%zz", wantStatus: http.StatusForbidden},
 		{name: "semicolon separator", target: "/containers/app/kill?signal=USR1;signal=KILL", wantStatus: http.StatusForbidden},
+		{name: "mixed-case variant smuggles KILL", target: "/containers/app/kill?signal=USR1&Signal=KILL", wantStatus: http.StatusForbidden},
+		{name: "mixed-case variant first smuggles KILL", target: "/containers/app/kill?Signal=KILL&signal=USR1", wantStatus: http.StatusForbidden},
+		{name: "mixed-case variants all listed", target: "/containers/app/kill?signal=USR1&SIGNAL=USR1", wantStatus: http.StatusNoContent, wantKills: []string{"signal=USR1&SIGNAL=USR1"}},
 		{name: "different key case", target: "/containers/app/kill?Signal=USR1", wantStatus: http.StatusForbidden},
 	}
 	for _, tt := range tests {

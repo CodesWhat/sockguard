@@ -755,8 +755,8 @@ func FuzzCompileRule(f *testing.F) {
 // encoding. The expected verdict comes from the contract, not from the
 // matcher: a request whose every occurrence of each constrained key equals a
 // listed pattern verbatim must match (a pattern is its own match, "*" included);
-// dropping a required key must not; and when no pattern carries a "*", one
-// occurrence outside the list must not.
+// dropping a required key, or leaving only a differently cased spelling of it, must not; and when no pattern carries a "*", one
+// occurrence outside the list (under any letter case of the key) must not.
 func assertQueryConstraintOracle(t *testing.T, seed string) {
 	t.Helper()
 
@@ -790,7 +790,18 @@ func assertQueryConstraintOracle(t *testing.T, seed string) {
 	if eval(url.Values{"j": {patterns[0]}}) {
 		t.Fatalf("required key k removed, rule must not match: patterns %q", patterns)
 	}
+	// A differently cased spelling is an occurrence too: listed values still
+	// pass, but it can't stand in for the exact "k" an allow rule requires.
+	if !eval(url.Values{"k": patterns, "K": patterns, "j": {patterns[0]}}) {
+		t.Fatalf("case-variant occurrence equals a listed pattern, rule must match: patterns %q", patterns)
+	}
+	if eval(url.Values{"K": patterns, "j": {patterns[0]}}) {
+		t.Fatalf("only a case-variant of required key k, rule must not match: patterns %q", patterns)
+	}
 	if !strings.Contains(strings.Join(patterns, ""), "*") {
+		if eval(url.Values{"k": patterns, "K": {"\x00unlisted"}, "j": {patterns[0]}}) {
+			t.Fatalf("case-variant occurrence outside the list, rule must not match: patterns %q", patterns)
+		}
 		bad := url.Values{"k": append(append([]string{}, patterns...), "\x00unlisted"), "j": {patterns[0]}}
 		if eval(bad) {
 			t.Fatalf("one occurrence outside the list, rule must not match: patterns %q", patterns)

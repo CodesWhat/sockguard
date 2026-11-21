@@ -45,6 +45,12 @@ func TestEvaluateQueryConstraints(t *testing.T) {
 		{name: "absent key", action: ActionAllow, query: signal, rawQuery: ""},
 		{name: "other key only", action: ActionAllow, query: signal, rawQuery: "force=1"},
 		{name: "key is case-sensitive", action: ActionAllow, query: signal, rawQuery: "Signal=USR1"},
+		{name: "mixed-case variant with KILL is refused", action: ActionAllow, query: signal, rawQuery: "signal=USR1&Signal=KILL"},
+		{name: "mixed-case variant first is refused", action: ActionAllow, query: signal, rawQuery: "Signal=KILL&signal=USR1"},
+		{name: "mixed-case variant alone has no exact key", action: ActionAllow, query: signal, rawQuery: "Signal=USR1"},
+		{name: "mixed-case variants all listed", action: ActionAllow, query: signal, rawQuery: "signal=USR1&SIGNAL=USR1", wantMatch: true},
+		{name: "deny matches a case-variant occurrence", action: ActionDeny, query: map[string][]string{"signal": {"KILL"}}, rawQuery: "Signal=KILL", wantMatch: true},
+		{name: "deny ignores a case-variant with another value", action: ActionDeny, query: map[string][]string{"signal": {"KILL"}}, rawQuery: "Signal=USR1"},
 		{name: "value is case-sensitive", action: ActionAllow, query: signal, rawQuery: "signal=usr1"},
 		{name: "repeated key one bad value", action: ActionAllow, query: signal, rawQuery: "signal=USR1&signal=KILL"},
 		{name: "repeated key bad value first", action: ActionAllow, query: signal, rawQuery: "signal=KILL&signal=USR1"},
@@ -187,6 +193,7 @@ func TestCompileRuleRejectsBadQueryConstraints(t *testing.T) {
 		{name: "nil patterns", query: map[string][]string{"signal": nil}, want: "at least one pattern"},
 		{name: "control in pattern", query: map[string][]string{"signal": {"a\nb"}}, want: "control characters"},
 		{name: "control in key", query: map[string][]string{"sig\x00nal": {"a"}}, want: "control characters"},
+		{name: "keys differing only in case", query: map[string][]string{"signal": {"a"}, "Signal": {"b"}}, want: "differ only in letter case"},
 		{name: "DEL in pattern", query: map[string][]string{"signal": {"a\x7f"}}, want: "control characters"},
 	}
 	for _, tt := range tests {

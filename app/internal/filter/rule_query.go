@@ -9,7 +9,8 @@ import (
 )
 
 // queryConstraint is one compiled `match.query` entry: the key has to be
-// present and every occurrence of it has to match one of patterns.
+// present and every occurrence of it (under any letter case) has to match one
+// of patterns.
 type queryConstraint struct {
 	key      string
 	patterns []string
@@ -21,7 +22,17 @@ type queryConstraint struct {
 // The returned error names the offending key; callers prefix their own field
 // path.
 func ValidateQueryConstraints(query map[string][]string) error {
+	seen := make(map[string]string, len(query))
 	for key, patterns := range query {
+		folded := strings.ToLower(key)
+		if other, dup := seen[folded]; dup {
+			a, b := other, key
+			if a > b {
+				a, b = b, a
+			}
+			return fmt.Errorf("query keys %q and %q differ only in letter case, which is ambiguous", a, b)
+		}
+		seen[folded] = key
 		if key == "" {
 			return fmt.Errorf("query key must not be empty")
 		}
@@ -68,20 +79,37 @@ func compileQueryConstraints(query map[string][]string) ([]queryConstraint, erro
 	return compiled, nil
 }
 
-// matchesValues reports whether values (every occurrence of the key in the
-// request) satisfy the constraint: the key is present, and each occurrence
-// matches at least one pattern. A repeated key therefore cannot smuggle a
-// second value past the check.
-func (c queryConstraint) matchesValues(values []string) bool {
-	if len(values) == 0 {
-		return false
-	}
-	for _, value := range values {
-		if !c.matchesValue(value) {
-			return false
+// matchesValues reports whether the request's parameters satisfy the
+// constraint. Occurrences are every parameter whose name equals the key under
+// case-insensitive comparison, because Podman reads some names that way, and
+// each one has to match at least one pattern. A repeated or differently cased
+// key therefore cannot smuggle a second value past the check.
+//
+// Presence differs by action. An allow rule needs an occurrence spelled
+// exactly like the key, since Docker reads names case-sensitively and would
+// see a lone "Signal=USR1" as no signal at all. A deny rule is satisfied by
+// any case-insensitive occurrence: it widens, so it fails closed.
+func (c queryConstraint) matchesValues(values url.Values, action Action) bool {
+	exact := false
+	found := false
+	for name, vals := range values {
+		if !strings.EqualFold(name, c.key) {
+			continue
+		}
+		if name == c.key {
+			exact = true
+		}
+		for _, value := range vals {
+			found = true
+			if !c.matchesValue(value) {
+				return false
+			}
 		}
 	}
-	return true
+	if action == ActionDeny {
+		return found
+	}
+	return exact
 }
 
 // matchesValue treats "*" as a run of any characters, empty included, and
@@ -143,7 +171,7 @@ func (cr *CompiledRule) matchesQuery(q *requestQuery) bool {
 		return cr.Action == ActionDeny
 	}
 	for _, c := range cr.query {
-		if !c.matchesValues(q.values[c.key]) {
+		if !c.matchesValues(q.values, cr.Action) {
 			return false
 		}
 	}

@@ -1806,7 +1806,7 @@ That allows `POST /containers/abc/kill?signal=USR1` and denies a kill with any o
 - The parameter has to be present. `kill` with no `signal` at all does not match the rule above, so it falls through to the next rule.
 - Every occurrence of the parameter has to match one of its values. `signal=USR1&signal=KILL` does not match, because the second occurrence matches nothing in the list. A repeated key can't carry a second value past the check.
 - Parameters you don't list are not checked.
-- Names are case-sensitive and compared exactly, so `Signal` is a different parameter from `signal`. Values are compared after normal URL decoding, so `signal=%55SR1` is `USR1`.
+- Letter case in names: every spelling of the name counts as an occurrence, so a case-variant like `Signal=KILL` next to `signal=USR1` has to match too, because Podman reads some parameters case-insensitively. For an allow rule, at least one occurrence must be spelled exactly like the key, because Docker reads names case-sensitively. `Signal=USR1` alone does not satisfy `signal`, while `signal=USR1&SIGNAL=USR1` does. A deny rule counts any spelling as present. Values are compared after normal URL decoding, so `signal=%55SR1` is `USR1`.
 
 A value is either exact text or a glob where `*` stands for any run of characters, including none, and nothing else is special. Unlike a path pattern, `*` here also crosses `/`. An empty string (`""`) matches only an empty value, as in `?name=` or a bare `?name`.
 
@@ -1814,9 +1814,7 @@ If the query string can't be parsed (bad percent-encoding, or a `;` separator), 
 
 Rollout modes work as they always did. `query` only changes whether a rule matches, so a request that fails a constraint is denied, or would-deny under `warn` and `audit`, like any other unmatched request. A hot reload recompiles the constraints with the rest of the rules.
 
-Config validation rejects an empty parameter name, a parameter with no values, and values or names that contain control characters. The startup checks that look for exposed endpoints (`insecure_allow_read_exfiltration`, the blind-write and BuildKit tunnel acknowledgments) treat a rule with `query` as reachable, since they probe paths and can't know which query a client will send. A `query` deny doesn't hide an allow from those checks for the same reason. `sockguard match` accepts a query on `--path` (for example `/containers/abc/kill?signal=USR1`) and `sockguard validate` lists each rule's constraints after its path.
-
-On a Podman upstream, don't rely on `query` alone to restrict a parameter Podman reads under any letter case. Because names here match exactly, a request can add a differently cased spelling (`Signal=KILL` next to `signal=USR1`) that this rule never looks at and Podman may read instead. Docker reads only the exact lowercase spelling.
+Config validation rejects an empty parameter name, a parameter with no values, values or names that contain control characters, and two names that differ only in letter case (`signal` and `Signal`). The startup checks that look for exposed endpoints (`insecure_allow_read_exfiltration`, the blind-write and BuildKit tunnel acknowledgments) treat a rule with `query` as reachable, since they probe paths and can't know which query a client will send. A `query` deny doesn't hide an allow from those checks for the same reason. `sockguard match` accepts a query on `--path` (for example `/containers/abc/kill?signal=USR1`) and `sockguard validate` lists each rule's constraints after its path.
 
 ## Environment Variables
 

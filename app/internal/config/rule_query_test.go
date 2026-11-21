@@ -99,6 +99,7 @@ func TestValidateRuleQuery(t *testing.T) {
 		{name: "no patterns", query: map[string][]string{"signal": {}}, want: "match.query.signal needs at least one pattern"},
 		{name: "nil patterns", query: map[string][]string{"signal": nil}, want: "match.query.signal needs at least one pattern"},
 		{name: "control in pattern", query: map[string][]string{"signal": {"ok", "a\tb"}}, want: `match.query.signal[1] must not contain control characters, got "a\tb"`},
+		{name: "keys differing only in case", query: map[string][]string{"signal": {"a"}, "Signal": {"b"}}, want: "match.query keys \"Signal\" and \"signal\" differ only in letter case"},
 		{name: "control in key", query: map[string][]string{"si\x00g": {"x"}}, want: "match.query key \"si\\x00g\" must not contain control characters"},
 	}
 	for _, tt := range tests {

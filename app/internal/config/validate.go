@@ -735,9 +735,16 @@ func validateRuleQuery(field string, query map[string][]string) []string {
 	}
 	slices.Sort(keys)
 	var errs []string
+	folded := make(map[string]string, len(keys))
 	for _, key := range keys {
 		patterns := query[key]
 		entry := field + "." + key
+		lower := strings.ToLower(key)
+		if first, dup := folded[lower]; dup && key != "" {
+			errs = append(errs, fmt.Sprintf("%s keys %q and %q differ only in letter case, which is ambiguous", field, first, key))
+			continue
+		}
+		folded[lower] = key
 		switch {
 		case key == "":
 			errs = append(errs, field+" must not have an empty key")
