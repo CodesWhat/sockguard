@@ -1950,6 +1950,12 @@ type RuleConfig struct {
 type MatchConfig struct {
 	Method string `mapstructure:"method"`
 	Path   string `mapstructure:"path"`
+	// Query optionally constrains the request query string. The rule matches
+	// only when every listed key is present and every occurrence of it equals
+	// one of its patterns (exact text, or "*" for any run of characters).
+	// Keys not listed are unconstrained. A query that does not parse never
+	// satisfies an allow rule and always satisfies a deny rule.
+	Query map[string][]string `mapstructure:"query"`
 }
 
 // Defaults returns a Config with sensible defaults.

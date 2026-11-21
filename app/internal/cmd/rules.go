@@ -459,6 +459,7 @@ func compileConfiguredRules(rules []config.RuleConfig) ([]*filter.CompiledRule, 
 			Action:  filter.Action(rule.Action),
 			Reason:  rule.Reason,
 			Index:   i,
+			Query:   rule.Match.Query,
 		}
 
 		compiledRule, err := compileFilterRule(spec)
@@ -667,7 +668,7 @@ func allowedBuildkitTunnelEndpoints(compiled []*filter.CompiledRule) []string {
 	allowed := make([]string, 0, len(buildkitTunnelEndpoints))
 	for _, endpoint := range buildkitTunnelEndpoints {
 		req := &http.Request{Method: endpoint.method, URL: &url.URL{Path: endpoint.path}}
-		action, _, _ := filter.Evaluate(compiled, req)
+		action, _, _ := filter.EvaluateStatic(compiled, req)
 		if action != filter.ActionAllow {
 			continue
 		}
@@ -722,7 +723,9 @@ func allowedCatalogPaths(method, catalogPath string, identifierShape catalogIden
 
 func policyAllowsPath(method, path string, compiledRules []*filter.CompiledRule) bool {
 	req := &http.Request{Method: method, URL: &url.URL{Path: path}}
-	action, _, _ := filter.Evaluate(compiledRules, req)
+	// A path probe carries no query, so a query-constrained allow is read as
+	// reachable (EvaluateStatic) rather than as absent.
+	action, _, _ := filter.EvaluateStatic(compiledRules, req)
 	return action == filter.ActionAllow
 }
 

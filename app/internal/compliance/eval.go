@@ -319,8 +319,9 @@ var swarmProbes = []probe{
 }
 
 // swarmControl implements 7.x: GET and POST probes on each Swarm prefix are run
-// through the compiled rule matcher (filter.Evaluate, as `sockguard match`
-// does) for the global ruleset and every client profile's own ruleset.
+// through the compiled rule matcher (filter.EvaluateStatic: a path-only read
+// that counts a query-constrained allow as reachable) for the global ruleset
+// and every client profile's own ruleset.
 func swarmControl(cfg *config.Config) ControlResult {
 	res := ControlResult{Evidence: []Evidence{}, Notes: []string{}}
 	scopes := scopesOf(cfg)
@@ -343,7 +344,7 @@ func swarmControl(cfg *config.Config) ControlResult {
 				for _, path := range p.paths {
 					total++
 					req := &http.Request{Method: method, URL: &url.URL{Path: path}}
-					if action, _, _ := filter.Evaluate(compiled, req); action == filter.ActionAllow {
+					if action, _, _ := filter.EvaluateStatic(compiled, req); action == filter.ActionAllow {
 						allowed++
 					}
 				}
@@ -387,6 +388,7 @@ func compileRules(rules []config.RuleConfig) ([]*filter.CompiledRule, error) {
 			Action:  filter.Action(r.Action),
 			Reason:  r.Reason,
 			Index:   i,
+			Query:   r.Match.Query,
 		})
 		if err != nil {
 			return nil, err

@@ -710,6 +710,7 @@ func validateRules(cfg *Config) []string {
 		} else if filter.HasVersionPrefix(r.Match.Path) {
 			errs = append(errs, versionPrefixRuleError(fmt.Sprintf("rule %d", i+1), r.Match.Path))
 		}
+		errs = append(errs, validateRuleQuery(fmt.Sprintf("rule %d: match.query", i+1), r.Match.Query)...)
 		switch r.Action {
 		case "allow", "deny":
 		default:
@@ -717,6 +718,53 @@ func validateRules(cfg *Config) []string {
 		}
 	}
 	return errs
+}
+
+// validateRuleQuery checks a rule's match.query map. field is the already
+// prefixed path of the map ("rule 2: match.query" or
+// "clients.profiles[0].rules[1].match.query"); per-key problems extend it with
+// the key, so the message names the exact entry. Keys are walked in sorted
+// order so the error list is stable.
+func validateRuleQuery(field string, query map[string][]string) []string {
+	if len(query) == 0 {
+		return nil
+	}
+	keys := make([]string, 0, len(query))
+	for key := range query {
+		keys = append(keys, key)
+	}
+	slices.Sort(keys)
+	var errs []string
+	for _, key := range keys {
+		patterns := query[key]
+		entry := field + "." + key
+		switch {
+		case key == "":
+			errs = append(errs, field+" must not have an empty key")
+			continue
+		case hasControlRune(key):
+			errs = append(errs, fmt.Sprintf("%s key %q must not contain control characters", field, key))
+			continue
+		case len(patterns) == 0:
+			errs = append(errs, entry+" needs at least one pattern")
+			continue
+		}
+		for j, pattern := range patterns {
+			if hasControlRune(pattern) {
+				errs = append(errs, fmt.Sprintf("%s[%d] must not contain control characters, got %q", entry, j, pattern))
+			}
+		}
+	}
+	return errs
+}
+
+func hasControlRune(s string) bool {
+	for _, r := range s {
+		if r < 0x20 || r == 0x7f {
+			return true
+		}
+	}
+	return false
 }
 
 // validEscapedLibpodImageScpRule recognizes the one route family whose exact
@@ -2143,6 +2191,7 @@ func validateRuleConfigs(rules []RuleConfig, prefix string) []string {
 		} else if filter.HasVersionPrefix(r.Match.Path) {
 			errs = append(errs, versionPrefixRuleError(rulePrefix, r.Match.Path))
 		}
+		errs = append(errs, validateRuleQuery(rulePrefix+".match.query", r.Match.Query)...)
 		switch r.Action {
 		case "allow", "deny":
 		default:
