@@ -183,6 +183,13 @@ func (g *resourceLimitGuard) guardServiceNetworks(w http.ResponseWriter, r *http
 // current spec, which an automatic rollback re-applies. A missing inspector or
 // a failed lookup fails closed with 502.
 func (g *resourceLimitGuard) guardServiceAutomaticRollbackNetworks(w http.ResponseWriter, r *http.Request, id string, policy PolicyConfig) bool {
+	if _, ok := serviceVersionQuery(r); !ok {
+		// Docker requires exactly one numeric version on an update. Without it
+		// the inspected spec can't be pinned to the state the caller saw.
+		g.denyServiceNetwork(w, r, http.StatusBadRequest, reasonCodeResourceLimitRequestInvalid,
+			"service update denied: a single numeric version query parameter is required", policy.DenyResponseVerbosity)
+		return false
+	}
 	current, ok := g.inspectServiceForRollbackNetworks(w, r, id, policy, "automatic")
 	if !ok {
 		return false
