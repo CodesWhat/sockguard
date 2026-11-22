@@ -1,11 +1,15 @@
 package cmd
 
 import (
+	"context"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/codeswhat/sockguard/v3/app/internal/config"
 )
 
 // raceResult is one racer's answer.
@@ -144,5 +148,101 @@ func TestServeChainTwoOwnersRacingOneImageNameHaveOneWinner(t *testing.T) {
 	winner := exactlyOneWinner(t, "image retag", results, http.StatusForbidden)
 	if owner, ok := h.daemon.ownerOf("image", "shared:1"); !ok || owner != winner {
 		t.Errorf("shared:1 owner = %q (found %v), want winner %s", owner, ok, winner)
+	}
+}
+
+// The first retag pauses after its destination preflight, while an alias of
+// that same Docker Hub name arrives under the second owner.
+func TestServeChainImageAliasesShareCreateLock(t *testing.T) {
+	socketPath := shortSocketPath(t, "image-alias")
+	daemon := &tenancyDaemon{}
+	daemon.add("image", "a-img:1", "A", nil)
+	daemon.add("image", "b-img:1", "B", nil)
+	firstWrite := make(chan struct{})
+	resumeFirst := make(chan struct{})
+	var resumeOnce sync.Once
+	resume := func() { resumeOnce.Do(func() { close(resumeFirst) }) }
+	t.Cleanup(resume)
+	canonical := func(ref string) string {
+		switch ref {
+		case "shared:1", "library/shared:1", "docker.io/shared:1", "docker.io/library/shared:1", "index.docker.io/library/shared:1":
+			return "docker.io/library/shared:1"
+		default:
+			return ref
+		}
+	}
+	startUnixHTTPUpstream(t, socketPath, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path := strings.TrimPrefix(r.URL.Path, "/v1.45")
+		if r.Method == http.MethodGet && strings.HasPrefix(path, "/images/") && strings.HasSuffix(path, "/json") {
+			ref := strings.TrimSuffix(strings.TrimPrefix(path, "/images/"), "/json")
+			daemon.mu.Lock()
+			defer daemon.mu.Unlock()
+			w.Header().Set("Content-Type", "application/json")
+			daemon.inspect(w, "image", canonical(ref))
+			return
+		}
+		if r.Method == http.MethodPost && strings.HasSuffix(path, "/tag") {
+			if strings.Contains(path, "/a-img:1/") {
+				close(firstWrite)
+				select {
+				case <-resumeFirst:
+				case <-r.Context().Done():
+					return
+				}
+			}
+			query := r.URL.Query()
+			ref := canonical(query.Get("repo") + ":" + query.Get("tag"))
+			repo, tag, _ := strings.Cut(ref, ":")
+			query.Set("repo", repo)
+			query.Set("tag", tag)
+			r.URL.RawQuery = query.Encode()
+		}
+		daemon.ServeHTTP(w, r)
+	}))
+	cfg := ownerScopesConfig(socketPath)
+	cfg.Rules = []config.RuleConfig{{Match: config.MatchConfig{Method: "POST", Path: "/images/*/tag"}, Action: "allow"}}
+	for i := range cfg.Clients.Profiles {
+		cfg.Clients.Profiles[i].Rules = cfg.Rules
+	}
+	rules, err := compileRuleConfigsForTest(cfg.Rules)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := buildServeHandler(t, &cfg, newDiscardLogger(), nil, rules, newServeTestDeps())
+	first := httptest.NewRecorder()
+	firstReq := httptest.NewRequest(http.MethodPost, "/v1.45/images/a-img:1/tag?repo=shared&tag=1", nil)
+	firstReq.RemoteAddr = ownerScopesIPA
+	firstDone := make(chan struct{})
+	go func() { defer close(firstDone); handler.ServeHTTP(first, firstReq) }()
+	select {
+	case <-firstWrite:
+	case <-firstDone:
+		t.Fatalf("first retag stopped: %d %s", first.Code, first.Body.String())
+	case <-time.After(2 * time.Second):
+		t.Fatal("first retag did not reach daemon")
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 250*time.Millisecond)
+	defer cancel()
+	second := httptest.NewRecorder()
+	secondReq := httptest.NewRequest(http.MethodPost, "/v1.45/images/b-img:1/tag?repo=docker.io/library/shared&tag=1", nil).WithContext(ctx)
+	secondReq.RemoteAddr = ownerScopesIPB
+	handler.ServeHTTP(second, secondReq)
+	resume()
+	select {
+	case <-firstDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("first retag did not finish")
+	}
+	if second.Code != http.StatusServiceUnavailable {
+		t.Errorf("alias retag status = %d, body %s; want 503 while the first owner holds its name", second.Code, second.Body.String())
+	}
+	if first.Code != http.StatusCreated {
+		t.Errorf("first retag status = %d, body %s", first.Code, first.Body.String())
+	}
+	if owner, ok := daemon.ownerOf("image", "docker.io/library/shared:1"); !ok || owner != "A" {
+		t.Errorf("stored alias owner = %q (found %v), want A", owner, ok)
+	}
+	if got := daemon.mutations(); len(got) != 1 {
+		t.Errorf("daemon writes = %v, want first owner's retag only", got)
 	}
 }

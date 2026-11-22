@@ -1,10 +1,15 @@
 package cmd
 
 import (
+	"context"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/json"
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"sort"
 	"strings"
@@ -14,6 +19,7 @@ import (
 	"time"
 
 	"github.com/codeswhat/sockguard/v3/app/internal/config"
+	"github.com/codeswhat/sockguard/v3/app/internal/testcert"
 	"github.com/codeswhat/sockguard/v3/app/internal/testhelp"
 	"github.com/codeswhat/sockguard/v3/app/internal/upstream"
 	"github.com/codeswhat/sockguard/v3/app/internal/upstreamflavor"
@@ -355,30 +361,74 @@ func TestServeChainOwnerScopeAllSpansOwners(t *testing.T) {
 	}
 }
 
-// TestServeChainOwnerScopesFollowReloadedConfig proves a chain rebuilt from a
-// config whose profile owner changed (what a reload does) applies the new
-// owner, and that dropping scope: all takes effect the same way.
+// TestServeChainOwnerScopesFollowReloadedConfig applies owner changes and
+// admin-scope removal through the production reload coordinator.
 func TestServeChainOwnerScopesFollowReloadedConfig(t *testing.T) {
-	before := newOwnerScopesHarness(t, nil)
-	before.create(ownerScopesIPA, "a1")
-	if got, _ := before.daemon.labelOf("a1"); got != "A" {
-		t.Fatalf("before reload owner label = %q, want A", got)
+	socketPath := shortSocketPath(t, "scope-reload")
+	daemon := &ownerScopesDaemon{containers: map[string]map[string]string{}}
+	daemon.seed("a1", "A")
+	startUnixHTTPUpstream(t, socketPath, daemon)
+	cfg := ownerScopesConfig(socketPath)
+	cfg.Clients.SourceIPProfiles = cfg.Clients.SourceIPProfiles[:2]
+	cfg.Clients.ClientCertificateProfiles = []config.ClientCertificateProfileAssignmentConfig{{Profile: "admin", CommonNames: []string{"admin-client"}}}
+	bundle, err := testcert.WriteMutualTLSBundle(t.TempDir(), "127.0.0.1")
+	if err != nil {
+		t.Fatal(err)
 	}
-
-	after := newOwnerScopesHarness(t, func(cfg *config.Config) {
-		cfg.Clients.Profiles[0].Ownership.Owner = strPtr("C")
-		cfg.Clients.Profiles[2].Ownership.Scope = ""
+	cfg.Listen = config.ListenConfig{Address: "127.0.0.1:0", TLS: config.ListenTLSConfig{
+		CertFile: bundle.ServerCertFile, KeyFile: bundle.ServerKeyFile, ClientCAFile: bundle.CAFile,
+	}}
+	rules, err := validateAndCompileRules(&cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := newReloadCoordinatorFixture(t, &cfg)
+	runtime, err := newServeRuntime(&cfg, newDiscardLogger(), f.coordinator.deps)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.coordinator.runtime = runtime
+	h, teardown, _ := buildServeHandlerChainWithRuntime(serveHandlerBuild{
+		Cfg: &cfg, Logger: newDiscardLogger(), Rules: rules, Deps: f.coordinator.deps, Runtime: runtime,
 	})
-	after.daemon.seed("a1", "A")
-	after.create(ownerScopesIPA, "a2")
-	if got, _ := after.daemon.labelOf("a2"); got != "C" {
-		t.Errorf("after reload owner label = %q, want C", got)
+	f.swappable.Swap(h)
+	f.coordinator.chainTeardown = teardown
+	t.Cleanup(f.coordinator.stop)
+	request := func(admin bool, method, path, body string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(method, path, strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.RemoteAddr = ownerScopesIPA
+		if admin {
+			cert := &x509.Certificate{Subject: pkix.Name{CommonName: "admin-client"}}
+			req.TLS = &tls.ConnectionState{PeerCertificates: []*x509.Certificate{cert}, VerifiedChains: [][]*x509.Certificate{{cert}}}
+		}
+		rec := httptest.NewRecorder()
+		f.swappable.ServeHTTP(rec, req)
+		return rec
 	}
-	if status, _ := after.do(ownerScopesIPA, http.MethodGet, "/v1.45/containers/a1/json", ""); status != http.StatusForbidden {
-		t.Errorf("after reload inspect of the old owner's container status = %d, want 403", status)
+	if rec := request(true, http.MethodGet, "/containers/a1/json", ""); rec.Code != http.StatusOK {
+		t.Fatalf("admin before reload = %d %s", rec.Code, rec.Body.String())
 	}
-	if status, _ := after.do(ownerScopesIPAdmin, http.MethodGet, "/v1.45/containers/a1/json", ""); status != http.StatusForbidden {
-		t.Errorf("after scope: all removed, admin inspect of another owner status = %d, want 403", status)
+	candidate := cfg
+	candidate.Clients.Profiles = append([]config.ClientProfileConfig(nil), cfg.Clients.Profiles...)
+	candidate.Clients.Profiles[0].Ownership.Owner = strPtr("C")
+	candidate.Clients.Profiles[2].Ownership.Scope = ""
+	f.loadCfg = &candidate
+	f.coordinator.deps.validateRules = validateAndCompileRules
+	f.coordinator.reload()
+	if f.coordinator.activeCfg != &candidate {
+		t.Fatal("reload did not publish candidate")
+	}
+	if rec := request(false, http.MethodPost, "/containers/create?name=a2", `{"Image":"alpine"}`); rec.Code != http.StatusCreated {
+		t.Fatalf("create after reload = %d %s", rec.Code, rec.Body.String())
+	}
+	if owner, _ := daemon.labelOf("a2"); owner != "C" {
+		t.Errorf("new owner stamp = %q, want C", owner)
+	}
+	for _, admin := range []bool{false, true} {
+		if rec := request(admin, http.MethodGet, "/containers/a1/json", ""); rec.Code != http.StatusForbidden {
+			t.Errorf("admin=%v inspect after reload = %d %s, want 403", admin, rec.Code, rec.Body.String())
+		}
 	}
 }
 
@@ -465,7 +515,7 @@ func TestBuildkitSolveRefusedUnderProfileOwner(t *testing.T) {
 func TestWithOwnershipLogsPrivilegedProfiles(t *testing.T) {
 	cfg := ownerScopesConfig("unused")
 	collector := &testhelp.CollectingHandler{}
-	_ = withOwnership(&cfg, upstream.NewSingleSocket(cfg.Upstream.Socket), collector.Logger(), upstreamflavor.Capabilities{})
+	_ = withOwnership(&cfg, upstream.NewSingleSocket(cfg.Upstream.Socket), collector.Logger(), upstreamflavor.Capabilities{}, nil)
 	seen := map[string]string{}
 	for _, rec := range collector.Records() {
 		if name, ok := rec.Attrs["profile"].(string); ok {
@@ -474,5 +524,198 @@ func TestWithOwnershipLogsPrivilegedProfiles(t *testing.T) {
 	}
 	if seen["admin"] != "WARN" || seen["app-a"] != "INFO" {
 		t.Errorf("startup log levels by profile = %v, want admin WARN and app-a INFO", seen)
+	}
+}
+
+func TestServeChainOwnerNameLockTimeoutFailsClosed(t *testing.T) {
+	socketPath := shortSocketPath(t, "owner-lock")
+	daemon := &ownerScopesDaemon{containers: map[string]map[string]string{}}
+	entered := make(chan struct{})
+	unblock := make(chan struct{})
+	var release sync.Once
+	defer release.Do(func() { close(unblock) })
+	var creates atomic.Int32
+	startUnixHTTPUpstream(t, socketPath, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/containers/create") {
+			if creates.Add(1) == 1 {
+				close(entered)
+				select {
+				case <-unblock:
+				case <-r.Context().Done():
+					return
+				}
+			}
+		}
+		daemon.ServeHTTP(w, r)
+	}))
+	cfg := ownerScopesConfig(socketPath)
+	cfg.Log.AccessLog = true
+	collector := &testhelp.CollectingHandler{}
+	rules, err := compileRuleConfigsForTest(cfg.Rules)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := buildServeHandler(t, &cfg, collector.Logger(), nil, rules, newServeTestDeps())
+	request := func(remote string) *http.Request {
+		req := httptest.NewRequest(http.MethodPost, "/v1.45/containers/create?name=shared", strings.NewReader(`{"Image":"x"}`))
+		req.RemoteAddr = remote
+		req.Header.Set("Content-Type", "application/json")
+		return req
+	}
+	firstDone := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, request(ownerScopesIPA))
+		firstDone <- rec
+	}()
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("first create did not reach upstream")
+	}
+	second := httptest.NewRecorder()
+	handler.ServeHTTP(second, request(ownerScopesIPB))
+	if second.Code != http.StatusServiceUnavailable {
+		t.Fatalf("contending create = %d %s, want 503", second.Code, second.Body.String())
+	}
+	if got := creates.Load(); got != 1 {
+		t.Errorf("forwarded creates = %d, want only first request", got)
+	}
+	found := false
+	for _, record := range collector.Records() {
+		if record.Attrs["reason_code"] == "owner_name_lock_timeout" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("missing owner_name_lock_timeout access-log reason")
+	}
+	release.Do(func() { close(unblock) })
+	select {
+	case first := <-firstDone:
+		if first.Code != http.StatusCreated {
+			t.Fatalf("first create = %d %s", first.Code, first.Body.String())
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("first create did not finish after release")
+	}
+	retry := httptest.NewRecorder()
+	handler.ServeHTTP(retry, request(ownerScopesIPA))
+	if retry.Code != http.StatusCreated {
+		t.Errorf("retry = %d %s, want create after lock release", retry.Code, retry.Body.String())
+	}
+	if got := creates.Load(); got != 2 {
+		t.Errorf("forwarded creates after retry = %d, want 2", got)
+	}
+}
+
+func TestServeChainOwnerNameLocksSurviveReload(t *testing.T) {
+	for _, transition := range []string{"multiple to multiple", "single to multiple", "multiple to single"} {
+		t.Run(transition, func(t *testing.T) {
+			socketPath := shortSocketPath(t, "owner-lock")
+			daemon := &ownerScopesDaemon{containers: map[string]map[string]string{}}
+			entered := make(chan struct{})
+			unblock := make(chan struct{})
+			var release sync.Once
+			defer release.Do(func() { close(unblock) })
+			var creates atomic.Int32
+			startUnixHTTPUpstream(t, socketPath, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/containers/create") {
+					if creates.Add(1) == 1 {
+						close(entered)
+						select {
+						case <-unblock:
+						case <-r.Context().Done():
+							return
+						}
+					}
+				}
+				daemon.ServeHTTP(w, r)
+			}))
+			cfg := ownerScopesConfig(socketPath)
+			cfg.Clients.Profiles = cfg.Clients.Profiles[:2]
+			cfg.Clients.SourceIPProfiles = cfg.Clients.SourceIPProfiles[:2]
+			candidate := cfg
+			if transition == "single to multiple" {
+				cfg.Clients.Profiles = nil
+				cfg.Clients.SourceIPProfiles = nil
+				cfg.Ownership.Owner = "A"
+			}
+			if transition == "multiple to single" {
+				candidate.Clients.Profiles = nil
+				candidate.Clients.SourceIPProfiles = nil
+				candidate.Ownership.Owner = "B"
+			}
+			rules, err := compileRuleConfigsForTest(cfg.Rules)
+			if err != nil {
+				t.Fatal(err)
+			}
+			f := newReloadCoordinatorFixture(t, &cfg)
+			runtime, err := newServeRuntime(&cfg, newDiscardLogger(), f.coordinator.deps)
+			if err != nil {
+				t.Fatal(err)
+			}
+			f.coordinator.runtime = runtime
+			h, teardown, _ := buildServeHandlerChainWithRuntime(serveHandlerBuild{
+				Cfg: &cfg, Logger: newDiscardLogger(), Rules: rules, Deps: f.coordinator.deps, Runtime: runtime,
+			})
+			f.swappable.Swap(h)
+			f.coordinator.chainTeardown = teardown
+			t.Cleanup(f.coordinator.stop)
+			handler := f.swappable
+			request := func(remote string) *http.Request {
+				req := httptest.NewRequest(http.MethodPost, "/v1.45/containers/create?name=shared", strings.NewReader(`{"Image":"x"}`))
+				req.RemoteAddr = remote
+				req.Header.Set("Content-Type", "application/json")
+				return req
+			}
+			firstDone := make(chan *httptest.ResponseRecorder, 1)
+			go func() {
+				rec := httptest.NewRecorder()
+				handler.ServeHTTP(rec, request(ownerScopesIPA))
+				firstDone <- rec
+			}()
+			select {
+			case <-entered:
+			case <-time.After(5 * time.Second):
+				t.Fatal("first create did not reach upstream")
+			}
+			candidate.Response.DenyVerbosity = "verbose"
+			f.loadCfg = &candidate
+			f.coordinator.deps.validateRules = validateAndCompileRules
+			f.coordinator.reload()
+			if f.coordinator.activeCfg != &candidate {
+				t.Fatal("reload did not publish candidate")
+			}
+			second := httptest.NewRecorder()
+			ctx, cancel := context.WithTimeout(t.Context(), 250*time.Millisecond)
+			defer cancel()
+			handler.ServeHTTP(second, request(ownerScopesIPB).WithContext(ctx))
+			if second.Code != http.StatusServiceUnavailable {
+				t.Fatalf("contending create = %d %s, want 503", second.Code, second.Body.String())
+			}
+			if got := creates.Load(); got != 1 {
+				t.Errorf("forwarded creates = %d, want only first request", got)
+			}
+			release.Do(func() { close(unblock) })
+			select {
+			case first := <-firstDone:
+				if first.Code != http.StatusCreated {
+					t.Fatalf("first create = %d %s", first.Code, first.Body.String())
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("first create did not finish after release")
+			}
+			retry := httptest.NewRecorder()
+			retryReq := request(ownerScopesIPA)
+			retryReq.URL.RawQuery = "name=after-reload"
+			handler.ServeHTTP(retry, retryReq)
+			if retry.Code != http.StatusCreated {
+				t.Errorf("retry = %d %s, want create after lock release", retry.Code, retry.Body.String())
+			}
+			if got := creates.Load(); got != 2 {
+				t.Errorf("forwarded creates after retry = %d, want 2", got)
+			}
+		})
 	}
 }

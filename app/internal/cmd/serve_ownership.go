@@ -63,15 +63,6 @@ func (s ownerScopes) distinct() []ownerScopeKey {
 	return keys
 }
 
-// distinctOwners counts the different owner values across every scope.
-func (s ownerScopes) distinctOwners() int {
-	owners := map[string]struct{}{}
-	for _, key := range s.distinct() {
-		owners[key.owner] = struct{}{}
-	}
-	return len(owners)
-}
-
 func (s ownerScopes) keyFor(profile string, hasProfile bool) ownerScopeKey {
 	if hasProfile {
 		if key, ok := s.byProfile[profile]; ok {
@@ -118,20 +109,20 @@ func logOwnerScopes(cfg *config.Config, scopes ownerScopes, logger *slog.Logger)
 // profile (clientacl.RequestProfile) picks which one runs, and a request with
 // no profile uses the root ownership. With no profile overriding the root this
 // is exactly the single root middleware.
-func withOwnership(cfg *config.Config, res http.RoundTripper, logger *slog.Logger, capabilities upstreamflavor.Capabilities) func(http.Handler) http.Handler {
+func withOwnership(cfg *config.Config, res http.RoundTripper, logger *slog.Logger, capabilities upstreamflavor.Capabilities, locks *ownership.KeyedLocks) func(http.Handler) http.Handler {
 	scopes := newOwnerScopes(cfg)
+	if locks == nil {
+		locks = ownership.NewKeyedLocks(0, 0)
+	}
 	if len(scopes.byProfile) == 0 {
-		return ownership.MiddlewareWithRoundTripper(res, logger, scopes.root.options(cfg, capabilities))
+		opts := scopes.root.options(cfg, capabilities)
+		opts.Locks = locks
+		return ownership.MiddlewareWithRoundTripper(res, logger, opts)
 	}
 	logOwnerScopes(cfg, scopes, logger)
 	middlewares := make(map[ownerScopeKey]func(http.Handler) http.Handler, len(scopes.byProfile)+1)
-	// One lock set for every owner's middleware: two owners racing one name
-	// have to meet at the same lock. It exists only with more than one
-	// distinct owner, so a single-owner instance pays nothing.
-	var locks *ownership.KeyedLocks
-	if scopes.distinctOwners() > 1 {
-		locks = ownership.NewKeyedLocks(0, 0)
-	}
+	// Every generation shares the process lock set, including single-owner
+	// generations that overlap a reload changing the effective owners.
 	for _, key := range scopes.distinct() {
 		opts := key.options(cfg, capabilities)
 		opts.Locks = locks

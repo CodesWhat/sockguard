@@ -623,9 +623,10 @@ func buildServeHandlerChainWithRuntime(b serveHandlerBuild) (http.Handler, func(
 // rebuild happens. Chain-scoped goroutines (rate-limit sampler, per-profile
 // Limiter eviction) are tracked separately by reloadCoordinator.
 type serveRuntime struct {
-	metrics   *metrics.Registry
-	health    *health.Monitor
-	readiness *health.Monitor
+	ownerNameLocks *ownership.KeyedLocks
+	metrics        *metrics.Registry
+	health         *health.Monitor
+	readiness      *health.Monitor
 	// resolver is the shared upstream dial seam (endpoint selection, pooling,
 	// TLS, failover). All request paths and side channels route through it so
 	// failover is coherent across the proxy, hijack, and inspect calls.
@@ -655,7 +656,7 @@ type serveRuntime struct {
 }
 
 func newServeRuntime(cfg *config.Config, logger *slog.Logger, deps *serveDeps) (*serveRuntime, error) {
-	runtime := &serveRuntime{}
+	runtime := &serveRuntime{ownerNameLocks: ownership.NewKeyedLocks(0, 0)}
 	if cfg.Metrics.Enabled {
 		runtime.metrics = metrics.NewRegistry()
 	}
@@ -882,7 +883,7 @@ func buildServeHandlerLayersWithRuntime(b serveHandlerBuild) ([]serveHandlerLaye
 		// lookup, and the guard still runs before hijack/proxy for every
 		// request ownership allowed.
 		namedServeHandlerLayer("withResourceLimitGuard", withResourceLimitGuard(cfg, resolver, logger, clientProfiles)),
-		namedServeHandlerLayer("withOwnership", withOwnership(cfg, resolver, logger, runtimeUpstreamCapabilities(runtime))),
+		namedServeHandlerLayer("withOwnership", withOwnership(cfg, resolver, logger, runtimeUpstreamCapabilities(runtime), runtime.ownerNameLocks)),
 		namedServeHandlerLayer("withVisibility", withVisibility(cfg, resolver, logger, runtimeUpstreamCapabilities(runtime))),
 		namedServeHandlerLayer("withFilter", withFilter(cfg, resolver, logger, rules, clientProfiles, runtimeUpstreamFlavor(runtime), runtimeCgroupV1Func(runtime), runtimeUpstreamCapabilities(runtime).ProbedDocker)),
 		// withFormBodyGuard is appended right AFTER withFilter so it executes

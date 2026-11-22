@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -201,6 +202,24 @@ func (refs *ownershipRequestReferences) addLockName(kind dockerresource.Kind, na
 	refs.lockNames = append(refs.lockNames, lockName{kind: kind, name: normalizeLockName(kind, name)})
 }
 
+// canonicalImageLockName folds Docker Hub aliases into the same lock key.
+// Authorization still inspects the original reference. Other registries keep
+// their spelling, including ports and digest suffixes.
+func canonicalImageLockName(ref string) string {
+	first, rest, hasSlash := strings.Cut(ref, "/")
+	domain, name := "docker.io", ref
+	if hasSlash && (strings.ContainsAny(first, ".:") || first == "localhost" || first != strings.ToLower(first)) {
+		domain, name = first, rest
+	}
+	if domain == "index.docker.io" {
+		domain = "docker.io"
+	}
+	if domain == "docker.io" && !strings.Contains(name, "/") {
+		name = "library/" + name
+	}
+	return domain + "/" + name
+}
+
 // lockKeysFor returns every name the request writes, with the image names a
 // pull, retag, commit, import or load assigns.
 func lockKeysFor(refs *ownershipRequestReferences) []lockKey {
@@ -214,7 +233,7 @@ func lockKeysFor(refs *ownershipRequestReferences) []lockKey {
 	if refs.imageTag != nil {
 		for _, ref := range []string{refs.imageTag.target, refs.imageTag.storedTarget} {
 			if ref != "" {
-				keys = append(keys, lockKey{kind: dockerresource.KindImage, name: ref})
+				keys = append(keys, lockKey{kind: dockerresource.KindImage, name: canonicalImageLockName(ref)})
 			}
 		}
 	}
@@ -222,7 +241,7 @@ func lockKeysFor(refs *ownershipRequestReferences) []lockKey {
 		for _, dest := range refs.imageDestinations.destinations {
 			for _, ref := range []string{dest.target, dest.storedTarget} {
 				if ref != "" {
-					keys = append(keys, lockKey{kind: dockerresource.KindImage, name: ref})
+					keys = append(keys, lockKey{kind: dockerresource.KindImage, name: canonicalImageLockName(ref)})
 				}
 			}
 		}
@@ -233,9 +252,9 @@ func lockKeysFor(refs *ownershipRequestReferences) []lockKey {
 var noRelease = func() {}
 
 // acquireCreateLocks takes the request's name locks when the instance has
-// several owners. It answers 503 and reports false when it can't, failing
+// owner scoping. It answers 503 and reports false when it can't, failing
 // closed: the request is never forwarded unserialized. A request that names
-// nothing, or an instance with one owner, costs nothing.
+// nothing costs nothing.
 func acquireCreateLocks(w http.ResponseWriter, r *http.Request, opts Options, refs *ownershipRequestReferences) (func(), bool) {
 	if opts.Locks == nil {
 		return noRelease, true

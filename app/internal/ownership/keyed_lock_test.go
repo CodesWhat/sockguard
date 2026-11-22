@@ -203,3 +203,47 @@ func TestAcquireCreateLocksRefusals(t *testing.T) {
 		t.Errorf("oversized set: ok=%v status=%d, want refusal 503", ok, rec.Code)
 	}
 }
+
+func TestImageLockKeysCanonicalizeDockerHubAliases(t *testing.T) {
+	aliases := []string{"shared:1", "library/shared:1", "docker.io/shared:1", "docker.io/library/shared:1", "index.docker.io/library/shared:1"}
+	for _, alias := range aliases {
+		t.Run(alias, func(t *testing.T) {
+			refs := &ownershipRequestReferences{
+				imageTag:          &imageTagOwnershipReference{target: alias, storedTarget: "localhost/shared:1"},
+				imageDestinations: &imageDestinationReferences{destinations: []imageDestination{{target: alias, storedTarget: "localhost/shared:1"}}},
+			}
+			keys := lockKeysFor(refs)
+			want := []string{"docker.io/library/shared:1", "localhost/shared:1", "docker.io/library/shared:1", "localhost/shared:1"}
+			if len(keys) != len(want) {
+				t.Fatalf("keys = %v", keys)
+			}
+			for i, key := range keys {
+				if key.kind != dockerresource.KindImage || key.name != want[i] {
+					t.Errorf("key[%d] = %v, want image %s", i, key, want[i])
+				}
+			}
+			if refs.imageTag.target != alias || refs.imageDestinations.destinations[0].target != alias {
+				t.Fatal("lock key generation changed authorization destinations")
+			}
+		})
+	}
+}
+
+func TestImageLockKeysKeepDistinctDestinations(t *testing.T) {
+	refs := &ownershipRequestReferences{imageDestinations: &imageDestinationReferences{destinations: []imageDestination{
+		{target: "shared:1"}, {target: "shared:2"}, {target: "team/shared:1"},
+		{target: "example.com/shared:1"}, {target: "example.com:5000/shared:1"},
+		{target: "localhost/shared:1"}, {target: "shared@sha256:aaa"}, {target: "shared@sha256:bbb"},
+	}}}
+	seen := map[string]bool{}
+	for _, key := range lockKeysFor(refs) {
+		if seen[key.name] {
+			t.Errorf("different destination collapsed to %s", key.name)
+		}
+		seen[key.name] = true
+	}
+	digest := &ownershipRequestReferences{imageTag: &imageTagOwnershipReference{target: "index.docker.io/shared@sha256:aaa"}}
+	if got := lockKeysFor(digest)[0].name; got != "docker.io/library/shared@sha256:aaa" {
+		t.Errorf("digest key = %q", got)
+	}
+}

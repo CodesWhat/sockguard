@@ -62,6 +62,30 @@ func TestServeChainTwoOwnersCannotReachEachOther(t *testing.T) {
 	seedTwoOwners(h.daemon)
 	before := h.daemon.mutations()
 
+	prefixFor := func(kind, name string) string {
+		t.Helper()
+		h.daemon.mu.Lock()
+		defer h.daemon.mu.Unlock()
+		victim := h.daemon.find(kind, name)
+		if victim == nil {
+			t.Fatalf("missing seeded %s %s", kind, name)
+		}
+		for n := 4; n < len(victim.id); n++ {
+			prefix := victim.id[:n]
+			if h.daemon.find(kind, prefix) == victim {
+				return prefix
+			}
+		}
+		t.Fatalf("seeded %s %s has no unique proper ID prefix", kind, name)
+		return ""
+	}
+	bNetworkPrefix := prefixFor("network", "b-net")
+	bContainerPrefix := prefixFor("container", "b-web")
+	bSecretPrefix := prefixFor("secret", "b-secret")
+	aNetworkPrefix := prefixFor("network", "a-net")
+	aContainerPrefix := prefixFor("container", "a-web")
+	aSecretPrefix := prefixFor("secret", "a-secret")
+
 	svc := func(spec string) string {
 		return `{"Name":"x-svc","TaskTemplate":{"ContainerSpec":{"Image":"a-image:1"` + spec + `}}}`
 	}
@@ -109,12 +133,12 @@ func TestServeChainTwoOwnersCannotReachEachOther(t *testing.T) {
 		{"network disconnect B container from A network", "POST", "/v1.45/networks/a-net/disconnect", `{"Container":"b-web"}`},
 		{"network connect slash-bearing alias of B network", "POST", "/v1.45/networks/a-net/alias/connect", `{"Container":"a-web"}`},
 		{"network delete B network", "DELETE", "/v1.45/networks/b-net", ""},
-		{"network inspect B network by ID prefix", "GET", "/v1.45/networks/nid", ""},
+		{"network inspect B network by ID prefix", "GET", "/v1.45/networks/" + bNetworkPrefix, ""},
 
 		// Secrets by name and by ID prefix.
 		{"secret inspect B secret by name", "GET", "/v1.45/secrets/b-secret", ""},
-		{"secret inspect B secret by ID prefix", "GET", "/v1.45/secrets/sec0000", ""},
-		{"secret delete B secret by ID prefix", "DELETE", "/v1.45/secrets/sec0000", ""},
+		{"secret inspect B secret by ID prefix", "GET", "/v1.45/secrets/" + bSecretPrefix, ""},
+		{"secret delete B secret by ID prefix", "DELETE", "/v1.45/secrets/" + bSecretPrefix, ""},
 		{"secret update B secret", "POST", "/v1.45/secrets/b-secret/update?version=1", `{}`},
 
 		// Exec, archive, logs, attach and the other container verbs on B's container.
@@ -132,7 +156,7 @@ func TestServeChainTwoOwnersCannotReachEachOther(t *testing.T) {
 		{"kill B container", "POST", "/v1.45/containers/b-web/kill", ""},
 		{"rename B container", "POST", "/v1.45/containers/b-web/rename?name=stolen", ""},
 		{"delete B container", "DELETE", "/v1.45/containers/b-web?force=1", ""},
-		{"B container by ID prefix", "POST", "/v1.45/containers/cid/stop", ""},
+		{"B container by ID prefix", "POST", "/v1.45/containers/" + bContainerPrefix + "/stop", ""},
 		{"B container by slash-bearing name", "POST", "/v1.45/containers/a-web/alias/stop", ""},
 
 		// Images.
@@ -179,6 +203,18 @@ func TestServeChainTwoOwnersCannotReachEachOther(t *testing.T) {
 		t.Errorf("B volume data = %q, want vol-data-of-B", got)
 	}
 
+	// Prefix controls must resolve B's resources when B requests them; an
+	// absent or ambiguous prefix must not masquerade as an ownership refusal.
+	for _, path := range []string{
+		"/v1.45/networks/" + bNetworkPrefix,
+		"/v1.45/containers/" + bContainerPrefix + "/json",
+		"/v1.45/secrets/" + bSecretPrefix,
+	} {
+		if status, body := h.do(ownerScopesIPB, http.MethodGet, path, ""); status != http.StatusOK {
+			t.Errorf("B inspects own resource by ID prefix %s: status = %d, want 200; body %s", path, status, body)
+		}
+	}
+
 	// Positive controls: the same verbs on A's own resources work, so the
 	// refusals above are the owner check and not a dead route.
 	for _, a := range []tenantAttempt{
@@ -188,6 +224,10 @@ func TestServeChainTwoOwnersCannotReachEachOther(t *testing.T) {
 		{"A connects own network", "POST", "/v1.45/networks/a-net/connect", `{"Container":"a-web"}`},
 		{"A inspects own secret", "GET", "/v1.45/secrets/a-secret", ""},
 		{"A reads own logs", "GET", "/v1.45/containers/a-web/logs?stdout=1", ""},
+		{"A inspects own network by ID prefix", "GET", "/v1.45/networks/" + aNetworkPrefix, ""},
+		{"A stops own container by ID prefix", "POST", "/v1.45/containers/" + aContainerPrefix + "/stop", ""},
+		{"A inspects own secret by ID prefix", "GET", "/v1.45/secrets/" + aSecretPrefix, ""},
+		{"A deletes own secret by ID prefix", "DELETE", "/v1.45/secrets/" + aSecretPrefix, ""},
 	} {
 		if status, body := h.do(ownerScopesIPA, a.method, a.path, a.body); status >= 400 {
 			t.Errorf("%s: status = %d, want success; body %s", a.label, status, body)
