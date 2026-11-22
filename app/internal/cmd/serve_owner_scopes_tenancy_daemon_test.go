@@ -412,6 +412,15 @@ func (d *tenancyDaemon) serve(w http.ResponseWriter, r *http.Request, path strin
 		img.names = append(img.names, ref)
 		w.WriteHeader(http.StatusCreated)
 
+	case r.Method == http.MethodDelete && len(segs) == 2 && segs[0] == "secrets":
+		res := d.find("secret", segs[1])
+		if res == nil {
+			d.notFound(w)
+			return
+		}
+		d.remove(res)
+		w.WriteHeader(http.StatusNoContent)
+
 	// Prunes delete what the injected label filter selects.
 	case r.Method == http.MethodPost && strings.HasSuffix(path, "/prune"):
 		kind := map[string]string{"containers": "container", "volumes": "volume", "networks": "network", "images": "image"}[segs[0]]
@@ -513,7 +522,7 @@ func (h *tenancyHarness) try(remote, method, path, body string) (int, string, er
 	if err != nil {
 		return 0, "", err
 	}
-	out, _ := io.ReadAll(resp.Body)
+	out, readErr := io.ReadAll(resp.Body)
 	_ = resp.Body.Close()
-	return resp.StatusCode, string(out), nil
+	return resp.StatusCode, string(out), readErr
 }

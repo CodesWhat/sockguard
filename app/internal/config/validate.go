@@ -1800,6 +1800,9 @@ func validateClientProfile(index int, profile ClientProfileConfig, profilesByNam
 
 	prefix := fmt.Sprintf("clients.profiles[%d]", index)
 	name := strings.TrimSpace(profile.Name)
+	if name != "" && name != profile.Name {
+		return []string{fmt.Sprintf("%s.name must not have leading or trailing whitespace", prefix)}
+	}
 	switch name {
 	case "":
 		errs = append(errs, requiredFieldError(prefix+".name"))

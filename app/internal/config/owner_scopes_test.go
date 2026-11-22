@@ -189,3 +189,23 @@ func TestValidateRequiresLabelKeyForProfileOwner(t *testing.T) {
 		t.Fatalf("errors = %v, want the label_key requirement", errs)
 	}
 }
+
+func TestProfileOwnershipRejectsPaddedNames(t *testing.T) {
+	for _, name := range []string{"app-a", " app-a", "app-a ", "\tapp-a\n"} {
+		t.Run(name, func(t *testing.T) {
+			cfg := Defaults()
+			cfg.Listen = ListenConfig{Socket: "/tmp/sockguard-profile-test.sock", SocketMode: "0600"}
+			cfg.Ownership.LabelKey = "com.sockguard.owner"
+			cfg.Clients.Profiles = []ClientProfileConfig{{Name: name, Rules: ownerScopesProfiles(t)[0].Rules, Ownership: ClientProfileOwnershipConfig{Owner: ptr("A")}}}
+			cfg.Clients.UnixPeerProfiles = []ClientUnixPeerProfileAssignmentConfig{{Profile: "app-a", UIDs: []uint32{1000}}}
+			err := ValidateStructural(&cfg)
+			if name == "app-a" {
+				if err != nil {
+					t.Fatal(err)
+				}
+			} else if err == nil || !strings.Contains(err.Error(), "whitespace") {
+				t.Fatalf("padded profile validation = %v, want whitespace refusal", err)
+			}
+		})
+	}
+}

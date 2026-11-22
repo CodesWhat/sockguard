@@ -37,6 +37,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Reject whitespace-padded client-profile names instead of allowing profile selection to fall back to the root owner. Admin image writes retain destination-parser refusals, including repository-wide pulls, so every accepted named create participates in the shared locks.
+
 - Admin commits retain mandatory request-shape refusals, so a LABEL change or ambiguous source/destination cannot bypass the admin owner stamp and create-name lock. Valid cross-owner admin commits remain allowed and stamped.
 
 - A fractional `limits.rate.tokens_per_second` with `burst` omitted no longer denies every request. The omitted burst resolved to the rate itself (0.5 for a rate of 0.5), a bucket that could never hold the one token a request costs, so the profile returned 429 forever. An omitted burst now resolves to `max(1, tokens_per_second)`, and an explicit `burst` below 1 is rejected at startup and on reload instead of being accepted.

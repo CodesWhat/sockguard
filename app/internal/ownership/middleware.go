@@ -390,11 +390,18 @@ func middlewareWithPullCheck(
 					denyOwnershipMutation(w, r, err)
 					return
 				}
-				// A rejected commit shape may skip the stamp or hide its name.
-				// Admin scope cannot forward an unstamped or unlocked create.
-				if r.Method == http.MethodPost && isCommitPath(normPath) && adminRefs != nil && adminRefs.denyReason != "" {
-					logging.SetDeniedWithCode(w, r, reasonCodeOwnerPolicyDeniedAccess, adminRefs.denyReason, nil)
-					_ = httpjson.Write(w, http.StatusForbidden, httpjson.ErrorResponse{Message: adminRefs.denyReason})
+				// Request-shape refusals still apply: admin scope skips owner
+				// comparisons, not the parsing needed to stamp and lock creates.
+				reason := ""
+				if adminRefs != nil {
+					reason = adminRefs.denyReason
+					if reason == "" && adminRefs.imageTag != nil {
+						reason = adminRefs.imageTag.denyReason
+					}
+				}
+				if reason != "" {
+					logging.SetDeniedWithCode(w, r, reasonCodeOwnerPolicyDeniedAccess, reason, nil)
+					_ = httpjson.Write(w, http.StatusForbidden, httpjson.ErrorResponse{Message: reason})
 					return
 				}
 				release, ok := acquireCreateLocks(w, r, opts, adminRefs)

@@ -367,6 +367,8 @@ func TestServeChainOwnerScopesFollowReloadedConfig(t *testing.T) {
 	socketPath := shortSocketPath(t, "scope-reload")
 	daemon := &ownerScopesDaemon{containers: map[string]map[string]string{}}
 	daemon.seed("a1", "A")
+	daemon.seed("b1", "B")
+	daemon.seed("adm1", "ADM")
 	startUnixHTTPUpstream(t, socketPath, daemon)
 	cfg := ownerScopesConfig(socketPath)
 	cfg.Clients.SourceIPProfiles = cfg.Clients.SourceIPProfiles[:2]
@@ -406,7 +408,7 @@ func TestServeChainOwnerScopesFollowReloadedConfig(t *testing.T) {
 		f.swappable.ServeHTTP(rec, req)
 		return rec
 	}
-	if rec := request(true, http.MethodGet, "/containers/a1/json", ""); rec.Code != http.StatusOK {
+	if rec := request(true, http.MethodGet, "/containers/b1/json", ""); rec.Code != http.StatusOK {
 		t.Fatalf("admin before reload = %d %s", rec.Code, rec.Body.String())
 	}
 	candidate := cfg
@@ -424,6 +426,9 @@ func TestServeChainOwnerScopesFollowReloadedConfig(t *testing.T) {
 	}
 	if owner, _ := daemon.labelOf("a2"); owner != "C" {
 		t.Errorf("new owner stamp = %q, want C", owner)
+	}
+	if rec := request(true, http.MethodGet, "/containers/adm1/json", ""); rec.Code != http.StatusOK {
+		t.Fatalf("admin own inspect after reload = %d %s", rec.Code, rec.Body.String())
 	}
 	for _, admin := range []bool{false, true} {
 		if rec := request(admin, http.MethodGet, "/containers/a1/json", ""); rec.Code != http.StatusForbidden {
@@ -628,6 +633,8 @@ func TestServeChainOwnerNameLocksSurviveReload(t *testing.T) {
 						case <-r.Context().Done():
 							return
 						}
+						w.WriteHeader(http.StatusBadGateway)
+						return
 					}
 				}
 				daemon.ServeHTTP(w, r)
@@ -700,18 +707,22 @@ func TestServeChainOwnerNameLocksSurviveReload(t *testing.T) {
 			release.Do(func() { close(unblock) })
 			select {
 			case first := <-firstDone:
-				if first.Code != http.StatusCreated {
+				if first.Code != http.StatusBadGateway {
 					t.Fatalf("first create = %d %s", first.Code, first.Body.String())
 				}
 			case <-time.After(5 * time.Second):
 				t.Fatal("first create did not finish after release")
 			}
 			retry := httptest.NewRecorder()
-			retryReq := request(ownerScopesIPA)
-			retryReq.URL.RawQuery = "name=after-reload"
+			retryCtx, retryCancel := context.WithTimeout(t.Context(), time.Second)
+			defer retryCancel()
+			retryReq := request(ownerScopesIPB).WithContext(retryCtx)
 			handler.ServeHTTP(retry, retryReq)
 			if retry.Code != http.StatusCreated {
 				t.Errorf("retry = %d %s, want create after lock release", retry.Code, retry.Body.String())
+			}
+			if owner, _ := daemon.labelOf("shared"); owner != "B" {
+				t.Errorf("retry stamp = %q, want B", owner)
 			}
 			if got := creates.Load(); got != 2 {
 				t.Errorf("forwarded creates after retry = %d, want 2", got)

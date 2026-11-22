@@ -227,7 +227,6 @@ func TestServeChainTwoOwnersCannotReachEachOther(t *testing.T) {
 		{"A inspects own network by ID prefix", "GET", "/v1.45/networks/" + aNetworkPrefix, ""},
 		{"A stops own container by ID prefix", "POST", "/v1.45/containers/" + aContainerPrefix + "/stop", ""},
 		{"A inspects own secret by ID prefix", "GET", "/v1.45/secrets/" + aSecretPrefix, ""},
-		{"A deletes own secret by ID prefix", "DELETE", "/v1.45/secrets/" + aSecretPrefix, ""},
 	} {
 		if status, body := h.do(ownerScopesIPA, a.method, a.path, a.body); status >= 400 {
 			t.Errorf("%s: status = %d, want success; body %s", a.label, status, body)
@@ -256,6 +255,15 @@ func TestServeChainTwoOwnersCannotReachEachOther(t *testing.T) {
 		if strings.Contains(body, "vol-data-of-A") {
 			t.Errorf("%s: leaks A data: %s", a.label, body)
 		}
+	}
+	if !h.daemon.exists("secret", "a-secret") {
+		t.Fatal("foreign attempts removed A's secret")
+	}
+	if status, body := h.do(ownerScopesIPA, http.MethodDelete, "/v1.45/secrets/"+aSecretPrefix, ""); status != http.StatusNoContent {
+		t.Fatalf("own secret delete = %d %s", status, body)
+	}
+	if h.daemon.exists("secret", "a-secret") {
+		t.Error("own secret delete did not remove the secret")
 	}
 }
 
@@ -323,10 +331,20 @@ func TestServeChainTwoOwnersListsAndPrunesStayScoped(t *testing.T) {
 			t.Errorf("A's prune did not remove its own %s %s", kind, name)
 		}
 	}
-	// A prune that already names filters keeps the owner narrowing.
+	// A prune that already names filters keeps both constraints.
+	h.daemon.add("volume", "a-match", "A", func(r *tenantRes) { r.labels["x"] = "y" })
+	h.daemon.add("volume", "b-match", "B", func(r *tenantRes) { r.labels["x"] = "y" })
 	filters := url.QueryEscape(`{"label":["x=y"]}`)
 	if status, _ := h.do(ownerScopesIPB, http.MethodPost, "/v1.45/volumes/prune?filters="+filters, ""); status != http.StatusOK {
 		t.Errorf("B prune with its own filters status = %d", status)
+	}
+	if h.daemon.exists("volume", "b-match") {
+		t.Error("filtered prune did not delete matching B volume")
+	}
+	for _, name := range []string{"a-match", "b-vol"} {
+		if !h.daemon.exists("volume", name) {
+			t.Errorf("filtered prune removed protected volume %s", name)
+		}
 	}
 }
 
