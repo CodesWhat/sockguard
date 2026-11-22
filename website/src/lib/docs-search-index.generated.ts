@@ -196,6 +196,7 @@ export const DOCS_SEARCH_ITEMS: [page: number, heading: string, anchor: string][
   [10,"Response body","response-body-1"],
   [10,"Confirming a reload took effect","confirming-a-reload-took-effect"],
   [11,"",""],
+  [11,"Per-profile owners (unreleased v3.2, experimental)","per-profile-owners-unreleased-v32-experimental"],
   [11,"Release availability","release-availability"],
   [11,"From Sockguard v2.1 to v2.2","from-sockguard-v21-to-v22"],
   [11,"Upgrading to v2.3","upgrading-to-v23"],
