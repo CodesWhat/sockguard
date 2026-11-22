@@ -383,11 +383,18 @@ func middlewareWithPullCheck(
 			}
 
 			if opts.AllOwners {
-				// Stamp creates, check nothing. mutateOwnershipRequest skips
-				// the list-filter injection for AllOwners.
+				// Stamp creates while skipping resource owner comparisons.
+				// mutateOwnershipRequest skips list filters for AllOwners.
 				adminRefs, err := mutateOwnershipRequest(r, normPath, opts)
 				if err != nil {
 					denyOwnershipMutation(w, r, err)
+					return
+				}
+				// A rejected commit shape may skip the stamp or hide its name.
+				// Admin scope cannot forward an unstamped or unlocked create.
+				if r.Method == http.MethodPost && isCommitPath(normPath) && adminRefs != nil && adminRefs.denyReason != "" {
+					logging.SetDeniedWithCode(w, r, reasonCodeOwnerPolicyDeniedAccess, adminRefs.denyReason, nil)
+					_ = httpjson.Write(w, http.StatusForbidden, httpjson.ErrorResponse{Message: adminRefs.denyReason})
 					return
 				}
 				release, ok := acquireCreateLocks(w, r, opts, adminRefs)
