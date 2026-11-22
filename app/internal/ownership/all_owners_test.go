@@ -2,6 +2,7 @@ package ownership
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -187,5 +188,48 @@ func TestAllOwnersTaggedPullSharesTenantDestinationLock(t *testing.T) {
 	}
 	if first.Code != http.StatusCreated || locks.size() != 0 {
 		t.Errorf("admin status=%d, remaining keys=%d", first.Code, locks.size())
+	}
+}
+
+func TestAllOwnersServiceTemplatesRemainStampedAndLocked(t *testing.T) {
+	t.Parallel()
+	for _, path := range []string{"/services/create", "/services/foreign/update?version=1"} {
+		t.Run(path, func(t *testing.T) {
+			locks := NewKeyedLocks(0, 0)
+			forwarded := false
+			inspect := func(context.Context, dockerresource.Kind, string) (map[string]string, bool, error) {
+				t.Error("admin service must not authorize referenced resource owners")
+				return nil, false, nil
+			}
+			next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				forwarded = true
+				var body struct {
+					Labels       map[string]string
+					TaskTemplate struct {
+						ContainerSpec struct{ Labels map[string]string }
+					}
+				}
+				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+					t.Fatal(err)
+				}
+				if body.Labels[DefaultLabelKey] != "adm" || body.TaskTemplate.ContainerSpec.Labels[DefaultLabelKey] != "adm" {
+					t.Errorf("service/task owner stamps = %+v", body)
+				}
+				if locks.size() == 0 {
+					t.Error("service name is not locked")
+				}
+				w.WriteHeader(http.StatusCreated)
+			})
+			handler := middlewareWithDeps(testLogger(), Options{Owner: "adm", AllOwners: true, Locks: locks}, inspect, nil)(next)
+			req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(`{"Name":"svc","TaskTemplate":{"ContainerSpec":{"Image":"example/app:1","Mounts":[{"Type":"volume","Source":"data-{{.Task.Slot}}","Target":"/data"}]}}}`))
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+			if rec.Code != http.StatusCreated || !forwarded {
+				t.Errorf("admin service = %d %s, forwarded=%v", rec.Code, rec.Body.String(), forwarded)
+			}
+			if locks.size() != 0 {
+				t.Error("service name lock was not released")
+			}
+		})
 	}
 }

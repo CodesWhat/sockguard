@@ -390,11 +390,16 @@ func middlewareWithPullCheck(
 					denyOwnershipMutation(w, r, err)
 					return
 				}
-				// Request-shape refusals still apply: admin scope skips owner
-				// comparisons, not the parsing needed to stamp and lock creates.
+				// Image writes must still expose every destination for stamping
+				// and locking. Refusals about referenced resource owners, such
+				// as service volume templates, do not apply to admin scope.
 				reason := ""
 				if adminRefs != nil {
-					reason = adminRefs.denyReason
+					imageWrite := isImageCreateRoutePath(r.Method, normPath) || isImageLoadRoutePath(r.Method, normPath) ||
+						(r.Method == http.MethodPost && (isCommitPath(normPath) || normPath == "/build" || normPath == libpodPrefix+"build"))
+					if imageWrite {
+						reason = adminRefs.denyReason
+					}
 					if reason == "" && adminRefs.imageTag != nil {
 						reason = adminRefs.imageTag.denyReason
 					}

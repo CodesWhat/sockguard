@@ -37,6 +37,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Admin service creates and updates keep accepting named-volume templates while preserving service/task owner stamps and service-name locks. Mandatory image destination parsing stays in force without restoring tenant-only reference checks to admin scope.
+
 - Reject whitespace-padded client-profile names instead of allowing profile selection to fall back to the root owner. Admin image writes retain destination-parser refusals, including repository-wide pulls, so every accepted named create participates in the shared locks.
 
 - Admin commits retain mandatory request-shape refusals, so a LABEL change or ambiguous source/destination cannot bypass the admin owner stamp and create-name lock. Valid cross-owner admin commits remain allowed and stamped.
