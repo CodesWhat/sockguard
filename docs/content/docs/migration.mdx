@@ -3,6 +3,16 @@ title: Migration
 description: Upgrade to stable v2.4, evaluate the v3 release candidate, or migrate from another Docker socket proxy.
 ---
 
+## Per-profile owners (unreleased v3.2, experimental)
+
+Existing configurations keep their root owner and shipped presets are unchanged. To share a proxy across owners, keep `ownership.label_key` at the root and assign `clients.profiles[].ownership.owner` to each profile. Unset fields inherit the root; an explicit empty profile owner is invalid. Existing resource labels are not migrated when an owner changes, so relabel resources through a trusted administrative path before switching an existing consumer's owner, or create new resources for that owner.
+
+Select profiles with client certificates or Unix peer credentials. A dedicated listener can restrict `allowed_profiles`, but that restriction does not select a profile. Source-IP and default-profile selection of a different owner requires the explicit `ownership.insecure_allow_weak_owner_selection` risk acknowledgement. Do not use that acknowledgement for mutually untrusted clients sharing a bridge.
+
+An admin profile may use `ownership.scope: all`, with an effective owner for create stamps. It can act across owners, but all other policy checks remain. Source-IP and default-profile assignments to that scope are always refused. Removing the scope or changing the owner on reload affects subsequent requests; in-flight requests retain their dispatched policy.
+
+Owner-scoped creates use bounded in-process create-name locks, including single-owner configurations. The pool survives hot reload, and Docker Hub aliases share a destination lock. Contention can return 503 (`owner_name_lock_timeout` after 10 seconds, or `owner_name_lock_capacity` at capacity); clients must handle that refusal. These locks do not coordinate other proxies or raw-socket access and do not protect every existing-resource lookup/use race. Owner-scoped builds remain unavailable. Keep separate daemons for workloads requiring a strict tenant boundary. See [configuration](./configuration#per-profile-ownership) and [security boundaries](./security#layer-6-owner-label-isolation).
+
 ## Release availability
 
 | Line | Availability | Upgrade guidance |

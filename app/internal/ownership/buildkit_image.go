@@ -12,7 +12,7 @@ import (
 func NewBuildkitImageAuthorizer(rt http.RoundTripper, opts Options) func(context.Context, string) error {
 	inspector := upstreamInspector{client: dockerclient.NewWithRoundTripper(rt)}
 	return func(ctx context.Context, name string) error {
-		if opts.Owner == "" {
+		if opts.Owner == "" || opts.AllOwners {
 			return nil
 		}
 		destination, problem := imageDestinationFor(name, "", imageTagNamingFor(opts.UpstreamFlavor))

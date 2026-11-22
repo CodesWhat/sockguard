@@ -342,6 +342,12 @@ the same first exporter, and owner mutations update both copies together.
 
 ## Layer 6: Owner Label Isolation
 
+**Unreleased v3.2: per-profile owners are experimental.** A client profile can override the root owner through `clients.profiles[].ownership.owner`. Unset fields inherit the root; each request uses the owner of its resolved profile, and requests without a profile use the root owner. The label key remains global. Client certificates and Unix peer credentials provide strong profile selection. Source-IP and default-profile assignments require `ownership.insecure_allow_weak_owner_selection: true` when they select an owner different from the root. A listener's `allowed_profiles` admits an already-selected profile; it does not select or authenticate that profile.
+
+An admin profile can set `ownership.scope: all` to read and act across owners, including unowned resources. Its creates still receive its effective owner label, and other request policies still apply. This scope requires an owner and cannot be selected through source-IP or default-profile assignments, even with the weak-selection override. Removing admin scope on reload restricts subsequent requests; requests already dispatched finish under their original policy.
+
+Multiple profile owners do not make the Docker daemon a general tenant boundary. Create-name locks coordinate requests through one process only. Other proxies and raw-socket writers bypass them; existing-resource references can still change between lookup and use. Keep workloads requiring a strict tenant boundary on separate daemons. See [per-profile ownership configuration](./configuration#per-profile-ownership) for selector and lock limits.
+
 When `ownership.owner` is set, Sockguard stamps label-capable creates, build-produced images and commit-produced images with an owner label, injects owner filters into list, prune and events requests, and freshly inspects target resources on individual requests to deny cross-owner access. Ownership decisions are intentionally uncached because Docker names and image tags can be rebound to different resources. The checks cover owned containers, images, networks, volumes, services, tasks, secrets, configs, nodes, and swarm state, with service writes stamping both the service and its task template so downstream tasks inherit the same owner identity, `/nodes` using Docker's `node.label` filter key, and unlabeled node/swarm resources only claimable through their update paths.
 
 A compat container create or service spec is checked against the volumes, networks, images, secrets and configs it names. Duplicates collapse to one check, and a body that names more than 256 distinct resources is refused with a `403` instead of authorized in part. Native Podman creates and builds have the same 256 bound.
@@ -440,10 +446,7 @@ resolves a unique ID prefix, which Podman's create doesn't, so the lookup
 accepts a secret only when its ID or name is the one the request named and
 reads a prefix-only match as absent. On a Podman upstream a create whose name is lowercase hex of fewer than 25
 characters is refused outright, so the answer doesn't reveal which hex strings
-begin an ID. The check is a lookup
-before the write, so another owner's proxy, or anything writing to the socket
-directly, can still create the name in between. One sockguard has one owner, so
-nothing going through the same instance can. A flag counts as set unless Podman would read
+begin an ID. An in-process lock serializes owner-scoped creates for the same secret name from the preflight through the upstream response. Another owner's proxy, or anything writing to the socket directly, can still create the name between the lookup and write. The lock does not coordinate those writers. A flag counts as set unless Podman would read
 it as false. A `replace` or `ignore` that's repeated or spelled in another case
 is refused, and so is a `name` like that while either flag is set, since Podman
 would act on the last one. The names `.` and `..` are refused while a flag is
@@ -700,9 +703,7 @@ before the pull, tells. A name that list already held is never untagged, even on
 new image. Any other name on it, and every name when that list fails
 or holds more than 256 images, is named in an error line and left alone. Before
 a name found by ID is untagged it is inspected again, and it is skipped, with a
-line in the stream, if it no longer points at the image the pull reported. That
-leaves one race: two tenants pulling the same image at the same moment can see
-the check report a name instead of untagging it, and a concurrent pull of the same reference that writes the name after the list but before the check can still get it untagged, which is the accepted residual. A pull by digest writes no tag,
+line in the stream, if it no longer points at the image the pull reported. In-process destination-name locks serialize owner-scoped pulls and other supported image-name creates through this instance until their responses finish. Concurrent writers through another proxy or the raw socket can still change a name after the list and before the check, causing it to be reported rather than untagged, or causing a newly assigned name to be untagged. That remains an external-writer race; the locks are not daemon-wide transactions. A pull by digest writes no tag,
 so `repo@sha256:...` is inspected after the pull instead. It is reported and left in place: a digest reference pins its content, so a client can't make a victim's
 reference resolve to other bytes, and removing by digest could drop an image
 other names still hold. A foreign-labelled image pulled by digest stays in place with an error line, which is accepted: Sockguard can't prove it's new without risking another tenant's image. An image with another owner's label gets `owner policy:

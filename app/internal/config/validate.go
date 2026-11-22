@@ -1039,8 +1039,8 @@ func validateRequestBody(cfg *Config) []string {
 	errs = append(errs, validateNetworkEndpointConfig(cfg)...)
 	errs = append(errs, validateBuildkitAckMutualExclusion(cfg)...)
 	errs = append(errs, validateClientsConfig(cfg)...)
-	if cfg.Ownership.Owner != "" && cfg.Ownership.LabelKey == "" {
-		errs = append(errs, requiredWhenError("ownership.label_key", "ownership.owner is set"))
+	if cfg.OwnershipActive() && cfg.Ownership.LabelKey == "" {
+		errs = append(errs, requiredWhenError("ownership.label_key", "ownership.owner or a client profile ownership.owner is set"))
 	}
 	return errs
 }
@@ -1288,10 +1288,7 @@ func validateMutationInjectLabels(prefix string, rule MutationRuleConfig, cfg *C
 	// (validateRequestBody); read it as-is here rather than re-deriving the
 	// Defaults() fallback, so this check is exact even if that other
 	// validation error is also present in the same run.
-	reservedLabelKey := ""
-	if cfg.Ownership.Owner != "" {
-		reservedLabelKey = cfg.Ownership.LabelKey
-	}
+	reservedLabelKey := ownerReservedLabelKey(cfg)
 
 	keys := make([]string, 0, len(labels))
 	for key := range labels {
@@ -1521,7 +1518,73 @@ func validateClientsConfig(cfg *Config) []string {
 	errs = append(errs, validateClientsSourceIPProfiles(cfg, profilesByName)...)
 	errs = append(errs, validateClientsCertificateProfiles(cfg, profilesByName)...)
 	errs = append(errs, validateClientsUnixPeerProfiles(cfg, profilesByName)...)
+	errs = append(errs, validateClientProfileOwnerships(cfg)...)
 	return errs
+}
+
+// validateClientProfileOwnerships checks each profile's ownership override:
+// the owner may not be explicitly empty, scope must be "" or "all", scope all
+// needs an effective owner to stamp creates with, and a profile whose owner
+// differs from the root (or that lifts scoping) may not be reachable through
+// a weak selector. Weak means anything a caller can influence or that every
+// unmatched client falls into: clients.source_ip_profiles (a source address
+// on a shared bridge) and clients.default_profile. client_certificate_profiles
+// and unix_peer_profiles are strong. clients.container_labels is not a
+// selector at all (it only attaches extra ACL rules), and a listener's
+// allowed_profiles is an admission gate applied after selection, so neither
+// is considered here. An effective owner inherited from the root counts for
+// the scope all requirement.
+func validateClientProfileOwnerships(cfg *Config) []string {
+	var errs []string
+	weak := weakProfileSelectors(cfg)
+	for i := range cfg.Clients.Profiles {
+		profile := &cfg.Clients.Profiles[i]
+		prefix := fmt.Sprintf("clients.profiles[%d].ownership", i)
+		own := profile.Ownership
+		if own.Owner != nil && strings.TrimSpace(*own.Owner) == "" {
+			errs = append(errs, fmt.Sprintf("%s.owner must not be empty when set; omit it to inherit ownership.owner", prefix))
+		}
+		scopeValid := true
+		switch own.Scope {
+		case "", OwnershipScopeAll:
+		default:
+			scopeValid = false
+			errs = append(errs, fmt.Sprintf("%s.scope must be empty or %q, got %q", prefix, OwnershipScopeAll, own.Scope))
+		}
+		eff := cfg.EffectiveOwnership(profile)
+		if scopeValid && eff.AllOwners && strings.TrimSpace(eff.Owner) == "" {
+			errs = append(errs, fmt.Sprintf("%s.scope %q requires an owner to stamp creates with; set %s.owner or ownership.owner", prefix, OwnershipScopeAll, prefix))
+		}
+		name := strings.TrimSpace(profile.Name)
+		selectors := weak[name]
+		if name == "" || len(selectors) == 0 {
+			continue
+		}
+		if scopeValid && eff.AllOwners {
+			errs = append(errs, fmt.Sprintf("%s.scope %q must not be reachable through a weak selector (%s); select it with clients.client_certificate_profiles or clients.unix_peer_profiles. insecure_allow_weak_owner_selection does not apply to scope all",
+				prefix, OwnershipScopeAll, strings.Join(selectors, ", ")))
+			continue
+		}
+		if eff.Owner != "" && eff.Owner != cfg.Ownership.Owner && !cfg.Ownership.InsecureAllowWeakOwnerSelection {
+			errs = append(errs, fmt.Sprintf("%s.owner %q differs from ownership.owner and the profile is reachable through a weak selector (%s); select it with clients.client_certificate_profiles or clients.unix_peer_profiles, or set ownership.insecure_allow_weak_owner_selection: true to accept the spoofing risk",
+				prefix, eff.Owner, strings.Join(selectors, ", ")))
+		}
+	}
+	return errs
+}
+
+// weakProfileSelectors maps a profile name to the weak selector paths that
+// can reach it.
+func weakProfileSelectors(cfg *Config) map[string][]string {
+	weak := map[string][]string{}
+	for i, assignment := range cfg.Clients.SourceIPProfiles {
+		name := strings.TrimSpace(assignment.Profile)
+		weak[name] = append(weak[name], fmt.Sprintf("clients.source_ip_profiles[%d]", i))
+	}
+	if name := strings.TrimSpace(cfg.Clients.DefaultProfile); name != "" {
+		weak[name] = append(weak[name], "clients.default_profile")
+	}
+	return weak
 }
 
 func validateClientsAllowedCIDRs(cfg *Config) []string {
@@ -1737,6 +1800,9 @@ func validateClientProfile(index int, profile ClientProfileConfig, profilesByNam
 
 	prefix := fmt.Sprintf("clients.profiles[%d]", index)
 	name := strings.TrimSpace(profile.Name)
+	if name != "" && name != profile.Name {
+		return []string{fmt.Sprintf("%s.name must not have leading or trailing whitespace", prefix)}
+	}
 	switch name {
 	case "":
 		errs = append(errs, requiredFieldError(prefix+".name"))
@@ -2401,7 +2467,7 @@ func validateLogOutputField(fieldPath, output string) error {
 // Defaults() fallback, matching validateMutationInjectLabels: an empty
 // LabelKey alongside a configured owner is its own error, reported separately.
 func ownerReservedLabelKey(cfg *Config) string {
-	if cfg.Ownership.Owner == "" {
+	if !cfg.OwnershipActive() {
 		return ""
 	}
 	return cfg.Ownership.LabelKey

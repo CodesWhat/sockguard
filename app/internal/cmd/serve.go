@@ -623,9 +623,10 @@ func buildServeHandlerChainWithRuntime(b serveHandlerBuild) (http.Handler, func(
 // rebuild happens. Chain-scoped goroutines (rate-limit sampler, per-profile
 // Limiter eviction) are tracked separately by reloadCoordinator.
 type serveRuntime struct {
-	metrics   *metrics.Registry
-	health    *health.Monitor
-	readiness *health.Monitor
+	ownerNameLocks *ownership.KeyedLocks
+	metrics        *metrics.Registry
+	health         *health.Monitor
+	readiness      *health.Monitor
 	// resolver is the shared upstream dial seam (endpoint selection, pooling,
 	// TLS, failover). All request paths and side channels route through it so
 	// failover is coherent across the proxy, hijack, and inspect calls.
@@ -655,7 +656,7 @@ type serveRuntime struct {
 }
 
 func newServeRuntime(cfg *config.Config, logger *slog.Logger, deps *serveDeps) (*serveRuntime, error) {
-	runtime := &serveRuntime{}
+	runtime := &serveRuntime{ownerNameLocks: ownership.NewKeyedLocks(0, 0)}
 	if cfg.Metrics.Enabled {
 		runtime.metrics = metrics.NewRegistry()
 	}
@@ -794,7 +795,7 @@ func attachRuntimeInspectors(cfg *config.Config, res *upstream.Resolver, policy 
 	// image config in the archive, for the ownership layer to refuse a load
 	// carrying another owner's label. The key is ownership's, not a profile's.
 	policy.ImageLoad.OwnerLabelKey = ""
-	if cfg.Ownership.Owner != "" {
+	if cfg.OwnershipActive() {
 		policy.ImageLoad.OwnerLabelKey = cfg.Ownership.LabelKey
 		if policy.ImageLoad.OwnerLabelKey == "" {
 			policy.ImageLoad.OwnerLabelKey = ownership.DefaultLabelKey
@@ -882,7 +883,7 @@ func buildServeHandlerLayersWithRuntime(b serveHandlerBuild) ([]serveHandlerLaye
 		// lookup, and the guard still runs before hijack/proxy for every
 		// request ownership allowed.
 		namedServeHandlerLayer("withResourceLimitGuard", withResourceLimitGuard(cfg, resolver, logger, clientProfiles)),
-		namedServeHandlerLayer("withOwnership", withOwnership(cfg, resolver, logger, runtimeUpstreamCapabilities(runtime))),
+		namedServeHandlerLayer("withOwnership", withOwnership(cfg, resolver, logger, runtimeUpstreamCapabilities(runtime), runtime.ownerNameLocks)),
 		namedServeHandlerLayer("withVisibility", withVisibility(cfg, resolver, logger, runtimeUpstreamCapabilities(runtime))),
 		namedServeHandlerLayer("withFilter", withFilter(cfg, resolver, logger, rules, clientProfiles, runtimeUpstreamFlavor(runtime), runtimeCgroupV1Func(runtime), runtimeUpstreamCapabilities(runtime).ProbedDocker)),
 		// withFormBodyGuard is appended right AFTER withFilter so it executes
@@ -1116,19 +1117,21 @@ func effectiveShutdownGracePeriod(cfg *config.Config) time.Duration {
 func withBuildkitMediator(cfg *config.Config, res *upstream.Resolver, logger *slog.Logger, flavor upstreamflavor.Flavor) func(http.Handler) http.Handler {
 	warnIfOpaqueBuildkitTunnelDeprecated(cfg, logger)
 	defaultPolicy := cfg.RequestBody.Buildkit.ToPolicy(cfg.RequestBody.Build)
-	ownerPolicy := buildkitproxy.ImageOwnershipPolicy{
-		Owner: cfg.Ownership.Owner, LabelKey: cfg.Ownership.LabelKey,
-		Authorize: ownership.NewBuildkitImageAuthorizer(upstreamResolverFor(res, cfg), ownership.Options{
-			Owner: cfg.Ownership.Owner, LabelKey: cfg.Ownership.LabelKey,
-			AllowUnownedImages: cfg.Ownership.AllowUnownedImages, UpstreamFlavor: flavor,
-		}),
+	scopes := newOwnerScopes(cfg)
+	ownerPolicyFor := func(key ownerScopeKey) buildkitproxy.ImageOwnershipPolicy {
+		return buildkitproxy.ImageOwnershipPolicy{
+			Owner: key.owner, LabelKey: cfg.Ownership.LabelKey,
+			Authorize: ownership.NewBuildkitImageAuthorizer(upstreamResolverFor(res, cfg), ownership.Options{
+				Owner: key.owner, LabelKey: cfg.Ownership.LabelKey,
+				AllowUnownedImages: key.allowUnownedImages, AllOwners: key.allOwners, UpstreamFlavor: flavor,
+			}),
+		}
 	}
-	defaultPolicy.ImageOwnership = ownerPolicy
+	defaultPolicy.ImageOwnership = ownerPolicyFor(scopes.root)
 	profilePolicies := make(map[string]buildkitproxy.Policy, len(cfg.Clients.Profiles))
 	for _, profile := range cfg.Clients.Profiles {
-		profilePolicies[profile.Name] = profile.RequestBody.Buildkit.ToPolicy(profile.RequestBody.Build)
-		policy := profilePolicies[profile.Name]
-		policy.ImageOwnership = ownerPolicy
+		policy := profile.RequestBody.Buildkit.ToPolicy(profile.RequestBody.Build)
+		policy.ImageOwnership = ownerPolicyFor(scopes.keyFor(profile.Name, true))
 		profilePolicies[profile.Name] = policy
 	}
 	mediator := buildkitproxy.NewMediator(res, logger)
@@ -1204,18 +1207,6 @@ func warnOpaqueBuildkitTunnelDeprecatedOnce(cfg *config.Config, logger *slog.Log
 	}
 	once.Do(func() {
 		logger.Warn("insecure_accept_opaque_buildkit_tunnels is deprecated: it admits POST /session and POST /grpc with zero inspection now that request_body.buildkit provides full per-message BuildKit mediation (issue #185); migrate to request_body.buildkit — this flag will be removed in a future major release")
-	})
-}
-
-func withOwnership(cfg *config.Config, res *upstream.Resolver, logger *slog.Logger, capabilities upstreamflavor.Capabilities) func(http.Handler) http.Handler {
-	return ownership.MiddlewareWithRoundTripper(res, logger, ownership.Options{
-		Owner:                           cfg.Ownership.Owner,
-		LabelKey:                        cfg.Ownership.LabelKey,
-		AllowUnownedImages:              cfg.Ownership.AllowUnownedImages,
-		AllowCrossOwnerNamespaceSharing: cfg.Ownership.AllowCrossOwnerNamespaceSharing,
-		UpstreamFlavor:                  capabilities.Flavor,
-		UpstreamProbedDocker:            capabilities.ProbedDocker,
-		PodmanConjunctiveVolumeFilters:  capabilities.PodmanConjunctiveVolumeFilters,
 	})
 }
 
@@ -1880,6 +1871,7 @@ func withAuditLog(auditLogger *logging.AuditLogger, cfg *config.Config) func(htt
 		Listener:          auditListener(cfg),
 		OwnershipOwner:    cfg.Ownership.Owner,
 		OwnershipLabelKey: cfg.Ownership.LabelKey,
+		ProfileOwnership:  auditOwnershipFor(cfg),
 	})
 }
 

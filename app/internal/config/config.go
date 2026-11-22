@@ -1611,6 +1611,9 @@ type ClientProfileConfig struct {
 	RequestBody RequestBodyConfig           `mapstructure:"request_body"`
 	Rules       []RuleConfig                `mapstructure:"rules"`
 	Limits      LimitsConfig                `mapstructure:"limits"`
+	// Ownership overrides the root ownership block for requests this profile
+	// selects. Unset fields inherit the root values.
+	Ownership ClientProfileOwnershipConfig `mapstructure:"ownership"`
 
 	// Profile request-body blocks live inside a slice, so Viper does not apply
 	// Config's reflected leaf defaults or root-level endpoint_config provenance
@@ -1806,6 +1809,82 @@ type OwnershipConfig struct {
 	// and denied too (consistent with every other container-targeting
 	// ownership check), so only a same-owner ref is allowed when this is false.
 	AllowCrossOwnerNamespaceSharing bool `mapstructure:"allow_cross_owner_namespace_sharing"`
+	// InsecureAllowWeakOwnerSelection acknowledges that a client profile
+	// carrying its own ownership.owner (or scope: all) may be selected by a
+	// weak selector: clients.source_ip_profiles or clients.default_profile.
+	// A source IP on a shared bridge is spoofable by any container on it, and
+	// default_profile is what every unmatched client gets, so by default the
+	// validator refuses that combination. Setting this true accepts it for
+	// per-profile owners. It never admits scope: all on a weak selector.
+	InsecureAllowWeakOwnerSelection bool `mapstructure:"insecure_allow_weak_owner_selection"`
+}
+
+// ClientProfileOwnershipConfig is a client profile's ownership override.
+// Every field is optional and an unset field inherits the root ownership
+// block. label_key is deliberately absent: it stays one key per instance, so
+// no profile can stamp resources another profile's filter never looks at.
+type ClientProfileOwnershipConfig struct {
+	// Owner is a pointer so "unset" (inherit ownership.owner) and an explicit
+	// empty string (refused by validation) are distinguishable.
+	Owner                           *string `mapstructure:"owner"`
+	AllowUnownedImages              *bool   `mapstructure:"allow_unowned_images"`
+	AllowCrossOwnerNamespaceSharing *bool   `mapstructure:"allow_cross_owner_namespace_sharing"`
+	// Scope is "" (the profile's own owner) or "all" (every owner's
+	// resources are visible and actionable; creates are still stamped with
+	// the effective owner).
+	Scope string `mapstructure:"scope"`
+}
+
+// OwnershipScopeAll is the ClientProfileOwnershipConfig.Scope value that
+// lifts owner scoping for a profile.
+const OwnershipScopeAll = "all"
+
+// EffectiveOwnership is the ownership a request runs under after a profile's
+// override is merged over the root ownership block.
+type EffectiveOwnership struct {
+	Owner                           string
+	AllowUnownedImages              bool
+	AllowCrossOwnerNamespaceSharing bool
+	AllOwners                       bool
+}
+
+// EffectiveOwnership merges profile over the root ownership block. A nil
+// profile yields the root values.
+func (c *Config) EffectiveOwnership(profile *ClientProfileConfig) EffectiveOwnership {
+	eff := EffectiveOwnership{
+		Owner:                           c.Ownership.Owner,
+		AllowUnownedImages:              c.Ownership.AllowUnownedImages,
+		AllowCrossOwnerNamespaceSharing: c.Ownership.AllowCrossOwnerNamespaceSharing,
+	}
+	if profile == nil {
+		return eff
+	}
+	o := profile.Ownership
+	if o.Owner != nil {
+		eff.Owner = *o.Owner
+	}
+	if o.AllowUnownedImages != nil {
+		eff.AllowUnownedImages = *o.AllowUnownedImages
+	}
+	if o.AllowCrossOwnerNamespaceSharing != nil {
+		eff.AllowCrossOwnerNamespaceSharing = *o.AllowCrossOwnerNamespaceSharing
+	}
+	eff.AllOwners = o.Scope == OwnershipScopeAll
+	return eff
+}
+
+// OwnershipActive reports whether the root or any client profile has an
+// effective owner, i.e. whether owner scoping is in force for some request.
+func (c *Config) OwnershipActive() bool {
+	if c.Ownership.Owner != "" {
+		return true
+	}
+	for i := range c.Clients.Profiles {
+		if c.EffectiveOwnership(&c.Clients.Profiles[i]).Owner != "" {
+			return true
+		}
+	}
+	return false
 }
 
 // HealthConfig configures the health check endpoint.

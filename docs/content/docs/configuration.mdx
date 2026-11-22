@@ -1081,7 +1081,7 @@ Setting `ownership.owner` turns on per-proxy resource ownership isolation. Sockg
 
 Ownership authorization always performs a fresh Docker inspect. It deliberately does not reuse the short-lived visibility cache because Docker names and image tags are mutable: after a delete/recreate or retag, a cached positive label result could otherwise authorize a different resource. Repeated references inside one payload are deduplicated before inspection.
 
-Docker reuses words such as `create`, `prune`, and `json` for collection actions, but those words are also legal resource names. Ownership path classification is method-aware and reserves a word only for the exact method and path that performs the collection action. A resource action such as `POST /containers/create/start` still treats `create` as the container identifier and applies the normal owner check. Docker container routes take the whole name before the action suffix, because dockerd accepts slash-bearing names (a legacy `HostConfig.Links` entry registers `/A/x` as an alias of the linked container): `POST /containers/A/x/stop` is authorized as container `A/x`, not `A`. The source container of each `HostConfig.Links` entry on `POST /containers/create` is authorized like any other referenced container. Podman's own routes keep their single-segment names. A service volume mount source or network target that holds a SwarmKit template (`{{`) is refused under ownership, because SwarmKit expands it after the literal text was authorized.
+Docker reuses words such as `create`, `prune`, and `json` for collection actions, but those words are also legal resource names. Ownership path classification is method-aware and reserves a word only for the exact method and path that performs the collection action. A resource action such as `POST /containers/create/start` still treats `create` as the container identifier and applies the normal owner check. Docker container routes take the whole name before the action suffix, because dockerd accepts slash-bearing names (a legacy `HostConfig.Links` entry registers `/A/x` as an alias of the linked container): `POST /containers/A/x/stop` is authorized as container `A/x`, not `A`. The source container of each `HostConfig.Links` entry on `POST /containers/create` is authorized like any other referenced container. Podman's own routes keep their single-segment names. A service volume mount source or network target that holds a SwarmKit template (`{{`) is refused under non-admin ownership, because SwarmKit expands it after the literal text was authorized. Under `scope: all`, service creates and updates can use these templates. Owner stamps and the service-name lock still apply.
 
 Unlabeled nodes and swarm state are denied on reads once ownership is enabled. They can still be claimed through `POST /nodes/*/update` and `POST /swarm/update`, where Sockguard stamps the current owner label into the outgoing update body before forwarding it to Docker. `GET /swarm/unlockkey` and `POST /swarm/leave` (including `force=1`) are owner-checked against the swarm's label like a swarm inspect, so an unlabeled or foreign swarm is denied and only `POST /swarm/update` can claim it.
 
@@ -1090,6 +1090,56 @@ Unlabeled nodes and swarm state are denied on reads once ownership is enabled. T
 **`allow_cross_owner_namespace_sharing` defaults to `false`.** Joining another container's network/PID/IPC namespace via `container:<id>` shares that container's sockets, process visibility, and `/dev/shm` — a full cross-tenant compromise, strictly worse than the access ownership already gates on every other endpoint. As of v1.5, sockguard denies a `container:<ref>` target that belongs to a different owner by default whenever `ownership.owner` is set; same-owner refs still pass, but an unlabeled target is treated as untrusted and denied too — consistent with every other container-targeting ownership check — so only a same-owner join is allowed by default. This is a genuine behavior change for the narrow case of an `ownership.owner` deployment that was already relying on cross-owner `container:` sharing — set `allow_cross_owner_namespace_sharing: true` to restore the old unchecked behavior. This check is independent of the filter-tier `restrict_namespace_sharing` knob described above: it runs whenever `ownership.owner` is configured, regardless of whether `restrict_namespace_sharing` is enabled.
 
 **Owner isolation and visibility policy also cover the libpod (Podman-native) surface (#148).** `POST /libpod/containers/create`, `/pods/create`, `/networks/create`, and `/volumes/create` get the owner label stamped into their `labels` field (libpod's own lowercase convention, except `/libpod/volumes/create` which serializes `Labels` capitalized — Podman's `VolumeCreateOptions` carries no JSON tag on that field); `/libpod/secrets/create` has no JSON body (the body is the raw secret payload), so the label is stamped into its `labels` query parameter instead, a JSON-encoded map, the same way a build's `labels` is. Pods have no Docker-compat equivalent, so they get a dedicated `KindLibpodPod` resource kind with its own list/inspect owner-filtering and visibility coverage; every other libpod list and inspect/action path (containers, networks, volumes, secrets) is owner-filtered and visibility-filtered too, so switching a client from Docker-compat to libpod-native paths is not a way around isolation. Cross-owner pod membership is denied on both sides of the relationship: `POST /libpod/pods/create` joining another owner's host namespaces, and `POST /libpod/containers/create` targeting another owner's pod (`SpecGenerator.pod`) — reusing the same `container:<ref>` namespace-sharing and embedded-resource-reference checks described above, extended to libpod's `{"nsmode":"container","value":"<ref>"}` namespace shape. Denial reasons for libpod-family requests are prefixed `libpod`, matching the convention the libpod body inspectors already use.
+
+### Per-profile ownership
+
+**Unreleased, planned for v3.2. Experimental.** `clients.profiles[].ownership` gives each client profile its own owner, so several consumers can share one Sockguard and each sees and acts only on its own containers, volumes, networks, secrets and images. The root `ownership` block still serves every request that matches no profile.
+
+```yaml
+ownership:
+  label_key: com.sockguard.owner   # one key per instance, root only
+clients:
+  unix_peer_profiles:
+    - profile: app-a
+      uids: [1001]
+    - profile: app-b
+      uids: [1002]
+  profiles:
+    - name: app-a
+      ownership: { owner: app-a }
+      rules: [...]
+    - name: app-b
+      ownership: { owner: app-b, allow_unowned_images: true }
+      rules: [...]
+```
+
+- `owner`, `allow_unowned_images` and `allow_cross_owner_namespace_sharing` override the root values for the requests the profile serves. Anything left unset inherits the root value. `owner: ""` on a profile is refused; omit the key to inherit.
+- `label_key` is not allowed on a profile. A per-profile key would let one profile stamp resources another profile's filter never reads.
+- The owner is fixed when the profile is resolved, before ownership runs. Create stamping, list filtering, inspect checks, the image pull check, `system/df` narrowing, the Podman secret and volume filters and the BuildKit image policy all use that request's owner. A reload rebuilds them, so a changed owner applies to the next request.
+- The same refusals apply to every owned profile: builds, the unscopeable libpod reads and writes, and the other endpoints the single-owner mode refuses. Body and path rules still apply per profile as usual.
+- The audit event's `ownership` object carries the effective `owner` and an `ownership_scope` of `owner` or `all`. At startup Sockguard logs each profile that has its own owner or lifts scoping.
+
+**A per-profile owner is only as strong as the way the profile is selected.** `clients.client_certificate_profiles` and `clients.unix_peer_profiles` are strong selectors. `clients.source_ip_profiles` is weak, since any container on a shared bridge can take an address the assignment allows and a userland proxy can make traffic arrive from the gateway address, and so is `clients.default_profile`, which every unmatched client gets. Config load refuses a profile whose effective owner differs from `ownership.owner` when a weak selector can reach it. Set `ownership.insecure_allow_weak_owner_selection: true` to accept that risk. `clients.container_labels` does not select a profile, and a listener's `allowed_profiles` is an admission check after selection, so neither changes this rule.
+
+**`scope: all`** lifts owner scoping for a profile, for an admin consumer such as Portainer:
+
+```yaml
+clients:
+  unix_peer_profiles:
+    - profile: admin
+      uids: [0]
+  profiles:
+    - name: admin
+      ownership: { owner: admin, scope: all }
+      rules: [...]
+```
+
+- Lists are not narrowed and the profile can inspect, change and delete any owner's resources, including unowned ones. No owner check is made on resources a request names or references.
+- Creates are still stamped with the profile's effective owner, so `scope: all` needs an owner on the profile or the root. An inherited root owner counts.
+- Body and path rules, the build refusals and every other policy gate still apply. This lifts the owner check only. Request shapes whose create destinations cannot be parsed remain refused, including repository-wide image pulls; use an explicit tag or digest. Profile names must not have leading or trailing whitespace.
+- A profile with `scope: all` must not be reachable through `source_ip_profiles` or `default_profile`. `insecure_allow_weak_owner_selection` does not override this.
+
+Sockguard serializes owner-scoped create-by-name requests with in-process locks keyed by resource kind and name. The lock covers container, pod, volume, network, secret, config, service and image names (image pull, retag, commit, import and load destinations), is taken before the owner check and held until the upstream response is done, and is never held across a hijacked connection. A request that cannot get a name within 10 seconds is refused with 503 (`owner_name_lock_timeout`), and one that finds the lock table full (4096 names) with 503 (`owner_name_lock_capacity`). The lock set survives hot reload, including transitions between single-owner and multiple-owner configurations. Docker Hub image aliases share one destination lock. Because an image pull holds its destination names for the whole pull, two owners pulling the same reference at once can see the second refused with 503; retry it. The locks only cover the instance they run in. Not locked: a request that names a resource it already owns while its owner deletes and another owner re-creates that name between the check and the write, and renames, which the daemon refuses on a name conflict. This feature is experimental. These locks do not make the daemon a strict tenant boundary; use separate daemons when that boundary is required. See [Owner Label Isolation](./security#layer-6-owner-label-isolation).
 
 ## Admission Mutations
 
@@ -1643,7 +1693,7 @@ Audit logs use a separate sink from the access logger:
 
 File sinks (`log.output` and `log.audit.output` set to a path) buffer in memory and survive transient write errors such as a full disk. Unwritten bytes stay in a bounded 4 MiB pending buffer and are retried on the next flush, so records land once and in order after storage recovers. If the buffer fills during a long outage, new records are refused whole and counted. Sockguard prints a rate-limited line (at most one a minute) to stderr, independent of the failing sink, when a write fails and when it recovers. Audit events that never reach the sink are counted separately from queue drops (`AuditLogger.LostEvents`), and a failed final flush at shutdown is reported by the close error with the number of bytes lost.
 
-Every audit event includes an `ownership` object with `enabled`, `owner`, and `label_key`. When `ownership.owner` is set, that owner identifier appears in every audit event, including requests that do not touch owned resources. Treat it as an operator-visible tenant or workload identifier, not a secret.
+Every audit event includes an `ownership` object with `enabled`, `owner`, and `label_key`. With per-profile ownership, it reports the effective owner of the selected profile, or the root owner when no profile is selected. `ownership_scope` identifies `owner` or privileged `all` scope. The effective owner appears even on requests that do not touch owned resources. Treat it as an operator-visible tenant or workload identifier, not a secret.
 
 Audit events intentionally preserve both the proxy-generated canonical `request_id` and any caller-supplied `client_request_id`. Upstream proxy failures rewrite the audit `reason_code` to bounded terminal values such as `upstream_socket_unreachable` or `upstream_response_rejected_by_policy` so the final outcome is explicit even after a request was policy-allowed.
 
@@ -2280,6 +2330,7 @@ multiple entries via the env var; e.g.
 | `SOCKGUARD_OWNERSHIP_LABEL_KEY`                | `ownership.label_key`                     | `com.sockguard.owner`  | Label key Sockguard reads from container/image metadata to determine ownership.        |
 | `SOCKGUARD_OWNERSHIP_ALLOW_UNOWNED_IMAGES`     | `ownership.allow_unowned_images`          | `true`                 | Allow operations on images that lack the ownership label.                              |
 | `SOCKGUARD_OWNERSHIP_ALLOW_CROSS_OWNER_NAMESPACE_SHARING` | `ownership.allow_cross_owner_namespace_sharing` | `false`     | Allow `container:<ref>` namespace-sharing targets owned by a different owner (default denies them). |
+| `SOCKGUARD_OWNERSHIP_INSECURE_ALLOW_WEAK_OWNER_SELECTION` | `ownership.insecure_allow_weak_owner_selection` | `false` | Unreleased (v3.2, experimental): allow a client profile with its own owner to be selected by `source_ip_profiles` or `default_profile`. Never admits `scope: all` there. |
 
 `response.deny_verbosity` controls how much metadata Sockguard includes in its own `403` JSON deny responses:
 
