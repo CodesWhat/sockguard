@@ -520,4 +520,14 @@ export const roadmap: Milestone[] = [
       "Fixes random Buildx build failures caused by early Control/Status and gateway calls",
     ],
   },
+  {
+    version: "v2.4.9",
+    title: "Owner Isolation Fix",
+    emoji: "🔒",
+    status: "released",
+    items: [
+      "Owner isolation now refuses Podman libpod manifest list writes, which had no owner check",
+      "Owner isolation now refuses Podman 6.2's volume rename route, closing a rename onto any volume name",
+    ],
+  },
 ];
