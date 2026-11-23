@@ -38,24 +38,29 @@ function sourceFuzzers() {
   return fuzzers;
 }
 
-// Matches both the inline YAML fuzz matrix used by the nightly/monthly
-// quality workflows (`- { name: Foo, pkg: ./bar/ }`) and the JSON
-// fuzzer list the branch-CI changes job selects from
-// (.github/ci-fuzzers.json, `{"name":"Foo","pkg":"./bar/"}`).
-const FUZZ_ENTRY_PATTERN =
-  /(?:- \{ name: (Fuzz\w+),\s+pkg: ([^ }]+) \}|"name":"(Fuzz\w+)","pkg":"([^"]+)")/g;
+// Matches the inline YAML fuzz matrix used by the nightly/monthly quality
+// workflows (`- { name: Foo, pkg: ./bar/ }`). The JSON fuzzer list the
+// branch-CI changes job selects from (.github/ci-fuzzers.json) is parsed as
+// JSON instead, so its formatting can't make the check vacuous.
+const FUZZ_ENTRY_PATTERN = /- \{ name: (Fuzz\w+),\s+pkg: ([^ }]+) \}/g;
+
+function workflowEntries(workflowPath, source) {
+  if (workflowPath.endsWith(".json")) {
+    return JSON.parse(source).map((entry) => [entry.name, entry.pkg]);
+  }
+  return [...source.matchAll(FUZZ_ENTRY_PATTERN)].map((match) => [match[1], match[2]]);
+}
 
 function workflowFuzzers(workflowPath) {
   const source = readFileSync(resolve(repoRoot, workflowPath), "utf8");
   const fuzzers = new Map();
 
-  for (const match of source.matchAll(FUZZ_ENTRY_PATTERN)) {
-    const name = match[1] ?? match[3];
-    const packagePath = match[2] ?? match[4];
+  for (const [name, packagePath] of workflowEntries(workflowPath, source)) {
     assert.ok(!fuzzers.has(name), `${workflowPath} repeats ${name}`);
     fuzzers.set(name, packagePath);
   }
 
+  assert.ok(fuzzers.size > 0, `${workflowPath} registers no fuzz targets`);
   return fuzzers;
 }
 

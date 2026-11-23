@@ -30,7 +30,7 @@ jq -e 'type == "array"' "${list_path}" >/dev/null || {
 }
 
 changed=""
-if ! changed="$(git diff --name-only "${base_ref}...HEAD" 2>/dev/null)"; then
+if ! changed="$(git diff --no-renames --name-only "${base_ref}...HEAD" 2>/dev/null)"; then
   fail_open "git diff against ${base_ref} failed"
 fi
 [ -n "${changed}" ] || fail_open "empty diff against ${base_ref}"
