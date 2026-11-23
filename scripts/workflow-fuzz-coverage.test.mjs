@@ -6,7 +6,7 @@ import { describe, it } from "node:test";
 const repoRoot = resolve(import.meta.dirname, "..");
 const appRoot = resolve(repoRoot, "app");
 const workflowPaths = [
-  ".github/workflows/ci-verify.yml",
+  ".github/ci-fuzzers.json",
   ".github/workflows/quality-fuzz-nightly.yml",
   ".github/workflows/quality-fuzz-monthly.yml",
 ];
@@ -40,8 +40,8 @@ function sourceFuzzers() {
 
 // Matches both the inline YAML fuzz matrix used by the nightly/monthly
 // quality workflows (`- { name: Foo, pkg: ./bar/ }`) and the JSON
-// fuzzers-json array the branch-CI reusable Go CI caller passes
-// (`{"name":"Foo","pkg":"./bar/"}`).
+// fuzzer list the branch-CI changes job selects from
+// (.github/ci-fuzzers.json, `{"name":"Foo","pkg":"./bar/"}`).
 const FUZZ_ENTRY_PATTERN =
   /(?:- \{ name: (Fuzz\w+),\s+pkg: ([^ }]+) \}|"name":"(Fuzz\w+)","pkg":"([^"]+)")/g;
 

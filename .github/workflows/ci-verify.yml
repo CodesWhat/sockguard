@@ -44,6 +44,7 @@ jobs:
       contents: read
     outputs:
       docs_only: ${{ steps.filter.outputs.docs_only }}
+      fuzzers_json: ${{ steps.fuzzers.outputs.fuzzers_json }}
     steps:
       # Audit mode: block mode intermittently refused allow-listed hosts on hosted runners (DEP-19). Release workflows keep block.
       - name: Harden Runner
@@ -112,6 +113,38 @@ jobs:
             echo "docs_only=false" >> "$GITHUB_OUTPUT"
           fi
 
+      # Per-PR fuzzing is scoped to the packages the PR touches. The full
+      # matrix runs on the weekly schedule and on pushes to main, and the
+      # nightly and monthly fuzz workflows carry it too. The list lives in
+      # .github/ci-fuzzers.json; the selection is scripts/ci/select-fuzzers.sh.
+      - name: Select fuzzers
+        id: fuzzers
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          BASE_REF: ${{ github.base_ref }}
+          DOCS_ONLY: ${{ steps.filter.outputs.docs_only }}
+        run: |
+          set -uo pipefail
+          # No `-e`: a failed selection must fall back to the full list.
+          list=.github/ci-fuzzers.json
+
+          if [ "${EVENT_NAME}" = "schedule" ] || { [ "${EVENT_NAME}" = "push" ] && [ "${REF}" = "refs/heads/main" ]; }; then
+            echo "fuzzers_json=$(jq -c . "${list}")" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [ "${EVENT_NAME}" != "pull_request" ] || [ "${DOCS_ONLY}" = "true" ]; then
+            echo "fuzzers_json=[]" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if ! git fetch --quiet origin "${BASE_REF}" || ! selected="$(bash scripts/ci/select-fuzzers.sh "origin/${BASE_REF}" "${list}")" || [ -z "${selected}" ]; then
+            echo "::warning::changes: could not select fuzzers, running every fuzzer"
+            selected="$(jq -c . "${list}")"
+          fi
+          echo "fuzzers_json=${selected}" >> "$GITHUB_OUTPUT"
+
   # Reusable-workflow callers (CodesWhat/.github frozen SHA). Each job below
   # runs the caller repo's own scripts/ci/*.sh so the underlying commands
   # stay identical to what branch CI ran before this migration; only the
@@ -131,7 +164,9 @@ jobs:
     # ever failed, the default gate would turn this whole call into an
     # auto-passing skip and let a PR merge with no Go lint or tests at all.
     # Under `!cancelled()` a failed gate leaves docs_only empty instead,
-    # which fails open into the full fuzz list below.
+    # which runs every job below. The fuzz list is empty in that case (the
+    # nightly and monthly workflows still run it), because only the changes
+    # job can read .github/ci-fuzzers.json.
     if: ${{ !cancelled() }}
     # go-ci.yml's nested codeql job declares security-events: write even
     # though run-codeql stays unset here — GitHub validates a called
@@ -164,12 +199,16 @@ jobs:
       # Audit mode: block mode intermittently refused allow-listed hosts on hosted runners (DEP-19). Release workflows keep block.
       qlty-egress-policy: audit
       # An empty list produces no matrix jobs at all: go-ci.yml's fuzz job
-      # is gated on `fromJSON(inputs.fuzzers-json)[0] != null`. On a
-      # docs-only PR that is 29 jobs and ~67 runner-minutes not spent
-      # fuzzing Go code the PR did not touch. None of these is a required
-      # context, so nothing to report skipped-green here.
-      fuzzers-json: >-
-        ${{ needs.changes.outputs.docs_only != 'true' && (github.event_name == 'pull_request' || github.event_name == 'schedule' || (github.event_name == 'push' && github.ref == 'refs/heads/main')) && '[{"name":"FuzzPathMatch","pkg":"./internal/filter/"},{"name":"FuzzGlobToRegex","pkg":"./internal/filter/"},{"name":"FuzzGlobToRegexString","pkg":"./internal/filter/"},{"name":"FuzzNormalizePath","pkg":"./internal/filter/"},{"name":"FuzzCompileRule","pkg":"./internal/filter/"},{"name":"FuzzBuild","pkg":"./internal/filter/"},{"name":"FuzzContainerCreate","pkg":"./internal/filter/"},{"name":"FuzzExec","pkg":"./internal/filter/"},{"name":"FuzzImagePull","pkg":"./internal/filter/"},{"name":"FuzzVolume","pkg":"./internal/filter/"},{"name":"FuzzSecret","pkg":"./internal/filter/"},{"name":"FuzzConfigWrite","pkg":"./internal/filter/"},{"name":"FuzzService","pkg":"./internal/filter/"},{"name":"FuzzSwarm","pkg":"./internal/filter/"},{"name":"FuzzPlugin","pkg":"./internal/filter/"},{"name":"FuzzNetwork","pkg":"./internal/filter/"},{"name":"FuzzReadUnaryGRPCMessage","pkg":"./internal/buildkitproxy/"},{"name":"FuzzControlRefFrame","pkg":"./internal/buildkitproxy/"},{"name":"FuzzEvaluateGatewayRequest","pkg":"./internal/buildkitproxy/"},{"name":"FuzzFilterGatewayPong","pkg":"./internal/buildkitproxy/"},{"name":"FuzzEvaluateGetSecretRequest","pkg":"./internal/buildkitproxy/"},{"name":"FuzzEvaluateSolveRequest","pkg":"./internal/buildkitproxy/"},{"name":"FuzzEvaluateStatusRequest","pkg":"./internal/buildkitproxy/"},{"name":"FuzzRewriteSessionAdvertisement","pkg":"./internal/buildkitproxy/"},{"name":"FuzzValidateUpgradeRequest","pkg":"./internal/buildkitproxy/"},{"name":"FuzzFilterControlResponseMessage","pkg":"./internal/buildkitproxy/"},{"name":"FuzzDecode","pkg":"./internal/dockerfilters/"},{"name":"FuzzProxyHeadersAndBody","pkg":"./internal/proxy/"},{"name":"FuzzHijackHeadersAndBody","pkg":"./internal/proxy/"},{"name":"FuzzPathRoutingDifferential","pkg":"./internal/differential/"},{"name":"FuzzVisibilityFilter","pkg":"./internal/visibility/"},{"name":"FuzzLibpodPathIdentifiers","pkg":"./internal/visibility/"}]' || '[]' }}
+      # is gated on `fromJSON(inputs.fuzzers-json)[0] != null`. The fuzz
+      # matrix was about two thirds of this workflow's job-minutes on every
+      # PR, and the nightly and monthly fuzz workflows already run the whole
+      # list, so a PR fuzzes only the packages it touches. The changes job
+      # picks them from .github/ci-fuzzers.json (scripts/ci/select-fuzzers.sh):
+      # everything when the diff can't be read or go.mod/go.sum change, and
+      # nothing on a docs-only PR. The weekly schedule and pushes to main run
+      # the full list. None of these is a required context, so nothing to
+      # report skipped-green here.
+      fuzzers-json: ${{ needs.changes.outputs.fuzzers_json || '[]' }}
 
   # Coverage reporting split (Scott, 2026-11-02): Codecov reports coverage, Qlty
   # Cloud grades maintainability. This job only reports. The vendor-free
