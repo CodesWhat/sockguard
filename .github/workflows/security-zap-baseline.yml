@@ -9,9 +9,23 @@ run-name: >-
 # forms, no server-side handlers. Per the DAST tiering in security.md, a
 # static surface gets a ZAP baseline PASSIVE scan only (headers, CSP,
 # cookie flags) — not active ZAP, not Nuclei. There is deliberately no
-# pull_request trigger: DAST runs against the already-deployed site, so it
-# can never gate a PR that hasn't deployed yet (security.md gating
-# posture) — a red run here is a triage signal, not a merge blocker.
+# pull_request trigger: this runs on a schedule against the site as built
+# from the ref, so it can never gate a PR — a red run here is a triage
+# signal, not a merge blocker.
+#
+# Why it scans a local build instead of https://www.getsockguard.com: the
+# production site sits behind Vercel Bot Protection (challenge mode), which
+# answers any scanner with 429 before a page is served. The firewall has no
+# secret-header bypass we could hand ZAP, and weakening the challenge for a
+# scanner would trade real protection for a green check. The site is a pure
+# static export, so building website/ the way the deploy does and serving
+# website/out with website/vercel.json's response headers applied
+# (scripts/ci/serve-static-export.mjs) scans the same HTML, JS and header
+# policy without touching the CDN.
+#
+# Out of scope by construction: 10035 (HSTS) only applies over https, and
+# this scan is plain http on localhost. The HSTS value itself is asserted in
+# scripts/security-headers.test.mjs.
 on:
   workflow_dispatch:
   schedule:
@@ -28,31 +42,60 @@ jobs:
   zap-baseline:
     name: "ZAP Baseline: ${{ matrix.name }}"
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
         include:
           - name: website
-            target: https://www.getsockguard.com
+            target: http://localhost:8080/
           - name: docs
-            target: https://www.getsockguard.com/docs/
+            target: http://localhost:8080/docs/
     steps:
       - name: Harden Runner
         uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43  # v2.22.3
         with:
           # Permanent exception (security.md "Actions hardening" recorded
-          # exceptions), not staged audit->block drift: this job scans a
-          # live Vercel-fronted third-party endpoint outside the repo's own
-          # infrastructure, so there is no stable destination set to pin to
-          # `block`. Same class of exception as drydock's dast-zap-baseline
-          # job.
+          # exceptions), not staged audit->block drift: `npm ci` and the
+          # ZAP image pull reach registries whose destination set is not
+          # stable enough to pin to `block`. Same class of exception as
+          # drydock's dast-zap-baseline job.
           egress-policy: audit
 
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
+
+      - name: Setup Node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      # Same build as the deploy: website's prebuild exports the docs app
+      # and copies it into website/public/docs before `next build`.
+      - name: Build static export
+        run: npm run build
+
+      # The action runs ZAP in Docker with --network host, so the scan
+      # reaches this server on localhost. Bound to loopback; the readiness
+      # loop is capped so a server that never comes up fails the job.
+      - name: Serve static export
+        run: |
+          node scripts/ci/serve-static-export.mjs --dir website/out --config website/vercel.json --port 8080 &
+          for _ in $(seq 1 30); do
+            if curl -fsS -o /dev/null http://localhost:8080/docs/; then
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "static export server did not come up" >&2
+          exit 1
 
       - name: Run ZAP baseline scan
         uses: zaproxy/action-baseline@de8ad967d3548d44ef623df22cf95c3b0baf8b25  # v0.15.0
@@ -67,20 +110,6 @@ jobs:
           token: ''
           docker_name: ghcr.io/zaproxy/zaproxy@sha256:781a2bdaea47324e7bab583e2263f21d257b0aee61ed51521a5be45f5f5081ef  # stable digest, 2026-08-17
           rules_file_name: .zap/rules.tsv
-          # The docs quote encoded-traversal samples as inline code (e.g.
-          # /v1.45/containers/%2e%2e/images/json in configuration.mdx and
-          # security.mdx), and the spider harvests them as links. Vercel's
-          # firewall answers those with a platform-level 403
-          # (x-vercel-mitigated: deny, text/plain, none of vercel.json's
-          # headers), so ZAP reports 10035 (HSTS not set) on a deny page,
-          # not on the site. Exclude only URLs carrying an encoded ".."
-          # rather than ignoring 10035, which would hide a real HSTS
-          # regression on actual pages. The -z value is split on whitespace
-          # by ZAP, so the description is a single word.
-          cmd_options: >-
-            -z "-config globalexcludeurl.url_list.url(0).regex=.*%2[eE]%2[eE].*
-            -config globalexcludeurl.url_list.url(0).description=firewall-denied-traversal-samples
-            -config globalexcludeurl.url_list.url(0).enabled=true"
           # No GitHub issue on findings: a red run in the Actions tab is
           # already the triage signal (house preference — see security.md
           # gating posture). Keeps this job's permissions at contents:read.
@@ -96,6 +125,7 @@ jobs:
           {
             echo "### ZAP Baseline: ${{ matrix.name }}"
             echo "- Target: ${{ matrix.target }}"
+            echo "- Local build of the static export with vercel.json headers (CDN bot challenge blocks scanners)"
             echo "- Passive scan only (headers, CSP, cookie flags) — static surface, no active ZAP/Nuclei"
             echo "- Scheduled/advisory: a red run is a triage signal, never a PR gate"
           } >> "$GITHUB_STEP_SUMMARY"

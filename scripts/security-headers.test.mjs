@@ -31,6 +31,14 @@ describe("Vercel security headers", () => {
     );
   });
 
+  it("sets HSTS for two years including subdomains", () => {
+    const hsts = catchAllHeaders().get("strict-transport-security");
+    assert.ok(hsts, "Strict-Transport-Security header is required");
+    const maxAge = Number(/max-age=(\d+)/.exec(hsts)?.[1]);
+    assert.ok(maxAge >= 63072000, `HSTS max-age ${maxAge} is under two years`);
+    assert.match(hsts, /includeSubDomains/);
+  });
+
   it("enforces a restrictive content security policy", () => {
     const csp = catchAllHeaders().get("content-security-policy");
     assert.ok(csp, "Content-Security-Policy header is required");
