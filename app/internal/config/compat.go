@@ -230,6 +230,12 @@ func ApplyCompat(cfg *Config, logger *slog.Logger) bool {
 		"vars", strings.Join(compatEnvVarSettings(), ","),
 	)
 	warnInvalidCompatEnvVars(logger)
+	if flavor == compatFlavorTecnativa && compatEnvEnabled("CONTAINERS", false) {
+		logger.Info("LinuxServer guards are not applied: CONTAINERS=1 allows logs, archive, export, top, changes and exec on containers",
+			"note", "set any LinuxServer guard variable (for example ALLOW_LOGS=0, the LinuxServer image default) to select the LinuxServer flavor, which denies those until ALLOW_LOGS, ALLOW_ARCHIVE, ALLOW_EXPORT, ALLOW_TOP, ALLOW_CHANGES or EXEC is enabled",
+			"flavor", flavor,
+		)
+	}
 
 	var rules []RuleConfig
 	if flavor == compatFlavorLinuxServer {
@@ -402,9 +408,20 @@ func warnInvalidCompatEnvVars(logger *slog.Logger) {
 }
 
 func generateSectionRules() []RuleConfig {
+	return generateSectionRulesFor(false)
+}
+
+// generateSectionRulesFor builds the Docker section allows. The LinuxServer
+// flavor skips the Tecnativa {EXEC, /containers/*/exec} row: haproxy matches
+// only ^/exec for EXEC, and /containers/x/exec needs CONTAINERS, so EXEC=1
+// alone must not open it.
+func generateSectionRulesFor(linuxServer bool) []RuleConfig {
 	var rules []RuleConfig
 	methods := compatReadMethods()
 	for _, rule := range compatSectionRules {
+		if linuxServer && rule.path == "/containers/*/exec" {
+			continue
+		}
 		if compatEnvEnabled(rule.envKey, rule.defaultAllow) {
 			rules = append(rules, newAllowRule(methods, rule.path))
 		}
@@ -445,7 +462,7 @@ func generateLinuxServerRules() []RuleConfig {
 		}
 	}
 
-	rules = append(rules, generateSectionRules()...)
+	rules = append(rules, generateSectionRulesFor(true)...)
 	methods := compatReadMethods()
 	for _, rule := range linuxServerLibpodSectionRules {
 		if compatEnvEnabled(rule.envKey, rule.defaultAllow) {

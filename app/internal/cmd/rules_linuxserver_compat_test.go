@@ -12,11 +12,20 @@ import (
 	"github.com/codeswhat/sockguard/v3/app/internal/filter"
 )
 
+type compatAck int
+
+const (
+	ackNone compatAck = iota
+	ackRead
+	ackBlind
+	ackBoth
+)
+
 // compileCompatEnv expands the given compat environment through ApplyCompat
 // and the real validator, returning the compiled rules (or the validation
-// error). ack toggles the read-exfiltration and body-blind-write
-// acknowledgments.
-func compileCompatEnv(t *testing.T, env map[string]string, ack bool) ([]*filter.CompiledRule, error) {
+// error). ack selects which of the read-exfiltration and body-blind-write
+// acknowledgments are set.
+func compileCompatEnv(t *testing.T, env map[string]string, ack compatAck) ([]*filter.CompiledRule, error) {
 	t.Helper()
 	isolateReadExfilEnv(t)
 	for _, key := range []string{"TIMEOUT_CLIENT", "TIMEOUT_SERVER", "DISABLE_IPV6"} {
@@ -29,10 +38,8 @@ func compileCompatEnv(t *testing.T, env map[string]string, ack bool) ([]*filter.
 	if !config.ApplyCompat(&cfg, slog.New(slog.NewTextHandler(io.Discard, nil))) {
 		t.Fatalf("compat did not activate for %v", env)
 	}
-	if ack {
-		cfg.InsecureAllowReadExfiltration = true
-		cfg.InsecureAllowBodyBlindWrites = true
-	}
+	cfg.InsecureAllowReadExfiltration = ack == ackRead || ack == ackBoth
+	cfg.InsecureAllowBodyBlindWrites = ack == ackBlind || ack == ackBoth
 	return validateAndCompileRules(&cfg)
 }
 
@@ -69,11 +76,13 @@ func TestLinuxServerCompatEndToEnd(t *testing.T) {
 		{"libpod logs allowed with ALLOW_LOGS", map[string]string{"LIBPOD_CONTAINERS": "1", "ALLOW_LOGS": "1"}, "GET", "/libpod/containers/x/logs", filter.ActionAllow},
 		{"libpod exec create guarded without EXEC", map[string]string{"LIBPOD_CONTAINERS": "1", "POST": "1"}, "POST", "/libpod/containers/x/exec", filter.ActionDeny},
 		{"libpod container read allowed", map[string]string{"LIBPOD_CONTAINERS": "1"}, "GET", "/libpod/containers/json", filter.ActionAllow},
+		{"EXEC without CONTAINERS denies container exec create", map[string]string{"EXEC": "1", "ALLOW_LOGS": "0", "POST": "1"}, "POST", "/containers/x/exec", filter.ActionDeny},
+		{"EXEC with CONTAINERS allows container exec create", map[string]string{"CONTAINERS": "1", "EXEC": "1", "POST": "1", "ALLOW_LOGS": "0"}, "POST", "/containers/x/exec", filter.ActionAllow},
 		{"libpod write needs POST", map[string]string{"LIBPOD_PODS": "1"}, "POST", "/libpod/pods/create", filter.ActionDeny},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			rules, err := compileCompatEnv(t, tt.env, true)
+			rules, err := compileCompatEnv(t, tt.env, ackBoth)
 			if err != nil {
 				t.Fatalf("validate: %v", err)
 			}
@@ -85,36 +94,54 @@ func TestLinuxServerCompatEndToEnd(t *testing.T) {
 }
 
 // TestLinuxServerCompatLibpodGatedLikeDocker proves the libpod sections do not
-// slip past the acknowledgments their Docker twins need. Each case must be
-// refused without the acknowledgment and accepted with it.
+// slip past the acknowledgments their Docker twins need. Each case names the
+// gate it exercises: without the matching acknowledgment validation must fail
+// with that gate's key, and with only the OTHER acknowledgment it must still
+// fail, so the two gates are proven independently.
 func TestLinuxServerCompatLibpodGatedLikeDocker(t *testing.T) {
+	const (
+		readGate  = "insecure_allow_read_exfiltration"
+		blindGate = "insecure_allow_body_blind_writes"
+	)
 	tests := []struct {
-		name    string
-		env     map[string]string
-		wantErr string
+		name string
+		env  map[string]string
+		gate string
 	}{
-		{"LIBPOD_CONTAINERS read exfiltration", map[string]string{"LIBPOD_CONTAINERS": "1", "ALLOW_ARCHIVE": "0"}, "insecure_allow_read_exfiltration"},
-		{"LIBPOD_CONTAINERS with POST body blind", map[string]string{"LIBPOD_CONTAINERS": "1", "POST": "1", "ALLOW_LOGS": "1"}, "insecure_allow_"},
-		{"LIBPOD_IMAGES read exfiltration", map[string]string{"LIBPOD_IMAGES": "1"}, "insecure_allow_read_exfiltration"},
-		{"LIBPOD_GENERATE read exfiltration", map[string]string{"LIBPOD_GENERATE": "1"}, "insecure_allow_read_exfiltration"},
-		{"LIBPOD_PLAY body blind", map[string]string{"LIBPOD_PLAY": "1", "POST": "1"}, "insecure_allow_body_blind_writes"},
-		{"LIBPOD_MANIFESTS push", map[string]string{"LIBPOD_MANIFESTS": "1", "POST": "1"}, "insecure_allow_"},
-		{"LIBPOD_EXEC", map[string]string{"LIBPOD_EXEC": "1", "POST": "1"}, "insecure_allow_"},
-		{"LIBPOD_SYSTEM autoupdate", map[string]string{"LIBPOD_SYSTEM": "1", "POST": "1"}, ""},
+		{"LIBPOD_CONTAINERS read", map[string]string{"LIBPOD_CONTAINERS": "1"}, readGate},
+		{"LIBPOD_IMAGES read", map[string]string{"LIBPOD_IMAGES": "1"}, readGate},
+		{"LIBPOD_GENERATE read", map[string]string{"LIBPOD_GENERATE": "1"}, readGate},
+		{"LIBPOD_PLAY body blind", map[string]string{"LIBPOD_PLAY": "1", "POST": "1"}, blindGate},
+		{"LIBPOD_MANIFESTS body blind", map[string]string{"LIBPOD_MANIFESTS": "1", "POST": "1"}, blindGate},
+		{"LIBPOD_CONTAINERS with POST body blind", map[string]string{"LIBPOD_CONTAINERS": "1", "POST": "1"}, blindGate},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := compileCompatEnv(t, tt.env, false)
-			if tt.wantErr == "" {
-				return
+			_, err := compileCompatEnv(t, tt.env, ackNone)
+			if err == nil || !strings.Contains(err.Error(), tt.gate) {
+				t.Fatalf("without acknowledgments error = %v, want mention of %q", err, tt.gate)
 			}
-			if err == nil {
-				t.Fatalf("expected refusal without acknowledgment for %v", tt.env)
+
+			// Acknowledge only the other gate: this one must still refuse.
+			other := ackRead
+			if tt.gate == readGate {
+				other = ackBlind
 			}
-			if !strings.Contains(err.Error(), tt.wantErr) {
-				t.Fatalf("error = %v, want mention of %q", err, tt.wantErr)
+			if tt.gate == blindGate {
+				// Body-blind cases are exercised with the read ack set, so the
+				// body-blind gate itself is what refuses.
+				_, err = compileCompatEnv(t, tt.env, ackRead)
+				if err == nil || !strings.Contains(err.Error(), blindGate) {
+					t.Fatalf("with only the read ack error = %v, want %q", err, blindGate)
+				}
+			} else {
+				_, err = compileCompatEnv(t, tt.env, other)
+				if err == nil || !strings.Contains(err.Error(), readGate) {
+					t.Fatalf("with only the body-blind ack error = %v, want %q", err, readGate)
+				}
 			}
-			if _, err := compileCompatEnv(t, tt.env, true); err != nil {
+
+			if _, err := compileCompatEnv(t, tt.env, ackBoth); err != nil {
 				t.Fatalf("acknowledged config should validate: %v", err)
 			}
 		})
@@ -122,11 +149,28 @@ func TestLinuxServerCompatLibpodGatedLikeDocker(t *testing.T) {
 }
 
 func TestLinuxServerCompatDefaultsNeedNoAcknowledgment(t *testing.T) {
-	rules, err := compileCompatEnv(t, map[string]string{"ALLOW_LOGS": "0"}, false)
+	rules, err := compileCompatEnv(t, map[string]string{"ALLOW_LOGS": "0"}, ackNone)
 	if err != nil {
 		t.Fatalf("lsio defaults (ping, version, events) must validate without acknowledgment: %v", err)
 	}
 	if evalCompat(rules, http.MethodGet, "/libpod/_ping") != filter.ActionAllow {
 		t.Fatal("libpod ping should be allowed by default")
+	}
+}
+
+// TestLinuxServerCompatLibpodSystemDoesNotReachAutoupdate pins what
+// LIBPOD_SYSTEM=1 actually opens: /libpod/system/**, which needs no
+// acknowledgment, and not /libpod/autoupdate (a sibling path that would need
+// both), so the section can't be used to reach it.
+func TestLinuxServerCompatLibpodSystemDoesNotReachAutoupdate(t *testing.T) {
+	rules, err := compileCompatEnv(t, map[string]string{"LIBPOD_SYSTEM": "1", "POST": "1"}, ackNone)
+	if err != nil {
+		t.Fatalf("LIBPOD_SYSTEM=1 POST=1 should validate without acknowledgment: %v", err)
+	}
+	if got := evalCompat(rules, http.MethodGet, "/libpod/system/df"); got != filter.ActionAllow {
+		t.Fatalf("GET /libpod/system/df = %s, want allow", got)
+	}
+	if got := evalCompat(rules, http.MethodPost, "/libpod/autoupdate"); got != filter.ActionDeny {
+		t.Fatalf("POST /libpod/autoupdate = %s, want deny", got)
 	}
 }

@@ -2427,7 +2427,7 @@ Rules are generated in this order, first match wins:
 | `ALLOW_LOGS` | off | Lifts the deny on `*/logs` |
 | `ALLOW_TOP` | off | Lifts the deny on `*/top` |
 | `ALLOW_PAUSE` | off | Lifts the deny on `*/pause`, and allows `POST */pause` |
-| `EXEC` | off | Lifts the deny on `*/exec` and opens `/exec/**` |
+| `EXEC` | off | Lifts the deny on `*/exec` and opens `/exec/**`. Exec create on `/containers/*/exec` also needs `CONTAINERS=1`. |
 | `ALLOW_START`, `ALLOW_STOP`, `ALLOW_RESTARTS`, `ALLOW_UNPAUSE` | off | `POST` on the action for `/containers/*`, `/libpod/containers/*` and `/libpod/pods/*` |
 | `LIBPOD_ALLOW_START`, `_STOP`, `_RESTARTS`, `_PAUSE`, `_UNPAUSE` | off | `POST /libpod/containers/*/<action>` |
 | `LIBPOD_ALLOW_POD_START`, `_STOP`, `_RESTARTS`, `_PAUSE`, `_UNPAUSE` | off | `POST /libpod/pods/*/<action>` |

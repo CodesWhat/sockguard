@@ -523,3 +523,47 @@ func TestCompatEnvironmentVariablesListsLinuxServerVars(t *testing.T) {
 		t.Fatalf("CompatEnvironmentVariables() = %v, want %v", got, want)
 	}
 }
+
+func TestTecnativaFlavorLogsMissingLinuxServerGuards(t *testing.T) {
+	run := func(env map[string]string) string {
+		clearCompatEnv(t)
+		for k, v := range env {
+			t.Setenv(k, v)
+		}
+		var buf bytes.Buffer
+		logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
+		cfg := Defaults()
+		if !ApplyCompat(&cfg, logger) {
+			t.Fatal("expected compat to activate")
+		}
+		return buf.String()
+	}
+
+	out := run(map[string]string{"CONTAINERS": "1"})
+	if strings.Count(out, "LinuxServer guards are not applied") != 1 || !strings.Contains(out, "ALLOW_LOGS=0") {
+		t.Fatalf("expected one guards-not-applied line naming ALLOW_LOGS=0, got %s", out)
+	}
+	if !strings.Contains(out, "level=INFO") {
+		t.Fatalf("expected Info level, got %s", out)
+	}
+
+	for name, env := range map[string]map[string]string{
+		"containers off":     {"CONTAINERS": "0", "POST": "1"},
+		"no containers":      {"IMAGES": "1"},
+		"linuxserver flavor": {"CONTAINERS": "1", "ALLOW_LOGS": "0"},
+	} {
+		if out := run(env); strings.Contains(out, "guards are not applied") {
+			t.Fatalf("%s: unexpected guards-not-applied line: %s", name, out)
+		}
+	}
+}
+
+func TestLinuxServerExecSectionDoesNotOpenContainerExec(t *testing.T) {
+	got := ruleStrings(applyCompatEnv(t, map[string]string{"EXEC": "1", "ALLOW_LOGS": "0", "POST": "1"}))
+	if containsString(got, "allow * /containers/*/exec") {
+		t.Fatalf("EXEC=1 alone must not allow /containers/*/exec: %v", got)
+	}
+	if !containsString(got, "allow * /exec/**") {
+		t.Fatalf("EXEC=1 should still allow /exec/**: %v", got)
+	}
+}
