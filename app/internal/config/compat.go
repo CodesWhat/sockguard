@@ -3,10 +3,19 @@ package config
 import (
 	"log/slog"
 	"os"
+	"slices"
 	"strings"
 )
 
-var compatVars = []string{
+// Compat flavor names, reported in the activation log's "flavor" attribute.
+const (
+	compatFlavorTecnativa   = "tecnativa"
+	compatFlavorLinuxServer = "linuxserver"
+)
+
+// tecnativaCompatVars are the variables Tecnativa's docker-socket-proxy (and
+// sockguard's own historical extensions) define.
+var tecnativaCompatVars = []string{
 	"AUTH", "BUILD", "COMMIT", "CONFIGS", "CONTAINERS",
 	"DISTRIBUTION", "EVENTS", "EXEC", "GRPC", "IMAGES",
 	"INFO", "NETWORKS", "NODES", "PING", "PLUGINS",
@@ -15,6 +24,122 @@ var compatVars = []string{
 	"ALLOW_START", "ALLOW_STOP", "ALLOW_RESTART",
 	"ALLOW_RESTARTS", "ALLOW_PAUSE", "ALLOW_UNPAUSE", "ALLOW_CREATE",
 	"ALLOW_EXEC", "ALLOW_KILL", "ALLOW_DELETE", "ALLOW_PRUNE",
+}
+
+// linuxServerOnlyCompatVars are the rule-generating variables only
+// LinuxServer's socket-proxy defines (ls107: the deny-guard ALLOW_* set and
+// every LIBPOD_* variable). Setting any of them, to any value, selects the
+// LinuxServer flavor. TIMEOUT_CLIENT, TIMEOUT_SERVER and DISABLE_IPV6 are
+// deliberately absent: they generate no rules, so they cannot pick a flavor.
+var linuxServerOnlyCompatVars = []string{
+	"ALLOW_ARCHIVE", "ALLOW_CHANGES", "ALLOW_EXPORT", "ALLOW_LOGS", "ALLOW_TOP",
+	"LIBPOD_CONTAINERS", "LIBPOD_EVENTS", "LIBPOD_EXEC", "LIBPOD_GENERATE",
+	"LIBPOD_IMAGES", "LIBPOD_INFO", "LIBPOD_MANIFESTS", "LIBPOD_NETWORKS",
+	"LIBPOD_PING", "LIBPOD_PLAY", "LIBPOD_PODS", "LIBPOD_SECRETS",
+	"LIBPOD_SYSTEM", "LIBPOD_VERSION", "LIBPOD_VOLUMES",
+	"LIBPOD_ALLOW_START", "LIBPOD_ALLOW_STOP", "LIBPOD_ALLOW_RESTARTS",
+	"LIBPOD_ALLOW_PAUSE", "LIBPOD_ALLOW_UNPAUSE",
+	"LIBPOD_ALLOW_POD_START", "LIBPOD_ALLOW_POD_STOP", "LIBPOD_ALLOW_POD_RESTARTS",
+	"LIBPOD_ALLOW_POD_PAUSE", "LIBPOD_ALLOW_POD_UNPAUSE",
+}
+
+var compatVars = slices.Concat(tecnativaCompatVars, linuxServerOnlyCompatVars)
+
+// unmappedCompatVars are LinuxServer variables that generate no rules. They
+// are recognized so a migrator gets pointed at the sockguard key that does the
+// same job, instead of the variable silently doing nothing.
+var unmappedCompatVars = []struct {
+	name        string
+	replacement string
+}{
+	{name: "TIMEOUT_CLIENT", replacement: "upstream.request_timeout and upstream.hijack_inactivity_timeout"},
+	{name: "TIMEOUT_SERVER", replacement: "upstream.request_timeout and upstream.hijack_inactivity_timeout"},
+	{name: "DISABLE_IPV6", replacement: "listen.address"},
+}
+
+// linuxServerGuards are LinuxServer's deny guards. haproxy evaluates them
+// before any allow, so with the variable not enabled the matching sub-resource
+// is refused even when its whole section is open.
+var linuxServerGuards = []struct {
+	envKey string
+	paths  []string
+}{
+	{envKey: "ALLOW_ARCHIVE", paths: guardPaths("archive")},
+	{envKey: "ALLOW_CHANGES", paths: guardPaths("changes")},
+	{envKey: "ALLOW_EXPORT", paths: guardPaths("export")},
+	{envKey: "ALLOW_LOGS", paths: guardPaths("logs")},
+	{envKey: "ALLOW_TOP", paths: guardPaths("top")},
+	{envKey: "ALLOW_PAUSE", paths: guardPaths("pause")},
+	{envKey: "EXEC", paths: []string{"/containers/*/exec", "/libpod/containers/*/exec"}},
+}
+
+func guardPaths(sub string) []string {
+	return []string{"/containers/*/" + sub, "/libpod/containers/*/" + sub, "/libpod/pods/*/" + sub}
+}
+
+// linuxServerGranularRules are the LinuxServer-flavor POST allows for
+// container and pod lifecycle actions. Each path carries every variable that
+// grants it, so ALLOW_START and LIBPOD_ALLOW_START open the one rule rather
+// than generating two.
+var linuxServerGranularRules = []struct {
+	envKeys []string
+	path    string
+}{
+	{envKeys: []string{"ALLOW_START"}, path: "/libpod/containers/*/start"},
+	{envKeys: []string{"ALLOW_STOP", "ALLOW_RESTARTS", "ALLOW_RESTART"}, path: "/libpod/containers/*/stop"},
+	{envKeys: []string{"ALLOW_RESTARTS", "ALLOW_RESTART"}, path: "/libpod/containers/*/restart"},
+	{envKeys: []string{"ALLOW_RESTARTS", "ALLOW_RESTART"}, path: "/libpod/containers/*/kill"},
+	{envKeys: []string{"ALLOW_PAUSE"}, path: "/libpod/containers/*/pause"},
+	{envKeys: []string{"ALLOW_UNPAUSE"}, path: "/libpod/containers/*/unpause"},
+	{envKeys: []string{"ALLOW_START"}, path: "/libpod/pods/*/start"},
+	{envKeys: []string{"ALLOW_STOP", "ALLOW_RESTARTS", "ALLOW_RESTART"}, path: "/libpod/pods/*/stop"},
+	{envKeys: []string{"ALLOW_RESTARTS", "ALLOW_RESTART"}, path: "/libpod/pods/*/restart"},
+	{envKeys: []string{"ALLOW_RESTARTS", "ALLOW_RESTART"}, path: "/libpod/pods/*/kill"},
+	{envKeys: []string{"ALLOW_PAUSE"}, path: "/libpod/pods/*/pause"},
+	{envKeys: []string{"ALLOW_UNPAUSE"}, path: "/libpod/pods/*/unpause"},
+}
+
+// linuxServerLibpodGranularRules are LinuxServer's LIBPOD_ALLOW_* variables.
+var linuxServerLibpodGranularRules = []struct {
+	envKeys []string
+	path    string
+}{
+	{envKeys: []string{"LIBPOD_ALLOW_START"}, path: "/libpod/containers/*/start"},
+	{envKeys: []string{"LIBPOD_ALLOW_STOP", "LIBPOD_ALLOW_RESTARTS"}, path: "/libpod/containers/*/stop"},
+	{envKeys: []string{"LIBPOD_ALLOW_RESTARTS"}, path: "/libpod/containers/*/restart"},
+	{envKeys: []string{"LIBPOD_ALLOW_RESTARTS"}, path: "/libpod/containers/*/kill"},
+	{envKeys: []string{"LIBPOD_ALLOW_PAUSE"}, path: "/libpod/containers/*/pause"},
+	{envKeys: []string{"LIBPOD_ALLOW_UNPAUSE"}, path: "/libpod/containers/*/unpause"},
+	{envKeys: []string{"LIBPOD_ALLOW_POD_START"}, path: "/libpod/pods/*/start"},
+	{envKeys: []string{"LIBPOD_ALLOW_POD_STOP", "LIBPOD_ALLOW_POD_RESTARTS"}, path: "/libpod/pods/*/stop"},
+	{envKeys: []string{"LIBPOD_ALLOW_POD_RESTARTS"}, path: "/libpod/pods/*/restart"},
+	{envKeys: []string{"LIBPOD_ALLOW_POD_RESTARTS"}, path: "/libpod/pods/*/kill"},
+	{envKeys: []string{"LIBPOD_ALLOW_POD_PAUSE"}, path: "/libpod/pods/*/pause"},
+	{envKeys: []string{"LIBPOD_ALLOW_POD_UNPAUSE"}, path: "/libpod/pods/*/unpause"},
+}
+
+// linuxServerLibpodSectionRules are LinuxServer's LIBPOD_* sections. PING and
+// VERSION default on, every other section off, as in the upstream image.
+var linuxServerLibpodSectionRules = []struct {
+	envKey       string
+	path         string
+	defaultAllow bool
+}{
+	{envKey: "LIBPOD_PING", path: "/libpod/_ping", defaultAllow: true},
+	{envKey: "LIBPOD_VERSION", path: "/libpod/version", defaultAllow: true},
+	{envKey: "LIBPOD_CONTAINERS", path: "/libpod/containers/**"},
+	{envKey: "LIBPOD_EVENTS", path: "/libpod/events"},
+	{envKey: "LIBPOD_EXEC", path: "/libpod/exec/**"},
+	{envKey: "LIBPOD_GENERATE", path: "/libpod/generate/**"},
+	{envKey: "LIBPOD_IMAGES", path: "/libpod/images/**"},
+	{envKey: "LIBPOD_INFO", path: "/libpod/info"},
+	{envKey: "LIBPOD_MANIFESTS", path: "/libpod/manifests/**"},
+	{envKey: "LIBPOD_NETWORKS", path: "/libpod/networks/**"},
+	{envKey: "LIBPOD_PLAY", path: "/libpod/play/**"},
+	{envKey: "LIBPOD_PODS", path: "/libpod/pods/**"},
+	{envKey: "LIBPOD_SECRETS", path: "/libpod/secrets/**"},
+	{envKey: "LIBPOD_SYSTEM", path: "/libpod/system/**"},
+	{envKey: "LIBPOD_VOLUMES", path: "/libpod/volumes/**"},
 }
 
 var compatSectionRules = []struct {
@@ -65,8 +190,8 @@ var compatGranularPostRules = []struct {
 	{envKeys: []string{"ALLOW_UNPAUSE"}, method: "POST", path: "/containers/*/unpause"},
 }
 
-// ApplyCompat detects Tecnativa-style env vars and generates equivalent
-// RuleConfig entries. Returns true if any Tecnativa vars were detected.
+// ApplyCompat detects Tecnativa and LinuxServer style env vars and generates
+// equivalent RuleConfig entries. Returns true if any compat vars were detected.
 // Activates only when the effective ruleset still matches the built-in
 // defaults — regardless of whether those defaults came from the fallback
 // path or from a YAML file that happens to be byte-identical to them (the
@@ -74,28 +199,53 @@ var compatGranularPostRules = []struct {
 // defaults, so an earlier `rulesExplicitlyConfigured` guard here silently
 // broke the README Quick Start for anyone using the published image with
 // the Tecnativa-style env example).
+//
+// Setting any LinuxServer-only variable (see linuxServerOnlyCompatVars)
+// selects the LinuxServer flavor: deny guards first, then granular and section
+// allows including the libpod ones. Otherwise the Tecnativa rules are
+// generated exactly as they always were.
 func ApplyCompat(cfg *Config, logger *slog.Logger) bool {
-	if !rulesMatchDefaults(cfg.Rules) {
-		return false
-	}
+	warnUnmappedCompatEnvVars(logger)
 
 	if !hasCompatEnvVars() {
 		return false
 	}
 
-	logger.Info("tecnativa compatibility mode active",
+	if !rulesMatchDefaults(cfg.Rules) {
+		logger.Warn("compat env vars ignored because rules are configured",
+			"vars", strings.Join(CompatEnvironmentVariables(), ","),
+			"note", "remove the rules to use compat env vars, or remove the env vars",
+		)
+		return false
+	}
+
+	flavor := compatFlavorTecnativa
+	if linuxServerFlavorActive() {
+		flavor = compatFlavorLinuxServer
+	}
+
+	logger.Info(flavor+" compatibility mode active",
 		"note", "generating rules from environment variables",
+		"flavor", flavor,
 		"vars", strings.Join(compatEnvVarSettings(), ","),
 	)
 	warnInvalidCompatEnvVars(logger)
 
-	rules := generateSectionRules()
-	rules = append(rules, generateGranularPostRules()...)
+	var rules []RuleConfig
+	if flavor == compatFlavorLinuxServer {
+		rules = generateLinuxServerRules()
+	} else {
+		rules = generateSectionRules()
+		rules = append(rules, generateGranularPostRules()...)
+	}
 	rules = append(rules, catchAllDenyRule())
 
 	cfg.Rules = rules
 	cfg.compatGeneratedRules = true
 
+	// The ContainerRemove relaxation below keys on the Tecnativa vars only
+	// (ALLOW_DELETE, CONTAINERS+POST). LinuxServer has no delete variable, and
+	// the libpod sections are not part of it.
 	// ALLOW_DELETE and the broader CONTAINERS=1 + POST=1 section grant both
 	// predate Sockguard's query inspector and admit the full Tecnativa
 	// container-remove call surface. Preserve that compatibility behavior
@@ -178,6 +328,31 @@ func ApplyCompat(cfg *Config, logger *slog.Logger) bool {
 	return true
 }
 
+// linuxServerFlavorActive reports whether any LinuxServer-only rule-generating
+// variable is present in the environment, whatever its value. Presence is
+// enough because copying the upstream image's own defaults (ALLOW_LOGS=0) is the
+// clearest signal the operator wants its guard semantics.
+func linuxServerFlavorActive() bool {
+	for _, key := range linuxServerOnlyCompatVars {
+		if _, ok := os.LookupEnv(key); ok {
+			return true
+		}
+	}
+	return false
+}
+
+func warnUnmappedCompatEnvVars(logger *slog.Logger) {
+	for _, v := range unmappedCompatVars {
+		if _, ok := os.LookupEnv(v.name); !ok {
+			continue
+		}
+		logger.Warn("recognized LinuxServer env var has no effect in sockguard",
+			"var", v.name,
+			"use_instead", v.replacement,
+		)
+	}
+}
+
 func hasCompatEnvVars() bool {
 	return len(CompatEnvironmentVariables()) > 0
 }
@@ -230,6 +405,49 @@ func generateSectionRules() []RuleConfig {
 	var rules []RuleConfig
 	methods := compatReadMethods()
 	for _, rule := range compatSectionRules {
+		if compatEnvEnabled(rule.envKey, rule.defaultAllow) {
+			rules = append(rules, newAllowRule(methods, rule.path))
+		}
+	}
+	return rules
+}
+
+// generateLinuxServerRules builds the LinuxServer-flavor rules without the
+// trailing catch-all: guard denies, granular allows, then section allows.
+// sockguard is first-match-wins, so the guards sit ahead of everything and a
+// guard beats a granular allow for the same action (ALLOW_PAUSE off denies
+// LIBPOD_ALLOW_PAUSE=1), exactly as haproxy's deny-before-allow order does.
+func generateLinuxServerRules() []RuleConfig {
+	var rules []RuleConfig
+	for _, guard := range linuxServerGuards {
+		if compatEnvEnabled(guard.envKey, false) {
+			continue
+		}
+		for _, path := range guard.paths {
+			rules = append(rules, RuleConfig{
+				Match:  MatchConfig{Method: "*", Path: path},
+				Action: "deny",
+				Reason: "linuxserver compat: " + guard.envKey + " is not enabled",
+			})
+		}
+	}
+
+	rules = append(rules, generateGranularPostRules()...)
+	for _, rule := range linuxServerGranularRules {
+		keys := append([]string(nil), rule.envKeys...)
+		for _, libpodRule := range linuxServerLibpodGranularRules {
+			if libpodRule.path == rule.path {
+				keys = append(keys, libpodRule.envKeys...)
+			}
+		}
+		if compatAnyEnvEnabled(keys...) {
+			rules = append(rules, newAllowRule("POST", rule.path))
+		}
+	}
+
+	rules = append(rules, generateSectionRules()...)
+	methods := compatReadMethods()
+	for _, rule := range linuxServerLibpodSectionRules {
 		if compatEnvEnabled(rule.envKey, rule.defaultAllow) {
 			rules = append(rules, newAllowRule(methods, rule.path))
 		}

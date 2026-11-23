@@ -2380,8 +2380,8 @@ configure `request_body.container_remove` to narrow those controls.
 
 Signed-policy mode cannot safely apply unsigned rule generation after verifying
 the candidate. When `--policy-bundle-trust-config` is set, the presence of any
-section variable, `POST`, `GRPC`/`SESSION`, or granular `ALLOW_*` variable is a
-startup error, even when the variable's value is false. A variable introduced
+section variable, `POST`, `GRPC`/`SESSION`, granular `ALLOW_*` variable, or
+LinuxServer `LIBPOD_*` variable is a startup error, even when the variable's value is false. A variable introduced
 after startup makes the next reload fail with `reject_compat`; the running
 policy stays active. Convert compatibility rules to YAML before signing.
 
@@ -2407,6 +2407,38 @@ Sockguard also accepts the legacy singular `ALLOW_RESTART=1` alias, but `ALLOW_R
 allowing force removal, anonymous-volume removal, and slash-bearing legacy link
 removal as well as a bare delete. Move the rule to YAML and configure
 `request_body.container_remove` when you want those three controls separated.
+
+### LinuxServer flavor
+
+Setting any LinuxServer-only variable, to any value, switches compat to LinuxServer's semantics: `ALLOW_ARCHIVE`, `ALLOW_CHANGES`, `ALLOW_EXPORT`, `ALLOW_LOGS`, `ALLOW_TOP`, or any `LIBPOD_*` variable. Copying LinuxServer's own `ALLOW_LOGS=0` is enough. Without one of them you get the Tecnativa flavor above, unchanged. The startup log carries `flavor=tecnativa` or `flavor=linuxserver`. `TIMEOUT_CLIENT`, `TIMEOUT_SERVER` and `DISABLE_IPV6` generate no rules, log a warning, and don't select a flavor.
+
+Rules are generated in this order, first match wins:
+
+1. Deny guards, one set per guard whose variable isn't enabled. Every guard is off by default.
+2. Granular allows.
+3. Section allows.
+4. The catch-all deny.
+
+| Variable | Default | Effect |
+|----------|---------|--------|
+| `ALLOW_ARCHIVE` | off | Lifts the deny on `*/archive` |
+| `ALLOW_CHANGES` | off | Lifts the deny on `*/changes` |
+| `ALLOW_EXPORT` | off | Lifts the deny on `*/export` |
+| `ALLOW_LOGS` | off | Lifts the deny on `*/logs` |
+| `ALLOW_TOP` | off | Lifts the deny on `*/top` |
+| `ALLOW_PAUSE` | off | Lifts the deny on `*/pause`, and allows `POST */pause` |
+| `EXEC` | off | Lifts the deny on `*/exec` and opens `/exec/**` |
+| `ALLOW_START`, `ALLOW_STOP`, `ALLOW_RESTARTS`, `ALLOW_UNPAUSE` | off | `POST` on the action for `/containers/*`, `/libpod/containers/*` and `/libpod/pods/*` |
+| `LIBPOD_ALLOW_START`, `_STOP`, `_RESTARTS`, `_PAUSE`, `_UNPAUSE` | off | `POST /libpod/containers/*/<action>` |
+| `LIBPOD_ALLOW_POD_START`, `_STOP`, `_RESTARTS`, `_PAUSE`, `_UNPAUSE` | off | `POST /libpod/pods/*/<action>` |
+| `LIBPOD_PING` | on | `/libpod/_ping` |
+| `LIBPOD_VERSION` | on | `/libpod/version` |
+| `LIBPOD_EVENTS`, `LIBPOD_INFO` | off | `/libpod/events`, `/libpod/info` |
+| `LIBPOD_CONTAINERS`, `_EXEC`, `_GENERATE`, `_IMAGES`, `_MANIFESTS`, `_NETWORKS`, `_PLAY`, `_PODS`, `_SECRETS`, `_SYSTEM`, `_VOLUMES` | off | `/libpod/<section>/**` |
+
+Guards are ordered ahead of every allow, so `ALLOW_PAUSE` off denies pause even when `LIBPOD_ALLOW_PAUSE=1`. That matches LinuxServer. Libpod sections use `GET,HEAD` unless `POST=1`, then all methods, and the Docker-side `ContainerRemove` relaxation for `ALLOW_DELETE` and `CONTAINERS=1` with `POST=1` stays Tecnativa-only. The libpod rules go through the same startup checks as hand-written ones: read-exfiltration and body-blind-write acknowledgments apply to the matching libpod paths, and libpod request bodies are still inspected.
+
+If compat vars are set but your `rules:` block differs from the defaults, no rules are generated and sockguard logs a warning listing the variables it ignored.
 
 ## Precedence
 
