@@ -225,7 +225,9 @@ function parseArgs(argv) {
     const flag = argv[i];
     const value = argv[i + 1];
     if (value === undefined || !["--dir", "--config", "--port", "--host"].includes(flag)) {
-      throw new Error(`usage: serve-static-export.mjs [--dir D] [--config F] [--port N] [--host H]`);
+      throw new Error(
+        `usage: serve-static-export.mjs [--dir D] [--config F] [--port N] [--host H]`,
+      );
     }
     opts[flag.slice(2)] = flag === "--port" ? Number(value) : value;
   }
