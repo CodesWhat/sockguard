@@ -400,3 +400,22 @@ test("theme provider follows the system preference until a stored choice exists"
   const layout = readFileSync(new URL("./layout.tsx", import.meta.url), "utf8");
   assert.match(layout, /suppressHydrationWarning/u);
 });
+
+test("the codeswhat.com backlink is in the site footers, the README and the hero install CTA", () => {
+  const LINE = "small, sharp tools from one developer and a lot of agents";
+  const read = (path) => readFileSync(new URL(path, import.meta.url), "utf8");
+  for (const path of ["../components/footer.tsx", "../../../docs/src/components/footer.tsx"]) {
+    const source = read(path);
+    assert.ok(
+      source.includes('"https://codeswhat.com"'),
+      `${path} must define the codeswhat.com URL`,
+    );
+    assert.ok(source.includes("href={CODESWHAT_SITE}"), `${path} must link CODESWHAT_SITE`);
+    assert.ok(source.includes(LINE), `${path} must carry the backlink text`);
+  }
+  assert.ok(read("../../../README.md").includes(`[${LINE}](https://codeswhat.com)`));
+
+  // The hero install CTA targets the get-started section, which must exist.
+  assert.ok(read("../components/hero.tsx").includes('href="#get-started"'));
+  assert.ok(read("./page.tsx").includes('id="get-started"'));
+});
