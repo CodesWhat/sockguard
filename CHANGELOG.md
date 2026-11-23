@@ -24,6 +24,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Route warnings now cover libpod manifests, and the known-route catalog is pinned to Engine API 1.57 (docker-v29.10.0) and Podman 6.2.0.
 - Close the v3.1 mutation target with the November 6 measurement: 97.9821% test efficacy across all 43 packages at the source tree merged as `7dbc523f`, above the unchanged 97.8% target, with timeouts separate from kills.
 
 ### Security
