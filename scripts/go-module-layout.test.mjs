@@ -89,9 +89,10 @@ test("temporary staged compatibility packages are absent from the final tree", (
   assert.equal(hasTemporaryInternalCopy(read("Dockerfile")), false);
 
   const workflow = read(".github/workflows/ci-verify.yml");
-  assert.match(
-    read(".github/ci-fuzzers.json"),
-    /"name":"FuzzDecode","pkg":"\.\/internal\/dockerfilters\/"/,
+  assert.ok(
+    JSON.parse(read(".github/ci-fuzzers.json")).some(
+      (fuzzer) => fuzzer.name === "FuzzDecode" && fuzzer.pkg === "./internal/dockerfilters/",
+    ),
   );
   // The reusable Go Fuzz job cds into module-directory (app) before running
   // the caller-owned fuzzer, same as the old inline working-directory: app.
