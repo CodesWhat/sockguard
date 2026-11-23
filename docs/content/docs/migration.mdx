@@ -346,7 +346,7 @@ Replace the flag with the CA that issued the daemon certificate:
 
 The Docker environment fallback follows the same schedule. A non-empty `DOCKER_TLS` with `DOCKER_TLS_VERIFY` empty or unset selects unverified TLS; set `DOCKER_TLS_VERIFY=1` before v3.0.0. Any non-empty verification value, including `0` or `false`, enables verification and takes precedence over `DOCKER_TLS`, matching the Docker CLI's environment semantics. When TLS is enabled, sockguard requires `ca.pem` from `DOCKER_CERT_PATH`, otherwise `DOCKER_CONFIG`, otherwise `~/.docker`; it presents `cert.pem` / `key.pem` only when both exist. `DOCKER_CERT_PATH` alone only locates material and does not enable TLS. Bare and portless TCP hosts default to port `2375`; a TCP URL path is preserved as the API prefix across proxy, inspection, readiness, attach/exec, BuildKit, and failover traffic; and valid custom Unix socket names retain their literal bytes after Docker-compatible URL validation. Absolute Unix paths preserve percent escapes and raw `?` or `#`, while relative host-form escapes such as `%2F` and `%3F` are invalid. An invalid explicit `DOCKER_HOST` fails startup instead of falling through to `upstream.socket`.
 
-The five sections below were checked against these upstream versions on 2026-11-01, re-checked at every release cut: Tecnativa `docker-socket-proxy` v0.5.0, LinuxServer `docker-socket-proxy` 3.4.7-r0-ls104, wollomatic `socket-proxy` 1.13.2, 11notes `docker-socket-proxy` v2.2.0, and hectorm `cetusguard` v1.1.4.
+The five sections below were checked against these upstream versions on 2026-11-01, re-checked at every release cut: Tecnativa `docker-socket-proxy` v0.5.0, LinuxServer `docker-socket-proxy` 3.4.8-r0-ls107 (re-checked 2026-11-23), wollomatic `socket-proxy` 1.13.2, 11notes `docker-socket-proxy` v2.2.0, and hectorm `cetusguard` v1.1.4.
 
 ## From Tecnativa/docker-socket-proxy
 
@@ -417,31 +417,44 @@ rules:
 
 ## From LinuxServer/socket-proxy
 
-Same process as Tecnativa. Sockguard reads ten granular operation env vars:
+Same process as Tecnativa: set the env vars you already have and sockguard generates the rules. LinuxServer's image has a few semantics Tecnativa's doesn't, so sockguard reads your environment in one of two flavors.
 
-```bash
-ALLOW_CREATE=1
-ALLOW_DELETE=1
-ALLOW_EXEC=1
-ALLOW_KILL=1
-ALLOW_PAUSE=1
-ALLOW_PRUNE=1
-ALLOW_RESTARTS=1  # or the legacy singular ALLOW_RESTART=1; both map to the same rules
-ALLOW_START=1
-ALLOW_STOP=1
-ALLOW_UNPAUSE=1
-```
+### Which flavor you get
 
-[Granular Operations](/configuration#granular-operations-linuxserver-compatible) lists the rule each one generates. `ALLOW_RESTARTS` covers more than one endpoint, generating the kill, restart, and stop rules together, and the legacy singular `ALLOW_RESTART` maps to exactly the same three. Every other var maps to one rule.
+If any LinuxServer-only variable is set, to any value, sockguard uses the LinuxServer flavor. Those variables are `ALLOW_ARCHIVE`, `ALLOW_CHANGES`, `ALLOW_EXPORT`, `ALLOW_LOGS`, `ALLOW_TOP`, and every `LIBPOD_*` variable. Otherwise it uses the Tecnativa flavor, which generates exactly the rules it always has. The startup log says which one is active (`flavor=tecnativa` or `flavor=linuxserver`).
 
-### Ignored on purpose
+The value doesn't matter to flavor selection, only that the variable is present. Use `0` and `1` for the values: LinuxServer's haproxy reads these variables as integers, so `true` and `yes` only work here. LinuxServer's own image sets `ALLOW_LOGS=0` and the rest of its defaults, so if you copy that block, or any one line of it, you get LinuxServer's exact behavior. If you only set `CONTAINERS=1`, sockguard can't tell which proxy you came from, so you get Tecnativa's. That's wider than what you ran on LinuxServer: if you never set any of the guard variables there, logs, archive, export, top, changes and exec on containers are now allowed. Add one of them, for example `ALLOW_LOGS=0`, to get the guards back. Sockguard logs a startup line saying the guards aren't applied whenever `CONTAINERS` is on in the Tecnativa flavor.
 
-LinuxServer's image documents several env vars Sockguard has no equivalent for. `LOG_LEVEL` and `SOCKET_PATH` are not on this list — both map, covered above.
+The difference matters for six sub-resources. In LinuxServer's proxy, `ALLOW_ARCHIVE`, `ALLOW_CHANGES`, `ALLOW_EXPORT`, `ALLOW_LOGS`, `ALLOW_TOP` and `ALLOW_PAUSE` (plus `EXEC` for exec create) are deny guards that run before any allow. With `CONTAINERS=1` alone, `GET /containers/x/logs` is denied until you set `ALLOW_LOGS=1`. Tecnativa's `CONTAINERS=1` allows it. In the LinuxServer flavor sockguard generates the guards first, one deny per guard that isn't enabled, on `/containers/*/<name>`, `/libpod/containers/*/<name>` and `/libpod/pods/*/<name>` (exec guards the two container paths).
 
-- `DISABLE_IPV6`: a container-network toggle (bind to IPv4 only) that has no Sockguard equivalent; pick the bind with `listen.address` instead.
-- `ALLOW_ARCHIVE`, `ALLOW_CHANGES`, `ALLOW_EXPORT`, `ALLOW_LOGS`, `ALLOW_TOP`: LinuxServer's own GET-only per-sub-resource gates for `/containers/{id}/archive`, `/changes`, `/export`, `/logs`, and `/top`. Sockguard has no matching granular var; `CONTAINERS=1` (with the read-exfiltration acknowledgment) admits all of them at once, or write a YAML rule against the specific path.
-- `LIBPOD_*` (all fifteen: `LIBPOD_CONTAINERS`, `LIBPOD_EVENTS`, `LIBPOD_EXEC`, `LIBPOD_GENERATE`, `LIBPOD_IMAGES`, `LIBPOD_INFO`, `LIBPOD_MANIFESTS`, `LIBPOD_NETWORKS`, `LIBPOD_PING`, `LIBPOD_PLAY`, `LIBPOD_PODS`, `LIBPOD_SECRETS`, `LIBPOD_SYSTEM`, `LIBPOD_VERSION`, `LIBPOD_VOLUMES`): LinuxServer's compat vars for Podman's libpod-native API. Sockguard inspects several `/libpod/**` request bodies natively (build, container create, image load) but generates no rules from these vars — `compatVars` has no `LIBPOD_*` entries — so a Podman `/libpod/**` deployment needs hand-written YAML rules for that path family instead.
+Because the guards come first, they beat a granular allow too: with `ALLOW_PAUSE` off, `LIBPOD_ALLOW_PAUSE=1` still can't pause anything. That's how LinuxServer behaves, and sockguard keeps it. A malformed value (`ALLOW_LOGS=maybe`) counts as not enabled, so the guard stays.
+
+### Mapped variables
+
+| LinuxServer variable | Generated rule |
+|----------------------|----------------|
+| `CONTAINERS`, `IMAGES`, `NETWORKS`, `VOLUMES`, `SECRETS`, ... and `POST` | Same as Tecnativa: `/<section>/**`, `GET,HEAD` unless `POST=1` |
+| `ALLOW_ARCHIVE`, `ALLOW_CHANGES`, `ALLOW_EXPORT`, `ALLOW_LOGS`, `ALLOW_TOP`, `ALLOW_PAUSE`, `EXEC` | Lifts the matching deny guard when true |
+| `ALLOW_START`, `ALLOW_STOP`, `ALLOW_RESTARTS`, `ALLOW_PAUSE`, `ALLOW_UNPAUSE` | `POST` on `/containers/*/<action>` in either flavor. In the LinuxServer flavor only, also `/libpod/containers/*/<action>` and `/libpod/pods/*/<action>`. `ALLOW_RESTARTS` covers stop, restart and kill. |
+| `LIBPOD_ALLOW_START`, `_STOP`, `_RESTARTS`, `_PAUSE`, `_UNPAUSE` | `POST` on `/libpod/containers/*/<action>` |
+| `LIBPOD_ALLOW_POD_START`, `_STOP`, `_RESTARTS`, `_PAUSE`, `_UNPAUSE` | `POST` on `/libpod/pods/*/<action>` |
+| `LIBPOD_PING`, `LIBPOD_VERSION` | `/libpod/_ping`, `/libpod/version`. On by default, as in LinuxServer's image. |
+| `LIBPOD_CONTAINERS`, `_EVENTS`, `_EXEC`, `_GENERATE`, `_IMAGES`, `_INFO`, `_MANIFESTS`, `_NETWORKS`, `_PLAY`, `_PODS`, `_SECRETS`, `_SYSTEM`, `_VOLUMES` | `/libpod/<section>/**` (`/libpod/events` and `/libpod/info` exactly). Off by default. `GET,HEAD` unless `POST=1`. |
+| `LOG_LEVEL`, `SOCKET_PATH` | Map as covered above |
+
+The Tecnativa-style `ALLOW_CREATE`, `ALLOW_DELETE`, `ALLOW_EXEC`, `ALLOW_KILL` and `ALLOW_PRUNE` still work in either flavor. [Granular Operations](/configuration#granular-operations-linuxserver-compatible) and [LinuxServer flavor](/configuration#linuxserver-flavor) list the rules each one generates. In the LinuxServer flavor, exec create still needs `EXEC=1` because that guard comes first, so `ALLOW_EXEC=1` alone won't open it. `EXEC=1` also doesn't open `/containers/*/exec` by itself, as in LinuxServer: that path needs `CONTAINERS=1` too, and exec request bodies are still inspected.
+
+The libpod sections get the same startup checks as their Docker twins. `LIBPOD_CONTAINERS=1`, `LIBPOD_IMAGES=1` and `LIBPOD_GENERATE=1` need `insecure_allow_read_exfiltration`, and `LIBPOD_PLAY=1` with `POST=1` needs `insecure_allow_body_blind_writes`. Container create, build and the other body-inspected libpod writes are inspected exactly as they are on a hand-written rule.
+
+### Not mapped
+
+These variables are recognized but generate no rules. Sockguard logs a warning at startup naming the variable (never its value) and the key to set instead.
+
+- `TIMEOUT_CLIENT`, `TIMEOUT_SERVER`: haproxy inactivity timeouts, in minutes. Use `upstream.request_timeout` and `upstream.hijack_inactivity_timeout`.
+- `DISABLE_IPV6`: a bind toggle in LinuxServer's container. Pick the bind with `listen.address`.
 - `TZ`: a generic container timezone setting, not an API-gating var; Sockguard's config has nothing that reads it.
+
+None of these select the LinuxServer flavor.
 
 ## From wollomatic/socket-proxy
 
