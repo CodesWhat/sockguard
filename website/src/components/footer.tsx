@@ -12,6 +12,7 @@ import {
 } from "@/lib/site-config";
 
 const CODESWHAT = "https://github.com/CodesWhat";
+const CODESWHAT_SITE = "https://codeswhat.com";
 const YEAR = new Date().getFullYear();
 const BLURB =
   "We built an open-source Docker socket proxy that blocks every request by default. Drop it in front of your socket and control exactly what gets through. Signed policy bundles, per-profile rollout modes, Prometheus metrics, all in one lean Go binary with zero daemon dependencies.";
@@ -116,6 +117,11 @@ export function Footer() {
               <span>{SITE_CONFIG.name}</span>
             </Link>
             <p className="fblurb">{BLURB}</p>
+            <p className="fblurb">
+              <a href={CODESWHAT_SITE} target="_blank" rel="noopener noreferrer">
+                small, sharp tools from one developer and a lot of agents
+              </a>
+            </p>
             <div className="icons">
               <TrackedLink
                 href={GITHUB_URL}

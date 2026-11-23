@@ -652,6 +652,8 @@ See [portwing's COMPATIBILITY.md](https://github.com/CodesWhat/portwing/blob/mai
 
 **[MIT License](LICENSE)**
 
+[small, sharp tools from one developer and a lot of agents](https://codeswhat.com)
+
 <a href="https://github.com/CodesWhat">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset=".github/assets/codeswhat-logo-dark.svg" />
