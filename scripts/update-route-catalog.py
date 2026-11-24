@@ -18,14 +18,16 @@ has no h2c support; see TestServeHandlerRefusesJobsGRPCOverH2C.
 
 import concurrent.futures
 import json
+import os
 import pathlib
 import re
 import urllib.request
 
-# Commit behind the docker-v29.10.0 tag (Engine API 1.57).
-ENGINE_REV = "06db1734267bf7770914b417bff6556d835bf8cc"
-# Commit behind the v6.2.0 tag (Podman 6.2.0).
-PODMAN_REV = "055de046937d29450f310fce0fe3071485d8bed9"
+# Commit behind the docker-v29.10.0 tag (Engine API 1.57). The monthly API
+# watch overrides it with SOCKGUARD_ENGINE_REV to re-derive at the latest tag.
+ENGINE_REV = os.environ.get("SOCKGUARD_ENGINE_REV") or "06db1734267bf7770914b417bff6556d835bf8cc"
+# Commit behind the v6.2.0 tag (Podman 6.2.0). Override: SOCKGUARD_PODMAN_REV.
+PODMAN_REV = os.environ.get("SOCKGUARD_PODMAN_REV") or "055de046937d29450f310fce0fe3071485d8bed9"
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 
 
