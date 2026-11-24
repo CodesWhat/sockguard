@@ -189,8 +189,11 @@ jobs:
 
       # Latest release tag, not main: SpecGenerator is the create surface and
       # only releases are what users run.
+      # Runs even when the main-branch UpdateEntities check fails, so
+      # SpecGenerator drift isn't hidden behind unrelated drift.
       - name: Resolve latest Podman release tag
         id: podman
+        if: ${{ !cancelled() && steps.drift.outcome != 'skipped' }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -205,6 +208,7 @@ jobs:
 
       - name: Compare SpecGenerator snapshots against latest Podman release
         id: specgen
+        if: ${{ !cancelled() && steps.podman.outcome == 'success' }}
         working-directory: app
         env:
           SOCKGUARD_TEST_PODMAN_UPSTREAM_REF: ${{ steps.podman.outputs.tag }}
@@ -290,7 +294,9 @@ jobs:
       - name: Fail on route drift
         env:
           ENGINE_TAG: ${{ steps.tags.outputs.engine_tag }}
+          ENGINE_SHA: ${{ steps.tags.outputs.engine_sha }}
           PODMAN_TAG: ${{ steps.tags.outputs.podman_tag }}
+          PODMAN_SHA: ${{ steps.tags.outputs.podman_sha }}
         run: |
           set -euo pipefail
           CATALOG=app/internal/cmd/known_api_routes.json
@@ -311,7 +317,7 @@ jobs:
             if git diff --quiet -- "${CATALOG}"; then
               echo "**Result: catalog matches upstream.**" >> "$GITHUB_STEP_SUMMARY"
             else
-              echo "::warning::Routes match, but newer upstream tags exist. Bump ENGINE_REV and PODMAN_REV in scripts/update-route-catalog.py to ${ENGINE_TAG} and ${PODMAN_TAG}."
+              echo "::warning::Routes match, but newer upstream tags exist. Bump ENGINE_REV and PODMAN_REV in scripts/update-route-catalog.py to ${ENGINE_SHA} (${ENGINE_TAG}) and ${PODMAN_SHA} (${PODMAN_TAG})."
               echo "**Result: routes match; pinned revisions are behind.**" >> "$GITHUB_STEP_SUMMARY"
             fi
             exit 0
