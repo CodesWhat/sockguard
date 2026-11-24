@@ -400,12 +400,25 @@ jobs:
     if: ${{ !cancelled() && github.event_name != 'schedule' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 25
+    # The official Playwright image ships the browsers (/ms-playwright, with
+    # PLAYWRIGHT_BROWSERS_PATH set) and every system library, so nothing hits
+    # apt or Playwright's CDN at runtime. That install used to blow the job
+    # timeout on a slow Ubuntu mirror. The image tag and the lockfile's
+    # playwright-core must move together; the guard step below enforces it.
+    # `--user 1001` is the runner uid, per Playwright's CI docs, so Firefox
+    # doesn't refuse a root-owned HOME.
+    container:
+      image: mcr.microsoft.com/playwright:v1.64.1-noble@sha256:2f05f8a734509a7b3f26a912639488ee08f58a7b292d14d62271bcff9038768f
+      options: --user 1001
+    env:
+      PLAYWRIGHT_IMAGE_VERSION: 1.64.1
     permissions:
       contents: read
     steps:
-      # Audit mode without disable-sudo: `playwright install --with-deps`
-      # apt-installs the system libraries Firefox and WebKit need, which takes
-      # sudo and reaches the Ubuntu archive plus Playwright's CDN.
+      # Audit mode. Harden Runner skips container jobs on GitHub-hosted
+      # runners (it prints a notice and exits without monitoring), so this
+      # step is a no-op here. It stays so the job keeps the same shape as its
+      # siblings and the workflow policy tests keep seeing one on every job.
       - name: Harden Runner
         uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43  # v2.22.3
         with:
@@ -429,16 +442,13 @@ jobs:
       - name: Build static export
         run: npm run build
 
-      # Browser binaries only; the apt libraries below are not cacheable.
-      - name: Cache Playwright browsers
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
-        with:
-          path: ~/.cache/ms-playwright
-          key: playwright-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
-
-      - name: Install Playwright browsers and system libraries
-        working-directory: website
-        run: npx playwright install --with-deps chromium firefox webkit
+      - name: Check Playwright image matches the lockfile
+        run: |
+          locked=$(node -p "require('./package-lock.json').packages['node_modules/playwright-core'].version")
+          if [ "$locked" != "$PLAYWRIGHT_IMAGE_VERSION" ]; then
+            echo "::error::package-lock.json pins playwright-core $locked but the job image is Playwright $PLAYWRIGHT_IMAGE_VERSION. Update the container image tag and PLAYWRIGHT_IMAGE_VERSION together."
+            exit 1
+          fi
 
       - name: Run browser checks (Chromium, Firefox, WebKit)
         working-directory: website
