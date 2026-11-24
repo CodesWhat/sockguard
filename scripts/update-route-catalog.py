@@ -18,19 +18,28 @@ has no h2c support; see TestServeHandlerRefusesJobsGRPCOverH2C.
 
 import concurrent.futures
 import json
+import os
 import pathlib
 import re
+import urllib.parse
 import urllib.request
 
-# Commit behind the docker-v29.10.0 tag (Engine API 1.57).
-ENGINE_REV = "06db1734267bf7770914b417bff6556d835bf8cc"
-# Commit behind the v6.2.0 tag (Podman 6.2.0).
-PODMAN_REV = "055de046937d29450f310fce0fe3071485d8bed9"
+# Commit behind the docker-v29.10.0 tag (Engine API 1.57). The monthly API
+# watch overrides it with SOCKGUARD_ENGINE_REV to re-derive at the latest tag.
+ENGINE_REV = os.environ.get("SOCKGUARD_ENGINE_REV") or "06db1734267bf7770914b417bff6556d835bf8cc"
+# Commit behind the v6.2.0 tag (Podman 6.2.0). Override: SOCKGUARD_PODMAN_REV.
+PODMAN_REV = os.environ.get("SOCKGUARD_PODMAN_REV") or "055de046937d29450f310fce0fe3071485d8bed9"
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 
 
 def fetch(url):
-    request = urllib.request.Request(url, headers={"User-Agent": "sockguard-route-catalog"})
+    headers = {"User-Agent": "sockguard-route-catalog"}
+    # Anonymous api.github.com calls share the runner IP's 60/hour limit, so
+    # send the workflow's credential when one is set. Only to api.github.com.
+    auth = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
+    if auth and urllib.parse.urlsplit(url).hostname == "api.github.com":
+        headers["Authorization"] = f"Bearer {auth}"
+    request = urllib.request.Request(url, headers=headers)
     with urllib.request.urlopen(request, timeout=30) as response:
         return response.read().decode()
 
