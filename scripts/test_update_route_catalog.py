@@ -55,6 +55,11 @@ class ParsePodmanRegister(unittest.TestCase):
     def test_catch_all_prefix_stubs_are_not_routes(self):
         self.assertEqual(catalog.parse_podman_register(STUBS, "x.go"), set())
 
+    def test_prefix_handler_other_than_noswarm_fails(self):
+        source = '\tr.PathPrefix("/libpod/new/").HandlerFunc(serveNew)\n'
+        with self.assertRaisesRegex(ValueError, "subrouter format changed"):
+            catalog.parse_podman_register(source, "x.go")
+
     def test_unknown_router_variable_fails(self):
         with self.assertRaises(ValueError):
             catalog.parse_podman_register('\tv9.Handle("/x", h).Methods(http.MethodGet)\n', "x.go")

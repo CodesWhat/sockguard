@@ -33,7 +33,7 @@ def fetch(url):
 METHODS = {"Get": "GET", "Head": "HEAD", "Post": "POST", "Put": "PUT", "Patch": "PATCH", "Delete": "DELETE", "Options": "OPTIONS"}
 VERSION_PREFIX = re.compile(r"^/v\{version:[^}]*\}")
 PREFIX_DECL = re.compile(r'(?m)^\s*(\w+)\s*:=\s*r\.PathPrefix\("([^"]+)"\)\.Subrouter\(\)')
-PREFIX_STUB = re.compile(r'(?m)^\s*r\.PathPrefix\("[^"]+"\)\.HandlerFunc\(\w+\)\s*$')
+PREFIX_STUB = re.compile(r'(?m)^\s*r\.PathPrefix\("[^"]+"\)\.HandlerFunc\(noSwarm\)\s*$')
 REGISTRATION = re.compile(r'(?m)^\s*(\w+)\.Handle(?:Func)?\((?:VersionedPath\()?"([^"]+)"[^\n]*?\.Methods\(([^\n]*)\)')
 HANDLE_CALL = re.compile(r"\b\w+\.Handle(?:Func)?\(")
 

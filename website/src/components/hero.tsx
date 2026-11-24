@@ -63,8 +63,12 @@ export function Hero() {
               Prometheus metrics.
             </p>
             <div className="ctas">
+              <a className="btn primary" href="#get-started">
+                <Icon name="terminal-window" />
+                Get started
+              </a>
               <TrackedLink
-                className="btn primary"
+                className="btn"
                 href={GITHUB_URL}
                 ctaId="github_repository"
                 placement="hero"
