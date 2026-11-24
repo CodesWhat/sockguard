@@ -379,6 +379,14 @@ names no pod, so it is refused with a `403` rather than forwarded, audited as
 way, audited as `owner_libpod_kube_down_unscopeable`: it names the pods, secrets
 and volumes it removes in a YAML body sockguard doesn't parse, so there's no
 owner to check.
+Manifest list writes are refused too, audited as
+`owner_libpod_manifest_write_unscopeable`: create, `POST`, `PUT` and `DELETE` on
+`/libpod/manifests/{name}`, `/add`, `/push` and `/registry/{destination}`. A
+list carries no owner label, the images it adds come from the query or body, and
+a push sends it to a destination the caller names, so there's nothing to check
+a caller against. Podman 6.2's `POST /libpod/volumes/{name}/rename` is refused
+as `owner_libpod_volume_rename_unscopeable`, because the new name isn't checked
+against other owners' volumes.
 `POST /commit` and `POST /libpod/commit` name their container in the `container`
 query parameter: that container is authorized on the terms above, and the owner
 label is stamped into the commit body's config so the new image is owned rather
