@@ -14,6 +14,17 @@
       "groupSlug": "knip"
     },
     {
+      "description": "Move the Playwright npm packages and the mcr.microsoft.com/playwright image that runs the website-browser job as one unit. The image carries the matching browser builds, so a solo bump of either side leaves the job running against mismatched browsers. The PLAYWRIGHT_IMAGE_VERSION env var in ci-verify.yml is not Renovate-managed; the job's guard step fails the grouped PR until it is bumped by hand to match.",
+      "matchPackageNames": [
+        "@playwright/test",
+        "playwright",
+        "playwright-core",
+        "mcr.microsoft.com/playwright"
+      ],
+      "groupName": "playwright",
+      "groupSlug": "playwright"
+    },
+    {
       "description": "app/compat is a test-only module that decodes redacted responses into the real Docker client types. Its replace directive points at the main module, so Renovate must not chase that require. docker/docker stays on v28 on purpose: that is the last line before the client moved to moby/moby/api, and the module exists to test both. The nested go.mod can lag when the root module moves; CI's \"Check app/compat go.mod is tidy\" step reports that drift explicitly, and the fix is go mod tidy in app/compat.",
       "matchManagers": ["gomod"],
       "matchFileNames": ["app/compat/go.mod"],
