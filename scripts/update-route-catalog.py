@@ -21,6 +21,7 @@ import json
 import os
 import pathlib
 import re
+import urllib.parse
 import urllib.request
 
 # Commit behind the docker-v29.10.0 tag (Engine API 1.57). The monthly API
@@ -32,7 +33,13 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 
 
 def fetch(url):
-    request = urllib.request.Request(url, headers={"User-Agent": "sockguard-route-catalog"})
+    headers = {"User-Agent": "sockguard-route-catalog"}
+    # Anonymous api.github.com calls share the runner IP's 60/hour limit, so
+    # send the workflow's credential when one is set. Only to api.github.com.
+    auth = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
+    if auth and urllib.parse.urlsplit(url).hostname == "api.github.com":
+        headers["Authorization"] = f"Bearer {auth}"
+    request = urllib.request.Request(url, headers=headers)
     with urllib.request.urlopen(request, timeout=30) as response:
         return response.read().decode()
 
