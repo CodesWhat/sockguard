@@ -9,6 +9,11 @@ check, which needs network access:
 
     python3 scripts/update-route-catalog.py
     git diff --exit-code app/internal/cmd/known_api_routes.json
+
+The catalog lists HTTP routes only. Native gRPC on the Docker socket, such as
+the moby Jobs extension (org.mobyproject.extension.jobs.api.v0.Jobs), is not an
+HTTP route and never appears here. Sockguard refuses it because its listener
+has no h2c support; see TestServeHandlerRefusesJobsGRPCOverH2C.
 """
 
 import concurrent.futures
