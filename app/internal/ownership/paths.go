@@ -171,7 +171,7 @@ func imageIdentifier(method, normPath string) (string, bool) {
 	// would 404, and the fail-closed lookup would deny even an owned image instead
 	// of authorizing the actual target.
 	//
-	// "/attestations" (GET /images/{name}/attestations, Engine API 1.53+) lists
+	// "/attestations" (GET /images/{name}/attestations, Engine API 1.55+) lists
 	// an image's signer/predicate metadata and must be owner-checked against
 	// {name} for the same reason: without it, imageIdentifier would return
 	// "{name}/attestations", the ownership inspect would 404, and the request

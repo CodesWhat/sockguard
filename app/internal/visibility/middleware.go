@@ -1633,7 +1633,7 @@ func containerReadIdentifier(normPath string) (string, bool) {
 
 // imageReadIdentifier matches every GET image read endpoint that discloses or
 // exfiltrates image data — inspect (/json), history, single-image export
-// (/get), and attestation listing (/attestations, Engine API 1.53+) — so a
+// (/get), and attestation listing (/attestations, Engine API 1.55+) — so a
 // hidden image is hidden across all of them.
 func imageReadIdentifier(normPath string) (string, bool) {
 	return readSubresourceIdentifier(normPath, "/images/", "json", "history", "get", "attestations")

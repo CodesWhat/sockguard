@@ -155,7 +155,7 @@ type Config struct {
 	// InsecureAcceptOpaqueBuildkitTunnels acknowledges opening POST /session,
 	// POST /grpc, or a direct BuildKit Control-service method path. Both
 	// endpoints are unversioned opaque hijacked streams: dockerd's embedded
-	// BuildKit frontend/session bridge, still used by current Buildx (0.36.0)
+	// BuildKit frontend/session bridge, still used by current Buildx (0.39.1)
 	// even though Engine API 1.53 deprecated them. Unlike the bounded exec
 	// escape hatch InsecureAllowBodyBlindWrites covers, these streams carry
 	// secrets, SSH agent forwarding, and arbitrary file sync with no request
@@ -495,7 +495,7 @@ type ResponseConfig struct {
 	RedactHostTopology bool `mapstructure:"redact_host_topology"`
 	// AllowAttestationStatements permits GET /images/{name}/attestations
 	// responses that include the full in-toto statement content
-	// (?statement=true). Engine API 1.53 added this endpoint; broad allow
+	// (?statement=true). Engine API 1.55 added this endpoint; broad allow
 	// rules such as "/images/**" (portainer.yaml) admit it at the rule-engine
 	// layer without knowing it exists, so this response-layer gate closes
 	// that gap independent of the rule set. Default false.

@@ -262,7 +262,7 @@ type buildkitTunnelEndpoint struct {
 // buildkitTunnelEndpoints probes the opaque, unversioned BuildKit
 // session/gRPC transport: POST /session (frontend/session bridge) and
 // POST /grpc (the moby.buildkit.v1.Control gRPC service tunneled over an
-// HTTP/1.1 hijack), still used by current Buildx (0.36.0) despite Engine API
+// HTTP/1.1 hijack), still used by current Buildx (0.39.1) despite Engine API
 // 1.53 deprecating both. Neither carries a request body sockguard can bound
 // or inspect once opened, so admitting either requires the dedicated
 // insecure_accept_opaque_buildkit_tunnels acknowledgment rather than the
