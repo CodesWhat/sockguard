@@ -43,7 +43,7 @@
 <hr>
 
 > [!NOTE]
-> **v2.4.8 is the latest stable release.** It backports a batch of request-filter, owner-isolation and shutdown security fixes and fixes random Buildx build failures. It carries v2.4.7. See [CHANGELOG.md](CHANGELOG.md) for the complete release notes.
+> **v2.4.9 is the latest stable release.** It fixes an owner-isolation gap on Podman's manifest list and volume rename routes. It carries v2.4.8. See [CHANGELOG.md](CHANGELOG.md) for the complete release notes.
 
 <h2 align="center">Contents</h2>
 
@@ -531,6 +531,7 @@ Added in 2.2.11: native Podman container and pod creates refuse caller-selected 
 | **v2.4.6** ✅ | zstd Decoder Security Fix | Updates the compression dependency to fix GO-2026-6865 / CVE-2026-116591, a panic on malformed zstd input. |
 | **v2.4.7** ✅ | OpenTelemetry and Go Security Fixes | Updates OpenTelemetry to 1.47.0 for GHSA-q7gw-24fr-5p69 and builds with Go 1.27.4 for GO-2026-6859. |
 | **v2.4.8** ✅ | Security Backports | Backports request-filter, owner-isolation, audit-log and shutdown security fixes, and fixes random Buildx build failures. |
+| **v2.4.9** ✅ | Owner Isolation Fix | Owner isolation now refuses Podman's libpod manifest list writes and the Podman 6.2 volume rename route, which had no owner check. |
 | **v2.x** | Supply Chain | `egress-policy: block` with curated allow-lists on high-privilege release jobs |
 | **v2.x** | Policy Refinement | Named rule path aliases and further response-policy refinement |
 | **v2.x** | Internals | Container-create ownership reference collectors are separated into bind, mount and endpoint helpers with the same isolation checks. Code-review backlog: collapse the config → filter-options → policy translation layers behind a single source of truth; profiling-gated JSON redaction fast path |
