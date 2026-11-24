@@ -1845,7 +1845,8 @@ unreachable. Upstream extensions and newer API routes can cause an advisory
 warning until the catalog is updated. Provenance is embedded in
 `app/internal/cmd/known_api_routes.json`; maintainers refresh it with
 `python3 scripts/update-route-catalog.py`, reviewing the pinned source revisions
-and generated diff. BuildKit RPC entries come from the vendored definitions and
+and generated diff. The catalog is pinned to Engine API 1.57 (`docker-v29.10.0`)
+and Podman 6.2.0 (`v6.2.0`), including the libpod manifests subrouter routes. BuildKit RPC entries come from the vendored definitions and
 method registry. Podman stubs explicitly returning unsupported are excluded.
 
 ### Rule sets without `GET /_ping`

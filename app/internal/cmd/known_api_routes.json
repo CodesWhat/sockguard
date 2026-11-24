@@ -1,7 +1,7 @@
 {
   "sources": {
-    "engine": "https://raw.githubusercontent.com/moby/moby/3f38b15147b14ce0ce7b11558a1aa9e9f14db103/api/swagger.yaml",
-    "podman": "https://github.com/containers/podman/tree/a859fc66702c23e869c282c63e92d9b6cd264229/pkg/api/server",
+    "engine": "https://raw.githubusercontent.com/moby/moby/06db1734267bf7770914b417bff6556d835bf8cc/api/swagger.yaml",
+    "podman": "https://github.com/containers/podman/tree/055de046937d29450f310fce0fe3071485d8bed9/pkg/api/server",
     "buildkit": "app/internal/buildkitproto/proto and app/internal/buildkitproxy/registry.go"
   },
   "routes": [
@@ -44,6 +44,10 @@
     {
       "method": "DELETE",
       "path": "/libpod/kube/play"
+    },
+    {
+      "method": "DELETE",
+      "path": "/libpod/manifests/{name:.*}"
     },
     {
       "method": "DELETE",
@@ -380,6 +384,14 @@
     {
       "method": "GET",
       "path": "/libpod/kube/generate"
+    },
+    {
+      "method": "GET",
+      "path": "/libpod/manifests/{name:.*}/exists"
+    },
+    {
+      "method": "GET",
+      "path": "/libpod/manifests/{name:.*}/json"
     },
     {
       "method": "GET",
@@ -895,6 +907,10 @@
     },
     {
       "method": "POST",
+      "path": "/libpod/exec/{id}/kill"
+    },
+    {
+      "method": "POST",
       "path": "/libpod/exec/{id}/remove"
     },
     {
@@ -952,6 +968,26 @@
     {
       "method": "POST",
       "path": "/libpod/local/images/load"
+    },
+    {
+      "method": "POST",
+      "path": "/libpod/manifests/create"
+    },
+    {
+      "method": "POST",
+      "path": "/libpod/manifests/{name:.*}"
+    },
+    {
+      "method": "POST",
+      "path": "/libpod/manifests/{name:.*}/add"
+    },
+    {
+      "method": "POST",
+      "path": "/libpod/manifests/{name:.*}/registry/{destination:.*}"
+    },
+    {
+      "method": "POST",
+      "path": "/libpod/manifests/{name}/push"
     },
     {
       "method": "POST",
@@ -1036,6 +1072,10 @@
     {
       "method": "POST",
       "path": "/libpod/volumes/{name}/import"
+    },
+    {
+      "method": "POST",
+      "path": "/libpod/volumes/{name}/rename"
     },
     {
       "method": "POST",
@@ -1320,6 +1360,10 @@
     {
       "method": "PUT",
       "path": "/libpod/containers/{name}/archive"
+    },
+    {
+      "method": "PUT",
+      "path": "/libpod/manifests/{name:.*}"
     },
     {
       "method": "PUT",

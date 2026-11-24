@@ -43,6 +43,18 @@ func TestLibpodObjectWriteRouteBoundaries(t *testing.T) {
 		{http.MethodPost, "/libpod/artifacts/a/push/extra", false},
 		{http.MethodPost, "/libpod/artifacts//push", false},
 		{http.MethodPut, "/libpod/artifacts/a", false},
+		{http.MethodPost, "/libpod/manifests/create", true},
+		{http.MethodPost, "/libpod/manifests/registry.example/a/b:1/add", true},
+		{http.MethodPost, "/libpod/manifests/a/registry/registry.example/c:1", true},
+		{http.MethodPut, "/libpod/manifests/a", true},
+		{http.MethodDelete, "/libpod/manifests/registry.example/a:1", true},
+		{http.MethodPost, "/libpod/manifests/", false},
+		{http.MethodGet, "/libpod/manifests/a/json", false},
+		{http.MethodPost, "/libpod/volumes/a/rename", true},
+		{http.MethodPost, "/libpod/volumes/a/b/rename", false},
+		{http.MethodPost, "/libpod/volumes//rename", false},
+		{http.MethodPut, "/libpod/volumes/a/rename", false},
+		{http.MethodPost, "/libpod/volumes/create", false},
 	} {
 		if _, got := LookupLibpodUnscopeableWrite(tc.method, tc.path); got != tc.want {
 			t.Errorf("%s %s = %v, want %v", tc.method, tc.path, got, tc.want)
