@@ -14,7 +14,7 @@
       "groupSlug": "knip"
     },
     {
-      "description": "Move the Playwright npm packages and the mcr.microsoft.com/playwright image that runs the website-browser job as one unit. The image carries the matching browser builds, so a solo bump of either side leaves the job running against mismatched browsers. The PLAYWRIGHT_IMAGE_VERSION env var in ci-verify.yml is not Renovate-managed; the job's guard step fails the grouped PR until it is bumped by hand to match.",
+      "description": "Move the Playwright npm packages, the mcr.microsoft.com/playwright image that runs the website-browser job, and the job's PLAYWRIGHT_IMAGE_VERSION (via the custom manager) as one unit. The image carries the matching browser builds, so a solo bump of either side leaves the job running against mismatched browsers.",
       "matchPackageNames": [
         "@playwright/test",
         "playwright",
@@ -36,6 +36,16 @@
       "matchFileNames": ["app/compat/go.mod"],
       "matchPackageNames": ["github.com/docker/docker"],
       "allowedVersions": "<29"
+    }
+  ],
+  "customManagers": [
+    {
+      "description": "Bump PLAYWRIGHT_IMAGE_VERSION in ci-verify.yml with playwright-core, so the grouped playwright PR passes the website-browser guard step.",
+      "customType": "regex",
+      "managerFilePatterns": ["/^\\.github/workflows/ci-verify\\.yml$/"],
+      "matchStrings": ["PLAYWRIGHT_IMAGE_VERSION: (?<currentValue>\\d+\\.\\d+\\.\\d+)"],
+      "depNameTemplate": "playwright-core",
+      "datasourceTemplate": "npm"
     }
   ]
 }
