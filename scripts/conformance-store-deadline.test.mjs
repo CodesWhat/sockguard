@@ -14,7 +14,7 @@ const polling = source.slice(start, end);
 
 for (const [label, delay, expected] of [
   ["in time", "0", 0],
-  ["after deadline", "1.2", 1],
+  ["after deadline", "2", 1],
 ]) {
   test(`store poll accepts a matching document only ${label}`, (t) => {
     const dir = mkdtempSync(join(tmpdir(), "sockguard-store-"));
@@ -28,9 +28,14 @@ for (const [label, delay, expected] of [
       SCRATCH_DIR="$1"
       STORE_SYNC_TIMEOUT=1
       sentinel=fixture
+      # Virtual clock: the poll reads and sleeps through these hooks, so the
+      # deadline is exercised without depending on real elapsed time.
+      printf 0 > "$SCRATCH_DIR/clock"
+      store_poll_now() { cat "$SCRATCH_DIR/clock"; }
+      store_poll_sleep() { printf '%s' "$(($(store_poll_now) + $1))" > "$SCRATCH_DIR/clock"; }
       curl() {
         printf '%s\\n' "$@" > "$SCRATCH_DIR/curl-args"
-        sleep "${delay}"
+        store_poll_sleep "${delay}"
         printf '%s' '{"data":[{"name":"fixture","id":"id","agent":"agent"}]}' > "$SCRATCH_DIR/containers-response.json"
         printf 200
       }
