@@ -160,7 +160,34 @@ const (
 	LibpodArtifactWriteDenyReason  = "libpod artifact write denied: artifacts have no owner-label scope or per-artifact ownership check"
 )
 
+// LibpodManifestWritePath and LibpodVolumeRenamePath are representative
+// normalized paths for two dynamic write route families.
+//
+// Podman registers every manifest list write under /libpod/manifests/{name:.*}
+// (create, POST/PUT/DELETE {name}, {name}/add, {name}/registry/{destination:.*}
+// and {name}/push), so the name is greedy and one prefix covers all seven. A
+// manifest list is an image in Podman's store, but it is not one the ownership
+// layer can check by path: create and add take image references in the query or
+// body, push and registry send it to a caller-named destination, and a list
+// carries no owner label that create could stamp. The reads on the same family
+// are already refused for that reason, so the writes are too.
+//
+// Volume rename (Podman 6.2) names the new volume in a parameter nothing here
+// reads. Letting it through would move an owned volume onto a name chosen
+// without a collision or ownership check against the other owners' volumes, so
+// it is refused rather than half-checked.
+const (
+	LibpodManifestWritePath       = "/libpod/manifests/sockguard-test"
+	LibpodVolumeRenamePath        = "/libpod/volumes/sockguard-test/rename"
+	LibpodManifestWriteDenyReason = "libpod manifest write denied: manifest lists have no owner-label scope or per-list ownership check, and the write can add other callers' images or push a list to a caller-named destination"
+	LibpodVolumeRenameDenyReason  = "libpod volume rename denied: the new name is not checked against other callers' volumes, so a rename cannot be kept inside one caller's scope"
+)
+
 var libpodUnscopeableWrites = []LibpodUnscopeableWrite{
+	{Method: http.MethodPost, Path: LibpodManifestWritePath, ReasonCodeStem: "manifest_write", Reason: LibpodManifestWriteDenyReason},
+	{Method: http.MethodPut, Path: LibpodManifestWritePath, ReasonCodeStem: "manifest_write", Reason: LibpodManifestWriteDenyReason},
+	{Method: http.MethodDelete, Path: LibpodManifestWritePath, ReasonCodeStem: "manifest_write", Reason: LibpodManifestWriteDenyReason},
+	{Method: http.MethodPost, Path: LibpodVolumeRenamePath, ReasonCodeStem: "volume_rename", Reason: LibpodVolumeRenameDenyReason},
 	{Method: http.MethodDelete, Path: LibpodQuadletRemovePath, ReasonCodeStem: "quadlet_remove", Reason: LibpodQuadletWriteDenyReason},
 	{Method: http.MethodDelete, Path: LibpodArtifactSingleRemovePath, ReasonCodeStem: "artifact_remove_one", Reason: LibpodArtifactWriteDenyReason},
 	{Method: http.MethodPost, Path: "/libpod/artifacts/add", ReasonCodeStem: "artifact_add", Reason: LibpodArtifactWriteDenyReason},
@@ -199,6 +226,10 @@ func libpodUnscopeableWritePathMatches(representative, normPath string) bool {
 		return true
 	}
 	switch representative {
+	case LibpodManifestWritePath:
+		return libpodNamedPathMatches(normPath, "/libpod/manifests/", "", true)
+	case LibpodVolumeRenamePath:
+		return libpodNamedPathMatches(normPath, "/libpod/volumes/", "/rename", false)
 	case LibpodQuadletRemovePath:
 		return libpodNamedPathMatches(normPath, "/libpod/quadlets/", "", false)
 	case LibpodArtifactSingleRemovePath:

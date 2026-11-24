@@ -274,8 +274,8 @@ func (d *tenancyDaemon) serve(w http.ResponseWriter, r *http.Request, path strin
 		d.respond(w, http.StatusOK, map[string]any{"Spec": map[string]any{"Labels": d.find("swarm", "swarm").labels}})
 	case isRead && path == "/swarm/unlockkey":
 		d.respond(w, http.StatusOK, map[string]string{"UnlockKey": "B-UNLOCK-KEY"})
-	case isRead && len(segs) == 3 && segs[0] == "exec" && segs[2] == "json":
-		res := d.find("exec", segs[1])
+	case isRead && (len(segs) == 3 && segs[0] == "exec" && segs[2] == "json" || len(segs) == 4 && segs[0] == "libpod" && segs[1] == "exec" && segs[3] == "json"):
+		res := d.find("exec", segs[len(segs)-2])
 		if res == nil {
 			d.notFound(w)
 			return
@@ -420,6 +420,33 @@ func (d *tenancyDaemon) serve(w http.ResponseWriter, r *http.Request, path strin
 		}
 		d.remove(res)
 		w.WriteHeader(http.StatusNoContent)
+
+	// Podman 6.2 volume rename. The new name comes from the query or the body;
+	// a taken name is a conflict, as it is on the daemon.
+	case r.Method == http.MethodPost && len(segs) == 4 && segs[0] == "libpod" && segs[1] == "volumes" && segs[3] == "rename":
+		res := d.find("volume", segs[2])
+		if res == nil {
+			d.notFound(w)
+			return
+		}
+		var body struct {
+			Name    string `json:"name"`
+			NewName string `json:"newName"`
+		}
+		_ = json.Unmarshal(raw, &body)
+		newName := q.Get("name")
+		if newName == "" {
+			newName = body.Name
+		}
+		if newName == "" {
+			newName = body.NewName
+		}
+		if d.find("volume", newName) != nil {
+			d.respond(w, http.StatusConflict, map[string]string{"message": "volume name in use"})
+			return
+		}
+		res.name = newName
+		d.respond(w, http.StatusOK, d.shape(res))
 
 	// Prunes delete what the injected label filter selects.
 	case r.Method == http.MethodPost && strings.HasSuffix(path, "/prune"):
