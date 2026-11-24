@@ -5,7 +5,7 @@
 # client environment. This is NOT Compose-BuildKit support: by default,
 # `docker compose build` never calls POST /build at all — it drives dockerd's
 # embedded BuildKit over two hijacked, unversioned streams, POST /session and
-# POST /grpc (Engine API 1.53 deprecated both; current Buildx 0.36.0 still
+# POST /grpc (Engine API 1.53 deprecated both; current Buildx 0.39.1 still
 # uses them). This preset does not open either endpoint — no
 # insecure_accept_opaque_buildkit_tunnels acknowledgment (now deprecated, see
 # migration.mdx) and no request_body.buildkit mediation policy (issue #185) —

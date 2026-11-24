@@ -160,7 +160,7 @@ func (f *Filter) ModifyResponse(resp *http.Response) error {
 	// and Podman's libpod API mirrors both plus its own
 	// POST /libpod/containers/{id}/init ("container already initialized").
 	// Checked against the Engine API spec (moby/moby api/docs, through
-	// v1.56) and Podman's server route comments (containers/podman
+	// v1.57) and Podman's server route comments (containers/podman
 	// pkg/api/server/register_containers.go): restart, kill, pause and
 	// unpause document no 304 response on either API, so start/stop/init are
 	// the whole set today. Rejecting those turns a correct no-op into a 502
