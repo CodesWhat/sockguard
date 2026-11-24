@@ -40,6 +40,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - BuildKit `Control/Status` responses are now capped per gRPC message instead of cumulatively. Status streams build logs for as long as a build runs, but the relay counted every byte of the response against one 64 MiB budget and ended the stream with `RESOURCE_EXHAUSTED` once a long build's output crossed it, so the client lost status for the rest of the build. A single message over the cap is still refused, a truncated frame ends only that stream, and every other RPC keeps the cumulative cap.
 - A hijacked attach or exec session that upgraded with `101 Switching Protocols` is now logged and measured as `101`. The 101 is written straight to the hijacked connection, so the access log, audit log, metrics and trace span kept the wrapper's initial `200` and reported every completed upgrade as a plain success. The proxy now records the upstream status once it has flushed the response head, and a raw-stream `200` still reports `200`.
 
+## [2.4.9] - 2026-11-23
+
+v2.4.9 fixes an owner-isolation gap on Podman's manifest list and volume rename routes. It carries v2.4.8.
+
+### Fixed
+
+- Owner isolation now refuses the libpod manifest list writes (`POST /libpod/manifests/create`, `POST`, `PUT` and `DELETE /libpod/manifests/{name}`, `/add`, `/push` and `/registry/{destination}`) and `POST /libpod/volumes/{name}/rename` (Podman 6.2). They had no owner check, so a tenant could change or delete another owner's manifest list, or rename its volume onto any name. Reachable only on a Podman upstream with rules admitting the routes and, for manifests, the body-blind acknowledgment. They fail with `owner_libpod_manifest_write_unscopeable` and `owner_libpod_volume_rename_unscopeable`.
+
 ## [2.4.8] - 2026-11-19
 
 v2.4.8 backports security fixes and a Buildx fix to the v2.4 line. It carries v2.4.7.

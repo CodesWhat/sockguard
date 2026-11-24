@@ -1016,6 +1016,10 @@ func TestLibpodPruneRoutesAreInertWithoutOwner(t *testing.T) {
 // than rebuilt from the stem.
 var wantOwnerUnscopeableWriteReasonCodes = map[string]string{
 	"DELETE " + filter.LibpodQuadletRemovePath:        "owner_libpod_quadlet_remove_unscopeable",
+	"POST " + filter.LibpodManifestWritePath:          "owner_libpod_manifest_write_unscopeable",
+	"PUT " + filter.LibpodManifestWritePath:           "owner_libpod_manifest_write_unscopeable",
+	"DELETE " + filter.LibpodManifestWritePath:        "owner_libpod_manifest_write_unscopeable",
+	"POST " + filter.LibpodVolumeRenamePath:           "owner_libpod_volume_rename_unscopeable",
 	"DELETE " + filter.LibpodArtifactSingleRemovePath: "owner_libpod_artifact_remove_one_unscopeable",
 	"POST /libpod/artifacts/add":                      "owner_libpod_artifact_add_unscopeable",
 	"POST /libpod/artifacts/local/add":                "owner_libpod_artifact_local_add_unscopeable",
