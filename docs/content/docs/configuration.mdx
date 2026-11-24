@@ -461,6 +461,8 @@ request_body:
 
 `listeners:` runs more than one main (Docker-API) listener from a single Sockguard process, each with its own bind target and its own admission scope, instead of requiring one process per audience.
 
+This is a fragment: every profile named in `allowed_profiles` must also be defined under `clients.profiles`, or validation fails.
+
 ```yaml
 listeners:
   - name: ci
@@ -784,6 +786,8 @@ command. It is still subject to the concurrency caps.
   `burst >= tokens_per_second`, the refill rate is implicitly bounded at 65535
   tokens/second as well.
 
+This is a fragment. The wildcard allow rule admits body-blind writes, read-exfiltration endpoints and opaque BuildKit tunnels. Validating this fragment as written also requires the top-level `insecure_allow_body_blind_writes: true`, `insecure_allow_read_exfiltration: true` and `insecure_accept_opaque_buildkit_tunnels: true` acknowledgments.
+
 ```yaml
 clients:
   profiles:
@@ -837,6 +841,8 @@ Each entry has:
 
 Rules are evaluated in declaration order; first match wins. Unmatched
 requests fall back to the default cost of `1`.
+
+This is a fragment. The wildcard allow rule admits body-blind writes, read-exfiltration endpoints and opaque BuildKit tunnels. Validating this fragment as written also requires the top-level `insecure_allow_body_blind_writes: true`, `insecure_allow_read_exfiltration: true` and `insecure_accept_opaque_buildkit_tunnels: true` acknowledgments.
 
 ```yaml
 clients:
@@ -960,6 +966,8 @@ profiles. The system-wide priority-aware fairness gate solves this.
 
 Enable it by setting a global cap and tagging each profile with a priority
 tier:
+
+This is a fragment: each profile also needs at least one rule under `rules`, or validation fails.
 
 ```yaml
 clients:
@@ -1189,6 +1197,8 @@ Exactly one of `inject_labels`/`remap_image` is required per rule — never both
 
 The `mutations` block uses a stricter config decode than the rest of this schema: unknown keys and YAML type-coercion (e.g. an unquoted `id: 0` silently becoming the string `"0"`) are both load-time errors here, not silently accepted.
 
+Every other block of the YAML schema tolerates unknown keys: a typo or a key that was removed from the schema still loads. `sockguard validate` logs a warning for each unrecognized key and still reports `validation passed`, and `sockguard validate --strict` exits non-zero instead. Check key names against this reference after editing a config.
+
 ## Rollout Modes
 
 Each named profile can set a `mode` field that controls how Sockguard applies
@@ -1217,6 +1227,8 @@ doesn't stop an oversized body reaching the daemon.
 > reads also stay `enforce`; `warn` and `audit` cannot replace the global
 > `insecure_allow_read_exfiltration: true` acknowledgment. These gates are
 > unsafe to relax through rollout mode.
+
+This is a fragment: `sockguard validate` rejects it alone. The exec allow rule needs `request_body.exec.allowed_commands` (or the top-level `insecure_allow_body_blind_writes: true` acknowledgment), and the `GET /containers/**` allow rule needs the top-level `insecure_allow_read_exfiltration: true` acknowledgment.
 
 ```yaml filename="sockguard.yaml"
 clients:
