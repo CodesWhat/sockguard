@@ -172,7 +172,7 @@ jobs:
         working-directory: app
         env:
           SOCKGUARD_TEST_PODMAN_UPSTREAM_REF: main
-        run: go test ./internal/filter/ -run TestLibpodContainerUpdateSnapshotMatchesUpstreamPodman -count=1 -v
+        run: go test ./internal/filter/ ./internal/ownership/ -run 'SnapshotMatchesUpstreamPodman' -count=1 -v
 
       - name: Summarize
         if: always()

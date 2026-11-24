@@ -1,13 +1,14 @@
 {
   "description": "Every root JSON key Podman decodes from the request body of POST /libpod/containers/create. The wire type is specgen.SpecGenerator, which embeds ContainerBasicConfig, ContainerStorageConfig, ContainerSecurityConfig, ContainerCgroupConfig, ContainerNetworkConfig, ContainerResourceConfig and ContainerHealthCheckConfig; all are anonymous, so encoding/json flattens their exported fields to the request root. A field with no json tag uses its Go name. Read by app/internal/ownership/libpod_spec_generator_drift_test.go, which fails when a field here is not classified as one that names an existing resource, one that names a host path, or one that names nothing.",
-  "podman_tag": "v5.8.1",
-  "recorded": "2026-11-03",
+  "podman_tag": "v6.2.0",
+  "recorded": "2026-11-24",
   "types": [
     "containers/podman pkg/specgen/specgen.go: SpecGenerator and the seven Container*Config structs it embeds"
   ],
   "fetch": [
-    "gh api 'repos/containers/podman/contents/pkg/specgen/specgen.go?ref=v5.8.1' --jq .content | base64 -d",
-    "parse with go/ast; flatten anonymous struct fields that carry no json name; skip unexported fields and json:\"-\""
+    "gh api 'repos/containers/podman/contents/pkg/specgen/specgen.go?ref=v6.2.0' --jq .content | base64 -d",
+    "parse with go/ast; flatten anonymous struct fields that carry no json name; skip unexported fields and json:\"-\"",
+    "or: SOCKGUARD_TEST_PODMAN_UPSTREAM_REF=v6.2.0 go test ./app/internal/ownership/ -run SnapshotMatchesUpstreamPodman -count=1 (prints the sorted root_fields on a mismatch)"
   ],
   "root_fields": [
     "Networks",
@@ -21,7 +22,6 @@
     "cgroupns",
     "cgroups_mode",
     "chroot_directories",
-    "cni_networks",
     "command",
     "conmon_pid_file",
     "containerCreateCommand",
@@ -38,6 +38,7 @@
     "env_host",
     "envmerge",
     "expose",
+    "gpus",
     "group_entry",
     "groups",
     "healthLogDestination",
@@ -70,6 +71,7 @@
     "mounts",
     "name",
     "netns",
+    "networkOrder",
     "network_options",
     "no_new_privileges",
     "oci_runtime",
@@ -98,6 +100,7 @@
     "rootfs_propagation",
     "sdnotifyMode",
     "seccomp_policy",
+    "seccomp_profile",
     "seccomp_profile_path",
     "secret_env",
     "secrets",
