@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import test from "node:test";
 
 import { SITE_CONFIG } from "../website/src/lib/site-config.ts";
@@ -37,6 +37,23 @@ test("release-facing metadata agrees on the current stable version", () => {
     ),
     "docs roadmap must bind the website version to its current stable feature line",
   );
+});
+
+test("example compose files pin the current stable image", () => {
+  const root = new URL("../examples/compose/", import.meta.url);
+  const files = readdirSync(root, { recursive: true })
+    .filter((name) => /\.ya?ml$/u.test(name))
+    .map((name) => `examples/compose/${name}`);
+  const pins = [];
+  for (const file of files) {
+    for (const match of read(file).matchAll(/codeswhat\/sockguard:(\d+\.\d+\.\d+)(?![\w.-])/gu)) {
+      pins.push({ file, version: match[1] });
+    }
+  }
+  assert.ok(pins.length > 0, "expected at least one pinned sockguard image in examples/compose");
+  for (const { file, version } of pins) {
+    assert.equal(version, stableVersion, `${file} pins sockguard ${version}, not ${stableVersion}`);
+  }
 });
 
 test("the current stable version is the roadmap HEAD", () => {
