@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.4.9] - 2026-11-23
+
+v2.4.9 fixes an owner-isolation gap on Podman's manifest list and volume rename routes. It carries v2.4.8.
+
+### Fixed
+
+- Owner isolation now refuses the libpod manifest list writes (`POST /libpod/manifests/create`, `POST`, `PUT` and `DELETE /libpod/manifests/{name}`, `/add`, `/push` and `/registry/{destination}`) and `POST /libpod/volumes/{name}/rename` (Podman 6.2). They had no owner check, so a tenant could change or delete another owner's manifest list, or rename its volume onto any name. Reachable only on a Podman upstream with rules admitting the routes and, for manifests, the body-blind acknowledgment. They fail with `owner_libpod_manifest_write_unscopeable` and `owner_libpod_volume_rename_unscopeable`.
+
 ## [2.4.8] - 2026-11-19
 
 v2.4.8 backports security fixes and a Buildx fix to the v2.4 line. It carries v2.4.7.
