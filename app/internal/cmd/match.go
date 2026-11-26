@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -24,6 +25,7 @@ const (
 var (
 	matchMethod   string
 	matchPath     string
+	matchBodyArg  string
 	matchOutput   string
 	matchProfile  string
 	matchSourceIP string
@@ -33,7 +35,7 @@ var (
 var matchCmd = &cobra.Command{
 	Use:   "match",
 	Short: "Evaluate one request against the configured rules",
-	Long:  "Load the effective configuration, normalize the request path, and report which rule would decide the request. A query string on --path (for example /containers/abc/kill?signal=USR1) is evaluated against rules that carry match.query constraints. --body-file (or - for stdin) also runs the request-body inspectors on a sample body, offline, and reports their verdict.",
+	Long:  "Load the effective configuration, normalize the request path, and report which rule would decide the request. A query string on --path (for example /containers/abc/kill?signal=USR1) is evaluated against rules that carry match.query constraints. A JSON object on --body is evaluated against rules that carry match.body constraints. --body-file (or - for stdin) also runs the request-body inspectors on a sample body, offline, and reports their verdict.",
 	RunE:  runMatch,
 }
 
@@ -42,6 +44,7 @@ type matchResult struct {
 	Method         string           `json:"method"`
 	Path           string           `json:"path"`
 	Query          string           `json:"query,omitempty"`
+	RequestBody    string           `json:"request_body,omitempty"`
 	NormalizedPath string           `json:"normalized_path"`
 	Decision       string           `json:"decision"`
 	Reason         string           `json:"reason,omitempty"`
@@ -73,9 +76,17 @@ type matchedRuleInfo struct {
 	QueryMatched bool                `json:"query_matched,omitempty"`
 	// QueryParseError is set when the request's query string did not parse and
 	// a deny rule with constraints matched it fail-closed.
-	QueryParseError bool   `json:"query_parse_error,omitempty"`
-	Action          string `json:"action"`
-	Reason          string `json:"reason,omitempty"`
+	QueryParseError bool `json:"query_parse_error,omitempty"`
+	// Body holds the rule's match.body constraints. BodyMatched says the
+	// evaluation read the body and the constraints held; BodyUnreadable says
+	// the body the evaluation read was not readable to matching, absent, too
+	// big to buffer, or keys the engines read two ways, and the rule matched
+	// fail-closed without weighing them.
+	Body           map[string][]string `json:"body,omitempty"`
+	BodyMatched    bool                `json:"body_matched,omitempty"`
+	BodyUnreadable bool                `json:"body_unreadable,omitempty"`
+	Action         string              `json:"action"`
+	Reason         string              `json:"reason,omitempty"`
 }
 
 func init() {
@@ -83,6 +94,7 @@ func init() {
 
 	matchCmd.Flags().StringVarP(&matchMethod, "method", "X", "", "HTTP method to evaluate")
 	matchCmd.Flags().StringVar(&matchPath, "path", "", "request path to evaluate")
+	matchCmd.Flags().StringVar(&matchBodyArg, "body", "", "JSON request body to evaluate against match.body constraints")
 	matchCmd.Flags().StringVar(&matchProfile, "profile", "", "evaluate against this clients.profiles entry instead of the root rules")
 	matchCmd.Flags().StringVar(&matchSourceIP, "source-ip", "", "select the profile the proxy would pick for this client IP (source_ip_profiles, then default_profile)")
 	matchCmd.Flags().StringVar(&matchBodyFile, "body-file", "", "also run the request-body inspectors on this file (- reads stdin), offline")
@@ -104,6 +116,13 @@ func runMatch(cmd *cobra.Command, args []string) error {
 	}
 	if path == "" {
 		return fmt.Errorf("path is required")
+	}
+	// One request carries one body. --body feeds the rule evaluation and
+	// --body-file the inspectors; together they would judge a rule against
+	// one body and the inspectors another, so the verdicts could not describe
+	// any single request.
+	if strings.TrimSpace(matchBodyArg) != "" && strings.TrimSpace(matchBodyFile) != "" {
+		return errors.New("use only one of --body and --body-file")
 	}
 	// Real HTTP request paths are always absolute. Reject paths that
 	// don't start with "/" so users don't accidentally run a match
@@ -146,9 +165,26 @@ func runMatch(cmd *cobra.Command, args []string) error {
 		path, rawQuery = path[:i], path[i+1:]
 	}
 
+	// A --body is checked here rather than left to the rule layer, because a
+	// half-written JSON argument would otherwise read as an unreadable body and
+	// the tool would report a fail-closed deny as if it were authoritative.
+	var bodyReader io.ReadCloser
+	if strings.TrimSpace(matchBodyArg) != "" {
+		var fields map[string]json.RawMessage
+		if err := json.Unmarshal([]byte(matchBodyArg), &fields); err != nil {
+			return fmt.Errorf("body must be a JSON object: %w", err)
+		}
+		if fields == nil {
+			return errors.New("body must be a JSON object, not null")
+		}
+		bodyReader = io.NopCloser(strings.NewReader(matchBodyArg))
+	}
+
 	req := &http.Request{
-		Method: method,
-		URL:    &url.URL{Path: path, RawQuery: rawQuery},
+		Method:        method,
+		URL:           &url.URL{Path: path, RawQuery: rawQuery},
+		Body:          bodyReader,
+		ContentLength: int64(len(matchBodyArg)),
 	}
 	profile, selection, err := selectMatchProfile(cfg, matchProfile, matchSourceIP)
 	if err != nil {
@@ -166,7 +202,7 @@ func runMatch(cmd *cobra.Command, args []string) error {
 		policyConfig = profilePolicies[profile.Name].PolicyConfig
 		rolloutMode, _ = config.ParseRolloutMode(profile.Mode)
 	}
-	decision, matchedRuleIndex, reason := filter.Evaluate(rules, req)
+	decision, matchedRuleIndex, reason, bodyState := filter.EvaluateWithBodyState(rules, req)
 	normalizedPath := filter.NormalizePath(path)
 	gatedDecision, acknowledgmentReason, hardDeny := filter.EnforceReadExfiltrationAcknowledgment(
 		decision,
@@ -199,6 +235,7 @@ func runMatch(cmd *cobra.Command, args []string) error {
 		Method:         method,
 		Path:           path,
 		Query:          rawQuery,
+		RequestBody:    strings.TrimSpace(matchBodyArg),
 		NormalizedPath: normalizedPath,
 		Decision:       string(decision),
 		Reason:         reason,
@@ -216,6 +253,15 @@ func runMatch(cmd *cobra.Command, args []string) error {
 	_, parseErr := url.ParseQuery(rawQuery)
 	if matchedRuleIndex >= 0 && matchedRuleIndex < len(ruleConfigs) {
 		rule := ruleConfigs[matchedRuleIndex]
+		// The evaluation's own witness decides this, not whether --body was
+		// given: a body the walk could not read (absent, too big to buffer,
+		// or keys the engines read two ways) let the rule match fail-closed
+		// without weighing the constraints at all.
+		bodyMatched, bodyUnreadable := false, false
+		if len(rule.Match.Body) > 0 {
+			bodyUnreadable = !bodyState.Readable()
+			bodyMatched = bodyState.Readable()
+		}
 		result.MatchedRule = &matchedRuleInfo{
 			Index:  matchedRuleIndex + 1,
 			Method: rule.Match.Method,
@@ -226,6 +272,9 @@ func runMatch(cmd *cobra.Command, args []string) error {
 			// deny rule matched fail-closed without evaluating them.
 			QueryMatched:    len(rule.Match.Query) > 0 && parseErr == nil,
 			QueryParseError: len(rule.Match.Query) > 0 && parseErr != nil,
+			Body:            rule.Match.Body,
+			BodyMatched:     bodyMatched,
+			BodyUnreadable:  bodyUnreadable,
 			Action:          rule.Action,
 			Reason:          rule.Reason,
 		}
@@ -250,6 +299,9 @@ func writeMatchText(w io.Writer, result matchResult) {
 	fmt.Fprintf(w, "%s %s\n", label("Path:"), result.Path)
 	if result.Query != "" {
 		fmt.Fprintf(w, "%s %s\n", label("Query:"), result.Query)
+	}
+	if result.RequestBody != "" {
+		fmt.Fprintf(w, "%s %s\n", label("Body arg:"), result.RequestBody)
 	}
 	fmt.Fprintf(w, "%s %s\n", label("Normalized path:"), result.NormalizedPath)
 	if result.CompatMode {
@@ -281,6 +333,16 @@ func writeMatchText(w io.Writer, result matchResult) {
 				note = "query failed to parse, rule matched fail-closed"
 			}
 			fmt.Fprintf(w, "%s %s (%s)\n", label("Rule query:"), q, note)
+		}
+		if b := filter.FormatBody(result.MatchedRule.Body); b != "" {
+			note := "constraints matched"
+			switch {
+			case result.MatchedRule.BodyUnreadable && result.RequestBody == "":
+				note = "no --body given, rule matched fail-closed"
+			case result.MatchedRule.BodyUnreadable:
+				note = "body unreadable to matching, rule matched fail-closed"
+			}
+			fmt.Fprintf(w, "%s %s (%s)\n", label("Rule body:"), b, note)
 		}
 	}
 	if result.Reason != "" {

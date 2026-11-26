@@ -20,14 +20,23 @@ func warnIfQueryDenyRules(cfg *config.Config, logger *slog.Logger) {
 	}
 	warn := func(scope string, rules []config.RuleConfig) {
 		for i, r := range rules {
-			if len(r.Match.Query) == 0 || !strings.EqualFold(strings.TrimSpace(r.Action), "deny") {
+			if !strings.EqualFold(strings.TrimSpace(r.Action), "deny") {
 				continue
 			}
-			logger.Warn("deny rule with match.query only matches the literal spellings it lists: the daemon accepts other spellings of the same value (signal=kill, signal=9, force=1, force=yes), which would not match; express this as an allow rule with query instead",
-				"rule", scope+"["+strconv.Itoa(i+1)+"]",
-				"method", r.Match.Method,
-				"path", r.Match.Path,
-			)
+			if len(r.Match.Query) > 0 {
+				logger.Warn("deny rule with match.query only matches the literal spellings it lists: the daemon accepts other spellings of the same value (signal=kill, signal=9, force=1, force=yes), which would not match; express this as an allow rule with query instead",
+					"rule", scope+"["+strconv.Itoa(i+1)+"]",
+					"method", r.Match.Method,
+					"path", r.Match.Path,
+				)
+			}
+			if len(r.Match.Body) > 0 {
+				logger.Warn("deny rule with match.body only matches the literal spellings it lists: a value the daemon would normalize, or a field the client sends in another shape, would not match; express this as an allow rule with body instead",
+					"rule", scope+"["+strconv.Itoa(i+1)+"]",
+					"method", r.Match.Method,
+					"path", r.Match.Path,
+				)
+			}
 		}
 	}
 	warn("rules", cfg.Rules)

@@ -460,6 +460,7 @@ func compileConfiguredRules(rules []config.RuleConfig) ([]*filter.CompiledRule, 
 			Reason:  rule.Reason,
 			Index:   i,
 			Query:   rule.Match.Query,
+			Body:    rule.Match.Body,
 		}
 
 		compiledRule, err := compileFilterRule(spec)

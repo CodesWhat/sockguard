@@ -2210,6 +2210,13 @@ type MatchConfig struct {
 	// Keys not listed are unconstrained. A query that does not parse never
 	// satisfies an allow rule and always satisfies a deny rule.
 	Query map[string][]string `mapstructure:"query"`
+	// Body optionally constrains the request body. The rule matches only when
+	// the body is a JSON object whose named top-level fields each carry a value
+	// matching one of their patterns (exact text, or "*" for any run of
+	// characters). Fields not listed are unconstrained. A body that is not a
+	// JSON object, or is larger than 1 MiB, never satisfies an allow rule and
+	// always satisfies a deny rule.
+	Body map[string][]string `mapstructure:"body"`
 }
 
 // Defaults returns a Config with sensible defaults.

@@ -492,12 +492,47 @@ rules:
 	}
 }
 
+func TestExecuteMatchCommandRejectsBodyAndBodyFileTogether(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "sockguard.yaml")
+	yaml := `
+upstream:
+  socket: /var/run/docker.sock
+rules:
+  - match: { method: GET, path: "/_ping" }
+    action: allow
+`
+	if err := os.WriteFile(cfgPath, []byte(yaml), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	bodyPath := filepath.Join(dir, "body.json")
+	if err := os.WriteFile(bodyPath, []byte(`{"a":"b"}`), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	_, _, err := executeRootCommand(t,
+		"-c", cfgPath,
+		"match",
+		"--method", "GET",
+		"--path", "/_ping",
+		"--body", `{"c":"d"}`,
+		"--body-file", bodyPath,
+	)
+	if err == nil {
+		t.Fatal("expected match to reject --body and --body-file together")
+	}
+	if !strings.Contains(err.Error(), "only one of") {
+		t.Fatalf("error = %v, want guidance about a single body source", err)
+	}
+}
+
 func executeRootCommand(t *testing.T, args ...string) (stdout string, stderr string, err error) {
 	t.Helper()
 
 	oldCfgFile := cfgFile
 	oldMatchMethod := matchMethod
 	oldMatchPath := matchPath
+	oldMatchBody := matchBodyArg
 	oldMatchOutput := matchOutput
 	oldMatchProfile := matchProfile
 	oldMatchSourceIP := matchSourceIP
@@ -513,6 +548,7 @@ func executeRootCommand(t *testing.T, args ...string) (stdout string, stderr str
 		cfgFile = oldCfgFile
 		matchMethod = oldMatchMethod
 		matchPath = oldMatchPath
+		matchBodyArg = oldMatchBody
 		matchOutput = oldMatchOutput
 		matchProfile = oldMatchProfile
 		matchSourceIP = oldMatchSourceIP

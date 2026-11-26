@@ -2040,6 +2040,39 @@ Rollout modes work as they always did. `query` only changes whether a rule match
 
 Config validation rejects an empty parameter name, a parameter with no values, values or names that contain control characters, and two names that differ only in letter case (`signal` and `Signal`). The startup checks that look for exposed endpoints (`insecure_allow_read_exfiltration`, the blind-write and BuildKit tunnel acknowledgments) treat a rule with `query` as reachable, since they probe paths and can't know which query a client will send. A `query` deny doesn't hide an allow from those checks for the same reason. `sockguard match` accepts a query on `--path` (for example `/containers/abc/kill?signal=USR1`) and `sockguard validate` lists each rule's constraints after its path.
 
+### Body Constraints
+
+A rule can also constrain the request body with `match.body`. It maps a top-level JSON field name to the values the rule accepts. It works the same way in the top-level `rules` and in a client profile's `rules`.
+
+```yaml
+rules:
+  - match: { method: POST, path: "/libpod/containers/create", body: { name: ["team-app-*"] } }
+    action: allow
+  - match: { method: "*", path: "/**" }
+    action: deny
+```
+
+That allows a create naming itself `team-app-…` and denies one naming anything else. Name-scoped route rules like `POST /libpod/containers/team-app-*/exec/create` then enforce: a client cannot create outside its own prefix and reach the result by name. Forcing the field is half the value. Podman's own CLI sends `"name": ""` whenever `--name` is absent, so the common case would carry no name to scope. The Docker-compatible create names its container in the query string instead of the body, so scope `POST /containers/create` with `match.query`, not `body`.
+
+A rule with `body` matches only when the method and path match and every listed field passes:
+
+- The field has to be present, with a value matching one of its patterns. A create that names nothing does not match the rule above, so it falls through to the next rule.
+- Fields you don't list are not checked.
+- Only the top level of the JSON object is addressed. There is no nested path syntax.
+- The matcher resolves a field name case-insensitively, the way the engines' decoders bind it: `Name` and `NAME` satisfy `name` exactly as they set the same field at the engine. A body carrying two spellings of one name is unreadable rather than guessed at, like a body that fails the parity scan the inspectors run.
+
+Values use the `match.query` dialect: exact text, or a glob where `*` is any run of characters and nothing else is special. Values are JSON strings. Patterns are compared against a string field's decoded value, so `""` is the empty string. A `null` counts as the field being absent, and a number, boolean, array or object has no string value to compare, so it never passes a pattern. The engines agree: a field typed as a string in the daemon's own structs 400s when the body spells it any other way, and Podman treats `null` as leaving the field unset.
+
+A body that is not a JSON object (empty, `null`, or larger than 1 MiB), or one whose keys the engines could read two ways, repeated in one spelling or spelled so their decoders disagree at any depth, is not guessed at. An allow rule with `body` does not match it, and a deny rule with `body` does: that is the posture a query that doesn't parse already has. The ambiguity test is the strict form of the `json_key_parity` scan the inspectors run, so the matcher reads a body no more permissively than the gates beside it.
+
+The body is read only when a rule carrying `match.body` already matches the request's method and path. A policy that never uses the constraint pays nothing for it. The bytes are handed back unchanged, so inspectors and the daemon still read the body the client sent. Form-encoded and multipart bodies stay refused on the routes that guard them. The body is therefore never a second reading of the parameters `match.query` checks.
+
+Use `body` on allow rules rather than deny rules, for the reason `query` has. A deny rule only matches the spellings it lists, so a client sending the same thing another way dodges it. Sockguard warns for each deny rule with `body` at startup, on reload and in `sockguard validate`.
+
+Rollout modes work as they always did. `body` only changes whether a rule matches. A request that fails a constraint is denied, or would-deny under `warn` and `audit`, like any other unmatched request. A hot reload recompiles the constraints with the rest of the rules.
+
+Config validation rejects an empty field name, a field with no patterns, names or patterns that contain control characters, and two field names that differ only in letter case, which is as ambiguous here as it is for `query`. The startup checks for exposed endpoints treat a rule with `body` as reachable. Those checks probe paths, and they cannot know which body a client will send. A `body` deny therefore hides no allow from them. `sockguard match` takes a JSON object on `--body` and reports which constraints held, from the same body reading that decided the request; `--body` and `--body-file` are mutually exclusive, because one request carries one body and the two flags feed it to different layers. `sockguard validate` lists every rule's constraints after its path, in the top-level listing and under each client profile, as `/libpod/containers/create {name=team-app-*}`.
+
 ## Environment Variables
 
 Most YAML fields can be set via env var by prefixing with `SOCKGUARD_` and

@@ -193,10 +193,48 @@ Clients:
 	}
 }
 
+func TestRuleBodyKeysRestoredWithMixedCaseSchemaKeys(t *testing.T) {
+	yaml := `
+Rules:
+  - Match: { method: POST, path: "/a", Body: { Image: ["approved/*"] } }
+    action: allow
+Clients:
+  Profiles:
+    - name: ci
+      rules:
+        - Match: { method: POST, path: "/c", Body: { Labels: ["*"] } }
+          action: deny
+`
+	cfg, err := LoadBytes([]byte(yaml))
+	if err != nil {
+		t.Fatalf("LoadBytes: %v", err)
+	}
+	if got, want := cfg.Rules[0].Match.Body, map[string][]string{"Image": {"approved/*"}}; !reflect.DeepEqual(got, want) {
+		t.Errorf("top-level body = %#v, want %#v", got, want)
+	}
+	if got, want := cfg.Clients.Profiles[0].Rules[0].Match.Body, map[string][]string{"Labels": {"*"}}; !reflect.DeepEqual(got, want) {
+		t.Errorf("profile body = %#v, want %#v", got, want)
+	}
+}
+
 func TestRuleQueryCaseDuplicatesSurviveMixedCaseSchema(t *testing.T) {
 	cfg, err := LoadBytes([]byte(`
 Rules:
   - Match: { method: POST, path: "/a", Query: { Signal: "USR1", signal: "KILL" } }
+    action: deny
+`))
+	if err == nil {
+		err = Validate(cfg)
+	}
+	if err == nil || !strings.Contains(err.Error(), "differ only in letter case") {
+		t.Fatalf("err = %v, want duplicate-case rejection", err)
+	}
+}
+
+func TestRuleBodyCaseDuplicatesSurviveMixedCaseSchema(t *testing.T) {
+	cfg, err := LoadBytes([]byte(`
+Rules:
+  - Match: { method: POST, path: "/a", Body: { Name: ["a*"], name: ["b*"] } }
     action: deny
 `))
 	if err == nil {

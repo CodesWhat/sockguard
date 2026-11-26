@@ -180,14 +180,15 @@ func (cr *CompiledRule) matchesQuery(q *requestQuery) bool {
 }
 
 // EvaluateStatic evaluates rules the way the startup exposure analyses need:
-// query constraints are ignored in the direction that over-reports. A
-// query-constrained allow rule matches on method and path alone, and a
-// query-constrained deny rule is skipped, so a conditional allow is never
-// reported as unreachable and a conditional deny never shadows an allow.
+// query and body constraints are ignored in the direction that over-reports. A
+// constrained allow rule matches on method and path alone, and a constrained
+// deny rule is skipped, so a conditional allow is never reported as unreachable
+// and a conditional deny never shadows an allow.
 func EvaluateStatic(rules []*CompiledRule, r *http.Request) (Action, int, string) {
 	routePath, encodedScp := normalizedLibpodImageScpRoutePath(r)
 	q := &requestQuery{static: true}
-	action, index, reason, _ := evaluateRequestPolicyQuery(rules, r, q, NormalizePath(r.URL.Path), routePath, encodedScp)
+	b := &requestBody{static: true}
+	action, index, reason, _ := evaluateRequestPolicyQuery(rules, r, q, b, NormalizePath(r.URL.Path), routePath, encodedScp)
 	return action, index, reason
 }
 

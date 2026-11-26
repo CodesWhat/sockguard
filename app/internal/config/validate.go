@@ -720,6 +720,7 @@ func validateRules(cfg *Config) []string {
 			errs = append(errs, versionPrefixRuleError(fmt.Sprintf("rule %d", i+1), r.Match.Path))
 		}
 		errs = append(errs, validateRuleQuery(fmt.Sprintf("rule %d: match.query", i+1), r.Match.Query)...)
+		errs = append(errs, validateRuleBody(fmt.Sprintf("rule %d: match.body", i+1), r.Match.Body)...)
 		switch r.Action {
 		case "allow", "deny":
 		default:
@@ -760,6 +761,58 @@ func validateRuleQuery(field string, query map[string][]string) []string {
 			continue
 		case hasControlRune(key):
 			errs = append(errs, fmt.Sprintf("%s key %q must not contain control characters", field, key))
+			continue
+		case len(patterns) == 0:
+			errs = append(errs, entry+" needs at least one pattern")
+			continue
+		}
+		for j, pattern := range patterns {
+			if hasControlRune(pattern) {
+				errs = append(errs, fmt.Sprintf("%s[%d] must not contain control characters, got %q", entry, j, pattern))
+			}
+		}
+	}
+	return errs
+}
+
+// validateRuleBody checks a rule's match.body map. Both engines bind a JSON
+// field from any spelling of its name, so the matcher resolves field names
+// case-insensitively and two rule keys that fold together are as ambiguous
+// here as they are for match.query.
+func validateRuleBody(field string, body map[string][]string) []string {
+	if len(body) == 0 {
+		return nil
+	}
+	keys := make([]string, 0, len(body))
+	for key := range body {
+		keys = append(keys, key)
+	}
+	slices.Sort(keys)
+	var errs []string
+	for i, key := range keys {
+		patterns := body[key]
+		entry := field + "." + key
+		// Pairwise EqualFold, not a ToLower map: the matcher weighs names by
+		// Unicode simple case folding, which equates pairs a lowercased map
+		// keeps apart (a final sigma and a medial one, for example). Rule
+		// maps are tiny, so the square is free.
+		ambiguous := false
+		for _, prev := range keys[:i] {
+			if key != "" && strings.EqualFold(prev, key) {
+				errs = append(errs, fmt.Sprintf("%s keys %q and %q differ only in letter case, which is ambiguous", field, prev, key))
+				ambiguous = true
+				break
+			}
+		}
+		if ambiguous {
+			continue
+		}
+		switch {
+		case key == "":
+			errs = append(errs, field+" must not have an empty field name")
+			continue
+		case hasControlRune(key):
+			errs = append(errs, fmt.Sprintf("%s field %q must not contain control characters", field, key))
 			continue
 		case len(patterns) == 0:
 			errs = append(errs, entry+" needs at least one pattern")
@@ -2447,6 +2500,7 @@ func validateRuleConfigs(rules []RuleConfig, prefix string) []string {
 			errs = append(errs, versionPrefixRuleError(rulePrefix, r.Match.Path))
 		}
 		errs = append(errs, validateRuleQuery(rulePrefix+".match.query", r.Match.Query)...)
+		errs = append(errs, validateRuleBody(rulePrefix+".match.body", r.Match.Body)...)
 		switch r.Action {
 		case "allow", "deny":
 		default:
