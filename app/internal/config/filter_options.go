@@ -517,6 +517,7 @@ func toFilterAllowedDeviceRequests(entries []AllowedDeviceRequest) []filter.Allo
 			MaxCount:            e.MaxCount,
 			DeviceIDs:           e.DeviceIDs,
 			Count:               e.Count,
+			Options:             e.Options,
 		})
 	}
 	return out

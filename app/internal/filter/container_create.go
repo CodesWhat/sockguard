@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"net/http"
 	"path"
 	"slices"
@@ -364,6 +365,7 @@ func newContainerCreatePolicy(opts ContainerCreateOptions) containerCreatePolicy
 			maxCount:            entry.MaxCount,
 			deviceIDs:           slices.Clone(entry.DeviceIDs),
 			count:               entry.Count,
+			options:             maps.Clone(entry.Options),
 		})
 	}
 
@@ -1797,6 +1799,9 @@ func deviceRequestAllowed(req dockerDeviceRequest, driver string, allowlist []al
 		if !deviceIDsAllowed(req, entry.deviceIDs) {
 			continue
 		}
+		if !deviceOptionsAllowed(req.Options, entry.options) {
+			continue
+		}
 		if !capabilitySetsAllowed(req.Capabilities, entry.allowedCapabilities) {
 			continue
 		}
@@ -1820,6 +1825,22 @@ func deviceIDsAllowed(req dockerDeviceRequest, allowed []string) bool {
 	}
 	for _, id := range req.DeviceIDs {
 		if !slices.Contains(allowed, id) {
+			return false
+		}
+	}
+	return true
+}
+
+// deviceOptionsAllowed enforces an entry's exact options map. An entry with no
+// map places no constraint on Options. With a map, every request key must be
+// listed with an identical value (no trimming, no case folding), so an option
+// the grant did not name is denied. A request with no Options always passes.
+func deviceOptionsAllowed(reqOptions, allowed map[string]string) bool {
+	if len(allowed) == 0 {
+		return true
+	}
+	for k, v := range reqOptions {
+		if want, ok := allowed[k]; !ok || want != v {
 			return false
 		}
 	}

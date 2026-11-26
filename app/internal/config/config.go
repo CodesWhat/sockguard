@@ -975,6 +975,10 @@ type AllowedDeviceRequest struct {
 	DeviceIDs []string `mapstructure:"device_ids"`
 	// Count, when set, requires the request Count to equal it exactly.
 	Count *int `mapstructure:"count"`
+	// Options, when non-empty, lists the only DeviceRequest Options entries
+	// the request may carry. Keys and values match byte for byte; any other
+	// entry is denied. A request with no Options still matches.
+	Options map[string]string `mapstructure:"options"`
 }
 
 // ExecRequestBodyConfig configures body inspection for exec creation/start.
