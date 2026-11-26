@@ -131,6 +131,7 @@ probe() {
 }
 
 OVERALL_WRITTEN=0
+# shellcheck disable=SC2317,SC2329 # invoked indirectly by the EXIT-trap cleanup
 write_evidence() {
   local sg_digest dz_digest
   sg_digest="$(docker image inspect --format '{{index .RepoDigests 0}}' "$SOCKGUARD_IMAGE" 2>/dev/null || true)"
@@ -148,6 +149,7 @@ write_evidence() {
   OVERALL_WRITTEN=1
 }
 
+# shellcheck disable=SC2317,SC2329 # invoked indirectly via the EXIT trap
 cleanup() {
   local status=$?
   compose logs --no-color --no-log-prefix sockguard >"${LOG_DIR}/sockguard.log" 2>&1 || true

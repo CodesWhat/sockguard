@@ -19,7 +19,7 @@ health:
   watchdog:
     enabled: false
     interval: 5s
-    exit_after: 0s # exit non-zero after this long unreachable (0s = never); needs enabled: true
+    exit_after: 0s  # exit non-zero after this long unreachable (0s = never); needs enabled: true
 # /health caches upstream reachability for 2s to reduce probe-induced dial churn.
 # The optional watchdog actively probes Docker, logs state transitions, and warms /health.
 
