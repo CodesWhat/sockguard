@@ -458,7 +458,10 @@ running proxy. Output is text by default or JSON via `-o json`.
 `--profile NAME` or `--source-ip IP` evaluates against a client profile
 and reports its selection, rollout mode, ownership scope and response
 policy from the config, plus a `not_inspected` list of what an offline
-run never reads (request body, live resources).
+run never reads (request body, live resources). `--body-file PATH` (or `-`
+for stdin) also runs the request-body inspectors on a sample body and reports
+their allow or deny verdict and reason, listing the checks that need a live
+daemon as not evaluated.
 
 `sockguard verify` is the runtime counterpart to `validate`. It
 loads the config the way `serve` does (flags, environment, file)

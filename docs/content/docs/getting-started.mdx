@@ -153,6 +153,25 @@ daemon. Each run ends with a `Not inspected` list (`not_inspected` in JSON):
 the request body, live resources, and any client certificate or unix peer
 assignments that would select a profile before source IP.
 
+To check a request body too, add `--body-file PATH` (or `--body-file -` to read
+stdin). `match` runs the same request-body inspectors the proxy runs (container
+create, exec create, service, build, image pull, volume and network writes, and
+the rest) on that file, for the selected profile or the root policy, and reports
+the verdict: `allow`, or `deny` with the inspector's reason and reason code
+(`request_body_policy_denied`, `request_body_too_large`, and so on). The body
+verdict joins the rule decision, so a body deny turns an allowed request into a
+deny, and under a `warn` or `audit` profile it passes through the way the proxy
+would. Three cases report no verdict: the rules denied the request first
+(`skipped`, since the proxy only reads the body of an allowed request), no
+inspector covers that method and path (`not_inspected`, and the file is never
+read), and `POST /exec/{id}/start` (`not_inspected`, since its check is a lookup
+of the exec instance on the daemon). Nothing is looked up on a daemon. A
+`Not evaluated` line lists each check that needs one: the exec target's
+protection label, and the Docker or Podman and cgroup-version gates on container
+create, build and image push, which run with their offline defaults.
+Ownership and visibility are still read from the config only. An unreadable
+file fails the command.
+
 `sockguard verify` is the runtime counterpart to `sockguard
 validate`. Where validate is an offline check on a config file,
 verify loads the config the way `serve` does (flags, environment,
