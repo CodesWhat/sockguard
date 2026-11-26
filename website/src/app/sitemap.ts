@@ -38,6 +38,7 @@ export default function sitemap(): MetadataRoute.Sitemap {
       "multi-host",
       "presets",
       "podman",
+      "rootless-quadlet",
       "cis-docker-benchmark",
       "compliance-report",
       "observability",
