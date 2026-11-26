@@ -90,6 +90,9 @@ request_body:
         device_ids: ["nvidia.com/gpu=0"]   # exact device IDs; every request ID must equal one byte for byte
       - driver: nvidia
         count: 2                           # exact request Count (a ceiling is max_count)
+      - driver: nvidia
+        count: 1
+        options: {visible: "0"}            # the only Options entries a request may carry
     allow_device_cgroup_rules: false
     allowed_device_cgroup_rules:  # structured cgroup-device allowlist (empty = deny all)
       - "c 1:3 rwm"   # /dev/null (char major 1, minor 3)
@@ -1792,6 +1795,11 @@ anything that does not match is denied.
 - `container_create.allowed_device_requests[].count` requires the request
   `Count` to equal it exactly (`-1` for all devices). `max_count` stays a
   ceiling; set both and both apply.
+- `container_create.allowed_device_requests[].options` lists the only
+  `Options` entries a request may carry. Each request key and value must equal
+  a listed pair, so an option the grant did not name is denied. A request with
+  no `Options` still matches, and an entry without `options` keeps its old
+  behavior and accepts any. Config load rejects an empty or padded key.
 - `libpod_container_create.allowed_gpus` lists the exact `gpus` strings a
   libpod create may carry. `all` is just another string and has to be listed.
 - `libpod_container_create.allowed_cdi_devices` lists the exact fully qualified
@@ -1799,6 +1807,33 @@ anything that does not match is denied.
   qualified name is matched whole, so a colon inside it is not read as a
   host-path suffix. `allowed_devices` grants host paths only and never a CDI
   name. Config load rejects a non-qualified entry.
+
+A libpod `gpus` entry is a single string with no options field, so
+`allowed_gpus` already refuses a value carrying extra settings. A Docker-compatible
+create sent to Podman goes through `container_create`, so `options` applies there.
+
+Example, one NVIDIA GPU and nothing else. A CDI client names the one qualified
+device, and a classic nvidia-runtime client asks for exactly one GPU with the
+`gpu` capability and only the `visible: "0"` option:
+
+```yaml
+request_body:
+  container_create:
+    allowed_device_requests:
+      - driver: cdi
+        device_ids: ["nvidia.com/gpu=0"]
+      - driver: nvidia
+        count: 1
+        allowed_capabilities:
+          - ["gpu"]
+        options:
+          visible: "0"
+  libpod_container_create:
+    allowed_gpus: ["nvidia.com/gpu=0"]
+```
+
+`nvidia.com/gpu=all`, a second GPU, `count: -1` and any other option are denied.
+The YAML above is the one the config tests load.
 
 `allow_device_requests: true` (either block) and `allow_all_devices` stay the
 blanket opt-ins and skip these lists, so existing configs behave as before. Swarm
@@ -2185,7 +2220,7 @@ the gates below are denied before the request reaches Docker.
 | `SOCKGUARD_REQUEST_BODY_CONTAINER_CREATE_ALLOW_ALL_DEVICES`           | `request_body.container_create.allow_all_devices`         | `false` | Allow any `HostConfig.Devices` host path. Prefer the allowlist below instead.        |
 | `SOCKGUARD_REQUEST_BODY_CONTAINER_CREATE_ALLOWED_DEVICES`             | `request_body.container_create.allowed_devices`           | *empty* | Comma-separated host device paths allowed for `HostConfig.Devices`.                  |
 | `SOCKGUARD_REQUEST_BODY_CONTAINER_CREATE_ALLOW_DEVICE_REQUESTS`       | `request_body.container_create.allow_device_requests`     | `false` | Escape hatch for device-request driver/capability checks. CDI raw host paths still require `allowed_devices` or `allow_all_devices`. Prefer `allowed_device_requests` for least-privilege access. |
-| *(YAML-only)*                                                         | `request_body.container_create.allowed_device_requests`   | *empty* | Structured `HostConfig.DeviceRequests` allowlist. Each entry has `driver` (required), `allowed_capabilities` (list of capability sets; request sets must each be a subset of at least one), optional `max_count` (`-1` = all devices), optional exact `count`, and optional exact `device_ids`; see [Exact GPU and CDI grants](#exact-gpu-and-cdi-grants). Empty = deny all (default). Not settable via env var due to nested structure; configure in YAML. |
+| *(YAML-only)*                                                         | `request_body.container_create.allowed_device_requests`   | *empty* | Structured `HostConfig.DeviceRequests` allowlist. Each entry has `driver` (required), `allowed_capabilities` (list of capability sets; request sets must each be a subset of at least one), optional `max_count` (`-1` = all devices), optional exact `count`, optional exact `device_ids`, and optional exact `options` entries; see [Exact GPU and CDI grants](#exact-gpu-and-cdi-grants). Empty = deny all (default). Not settable via env var due to nested structure; configure in YAML. |
 | `SOCKGUARD_REQUEST_BODY_CONTAINER_CREATE_ALLOW_DEVICE_CGROUP_RULES`          | `request_body.container_create.allow_device_cgroup_rules`         | `false`  | Allow all `HostConfig.DeviceCgroupRules` without inspection. Prefer `allowed_device_cgroup_rules` for least-privilege access.   |
 | `SOCKGUARD_REQUEST_BODY_CONTAINER_CREATE_ALLOWED_DEVICE_CGROUP_RULES`        | `request_body.container_create.allowed_device_cgroup_rules`       | *empty*  | Comma-separated Docker cgroup rule strings (`<type> <major>:<minor> <perms>`) that `HostConfig.DeviceCgroupRules` entries must match. Wildcards (`*`) in major/minor are allowed in allowlist entries and match any value; request wildcards are only permitted when the allowlist entry also uses a wildcard at that position. Empty list = deny all (default). Example: `c 1:3 rwm,c 226:* rwm`. |
 | `SOCKGUARD_REQUEST_BODY_CONTAINER_CREATE_REQUIRE_NO_NEW_PRIVILEGES`   | `request_body.container_create.require_no_new_privileges` | `false` | Require `HostConfig.SecurityOpt` to include `no-new-privileges:true`.                |

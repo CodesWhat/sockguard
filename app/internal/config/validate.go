@@ -2244,6 +2244,11 @@ func validateContainerCreateConfig(prefix string, cfg ContainerCreateRequestBody
 		if len(entry.DeviceIDs) > 0 && entry.Count != nil && *entry.Count != 0 {
 			errs = append(errs, fmt.Sprintf("%s.container_create.allowed_device_requests[%d] cannot set device_ids with a non-zero count: Docker rejects a request carrying both", prefix, i))
 		}
+		for key := range entry.Options {
+			if key == "" || key != strings.TrimSpace(key) {
+				errs = append(errs, fmt.Sprintf("%s.container_create.allowed_device_requests[%d].options keys must be non-empty without surrounding whitespace, got %q", prefix, i, key))
+			}
+		}
 		if entry.MaxCount != nil && *entry.MaxCount < -1 {
 			errs = append(errs, fmt.Sprintf("%s.container_create.allowed_device_requests[%d].max_count must be -1 or a non-negative integer, got %d", prefix, i, *entry.MaxCount))
 		}
