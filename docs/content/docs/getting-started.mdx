@@ -167,6 +167,16 @@ normalization as the running proxy, and reports the decision in
 text (default) or JSON (`-o json`). Use it to sanity-check a
 ruleset before any traffic hits the proxy.
 
+To see what a client profile would do, add `--profile NAME`, or `--source-ip IP`
+to let `match` pick the profile the proxy would pick (the first matching
+`clients.source_ip_profiles` entry, then `clients.default_profile`). The output
+names the profile and how it was selected, its rollout mode, the effective
+ownership scope, and the configured response redaction and visibility lists.
+Everything beyond the rule decision is read from the config, not from a running
+daemon. Each run ends with a `Not inspected` list (`not_inspected` in JSON):
+the request body, live resources, and any client certificate or unix peer
+assignments that would select a profile before source IP.
+
 `sockguard verify` is the runtime counterpart to `sockguard
 validate`. Where validate is an offline check on a config file,
 verify loads the config the way `serve` does (flags, environment,

@@ -460,6 +460,10 @@ what the normalized path looks like, and the reason (if any), so
 you can sanity-check a ruleset before any traffic hits the proxy.
 It applies the same hard process-list acknowledgment gate as the
 running proxy. Output is text by default or JSON via `-o json`.
+`--profile NAME` or `--source-ip IP` evaluates against a client profile
+and reports its selection, rollout mode, ownership scope and response
+policy from the config, plus a `not_inspected` list of what an offline
+run never reads (request body, live resources).
 
 `sockguard verify` is the runtime counterpart to `validate`. It
 loads the config the way `serve` does (flags, environment, file)
