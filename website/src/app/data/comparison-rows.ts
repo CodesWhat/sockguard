@@ -39,6 +39,15 @@ export const comparisonRows: ComparisonRow[] = [
       "Yes (container, exec, image, build, volume, network, secret, config, service, swarm, node, plugin)",
   },
   {
+    feature: "Query-string rule matching",
+    tecnativa: "No",
+    linuxserver: "No",
+    wollomatic: "No",
+    elevenNotes: "No",
+    cetusguard: "Yes (regex over the sorted query, v1.2.0)",
+    sockguard: "Yes (next v3.2: match.query per key, exact or * values)",
+  },
+  {
     feature: "Per-client policies",
     tecnativa: "No",
     linuxserver: "No",
@@ -292,20 +301,20 @@ export const PROJECT_HEALTH: Record<
 
 // The upstream version (or, for a project with no tagged release, the
 // default-branch commit date) each competitor's claims above were checked
-// against. Re-check at every release cut (DOC-10) so a "cannot do X" claim is
-// never more than one release stale.
+// against. Re-check at every release cut (DOC-10). Upstreams release between our
+// cuts, so the checked date, not a promise of freshness, is what a reader gets.
 //
 // This is the one "versions checked" date the site shows. README.md carries
 // the same line for the same check; page-data.test.mjs fails if the two stop
 // agreeing, so bump this and the README together.
-export const COMPETITOR_VERSIONS_CHECKED_AT = "2026-11-01";
+export const COMPETITOR_VERSIONS_CHECKED_AT = "2026-11-26";
 
 export const COMPETITOR_VERSIONS: Record<Exclude<ComparisonTool, "sockguard">, string> = {
-  tecnativa: "v0.5.0",
-  linuxserver: "3.4.7-r0-ls104",
-  wollomatic: "1.13.2",
+  tecnativa: "v0.6.0",
+  linuxserver: "3.4.8-r0-ls107",
+  wollomatic: "1.14.0",
   elevenNotes: "v2.2.0",
-  cetusguard: "v1.1.4",
+  cetusguard: "v1.2.0",
 };
 
 // The landing-page teaser: six rows, three rivals. `label` is the shorter
