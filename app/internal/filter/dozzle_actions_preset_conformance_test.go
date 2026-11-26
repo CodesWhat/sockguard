@@ -2,7 +2,10 @@ package filter_test
 
 import (
 	"net/http"
+	"path/filepath"
 	"testing"
+
+	"github.com/codeswhat/sockguard/v3/app/internal/config"
 )
 
 // TestDozzleActionsPresetConformance pins what dozzle-with-actions.yaml adds
@@ -38,6 +41,16 @@ func TestDozzleActionsPresetConformance(t *testing.T) {
 		{"container-start", http.MethodPost, "/containers/abc/start", "", true},
 		{"container-stop", http.MethodPost, "/containers/abc/stop", "", true},
 		{"container-restart", http.MethodPost, "/containers/abc/restart", "", true},
+		{"container-stop-timeout", http.MethodPost, "/containers/abc/stop?t=10", "", true},
+
+		// A signal on stop or restart is arbitrary signal delivery, which is
+		// kill by another name. Dozzle sends none.
+		{"container-stop-signal-denied", http.MethodPost, "/containers/abc/stop?signal=SIGUSR1&t=5", "", false},
+		{"container-restart-signal-denied", http.MethodPost, "/containers/abc/restart?signal=SIGHUP", "", false},
+		{"v-prefixed-container-stop-signal-denied", http.MethodPost, "/v1.45/containers/abc/stop?signal=SIGUSR1", "", false},
+		{"v-prefixed-container-restart-signal-denied", http.MethodPost, "/v1.45/containers/abc/restart?signal=SIGHUP", "", false},
+		{"container-stop-empty-signal-denied", http.MethodPost, "/containers/abc/stop?signal=", "", false},
+		{"container-stop-cased-signal-denied", http.MethodPost, "/containers/abc/stop?Signal=SIGUSR1", "", false},
 		{"v-prefixed-container-start", http.MethodPost, "/v1.45/containers/abc/start", "", true},
 		{"v-prefixed-container-stop", http.MethodPost, "/v1.45/containers/abc/stop", "", true},
 		{"v-prefixed-container-restart", http.MethodPost, "/v1.45/containers/abc/restart", "", true},
@@ -79,5 +92,53 @@ func TestDozzleActionsPresetConformance(t *testing.T) {
 
 	for _, c := range cases {
 		fireDrydockCase(t, handler, c)
+	}
+}
+
+// TestDozzleActionsPresetRulesAreBasePlusActions pins the rule list shape: the
+// base dozzle.yaml rules, then the signal denies, then exactly start, stop and
+// restart allows, then the catch-all deny. A broad allow slipped in before the
+// catch-all fails here even if the behavior cases above miss it.
+func TestDozzleActionsPresetRulesAreBasePlusActions(t *testing.T) {
+	load := func(name string) []config.RuleConfig {
+		cfg, err := config.Load(filepath.Join("..", "..", "configs", name))
+		if err != nil {
+			t.Fatalf("load %s: %v", name, err)
+		}
+		return cfg.Rules
+	}
+	base := load("dozzle.yaml")
+	got := load("dozzle-with-actions.yaml")
+
+	if len(base) == 0 || base[len(base)-1].Action != "deny" || base[len(base)-1].Match.Path != "/**" {
+		t.Fatalf("dozzle.yaml must end in a catch-all deny, got %+v", base)
+	}
+	baseAllows := base[:len(base)-1]
+
+	type key struct{ method, path, action string }
+	k := func(r config.RuleConfig) key { return key{r.Match.Method, r.Match.Path, r.Action} }
+	want := make([]key, 0, len(baseAllows)+6)
+	for _, r := range baseAllows {
+		want = append(want, k(r))
+	}
+	want = append(want,
+		key{"POST", "/containers/*/stop", "deny"},
+		key{"POST", "/containers/*/restart", "deny"},
+		key{"POST", "/containers/*/start", "allow"},
+		key{"POST", "/containers/*/stop", "allow"},
+		key{"POST", "/containers/*/restart", "allow"},
+		k(base[len(base)-1]),
+	)
+	if len(got) != len(want) {
+		t.Fatalf("dozzle-with-actions.yaml has %d rules, want %d", len(got), len(want))
+	}
+	for i, r := range got {
+		if k(r) != want[i] {
+			t.Errorf("rule %d = %+v, want %+v", i, k(r), want[i])
+		}
+		deny := r.Action == "deny" && r.Match.Path != "/**"
+		if deny && len(r.Match.Query["signal"]) == 0 {
+			t.Errorf("rule %d is a path deny without a signal query constraint", i)
+		}
 	}
 }

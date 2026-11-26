@@ -62,7 +62,7 @@ func TestDozzleShellPresetConformance(t *testing.T) {
 		t.Fatal("dozzle-with-shell.yaml must pin exec with allowed_commands, not acknowledge body-blind writes")
 	}
 
-	handler := buildDrydockPresetHandler(t, "dozzle-with-shell.yaml")
+	handler := drydockPresetHandlerFromConfig(t, cfg)
 	cases := []presetCase{
 		// Base preset reads still work.
 		{"ping", http.MethodGet, "/_ping", "", true},
@@ -77,6 +77,7 @@ func TestDozzleShellPresetConformance(t *testing.T) {
 		{"exec-create", http.MethodPost, "/containers/abc/exec", dozzleExecCreateBody(t, nil), true},
 		{"v-prefixed-exec-create", http.MethodPost, "/v1.45/containers/abc/exec", dozzleExecCreateBody(t, nil), true},
 		{"exec-resize", http.MethodPost, "/exec/abc/resize?h=40&w=100", "", true},
+		{"v-prefixed-exec-resize", http.MethodPost, "/v1.45/exec/abc/resize?h=40&w=100", "", true},
 
 		// Any other command is refused.
 		{"exec-cat-shadow-denied", http.MethodPost, "/containers/abc/exec", dozzleExecCreateBody(t, map[string]any{"Cmd": []string{"cat", "/etc/shadow"}}), false},
@@ -109,8 +110,11 @@ func TestDozzleShellPresetConformance(t *testing.T) {
 }
 
 // TestDozzleShellPresetRootUserPolicy checks the user policy on exec create.
-// Dozzle sets no User, which sockguard reads as root, so the preset allows
-// root. Nothing about that lets a named user through that the pin forbids.
+// Dozzle's own Shell tab runs as the container's default user, but it sends an
+// empty User, which sockguard reads as root, so allow_root_user has to be true
+// and sockguard cannot pin the User. The preset therefore admits any exec User
+// (root included) with the pinned argv: treat the grant as a root-capable
+// shell. The argv pin is the only gate, and it holds for every User.
 func TestDozzleShellPresetRootUserPolicy(t *testing.T) {
 	handler := buildDrydockPresetHandler(t, "dozzle-with-shell.yaml")
 	for _, user := range []string{"root", "0", "0:0", "app", "1000"} {
@@ -129,8 +133,8 @@ func TestDozzleShellPresetRootUserPolicy(t *testing.T) {
 
 // TestDozzleShellPresetExecStartRecheck drives POST /exec/{id}/start the way
 // serve.go wires it: the start is re-checked against the stored exec metadata.
-// Dozzle's own command passes and anything else is refused, even if the create
-// somehow happened on another path.
+// Dozzle's own command passes, and a stored exec with a different command or
+// the privileged flag is refused, even if the create happened on another path.
 func TestDozzleShellPresetExecStartRecheck(t *testing.T) {
 	cfg, err := config.Load(filepath.Join("..", "..", "configs", "dozzle-with-shell.yaml"))
 	if err != nil {
@@ -171,4 +175,23 @@ func TestDozzleShellPresetExecStartRecheck(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestDozzleShellPresetProtectedTargetDenied checks that exec create into a
+// container labeled com.sockguard.exec=deny is refused even with the pinned
+// argv, and that an unprotected target still passes.
+func TestDozzleShellPresetProtectedTargetDenied(t *testing.T) {
+	cfg, err := config.Load(filepath.Join("..", "..", "configs", "dozzle-with-shell.yaml"))
+	if err != nil {
+		t.Fatalf("load preset: %v", err)
+	}
+	const goodID = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	handler := drydockPresetHandlerFromConfig(t, cfg, func(p *filter.PolicyConfig) {
+		p.Exec.InspectTarget = func(_ context.Context, id string) (filter.ExecTargetInspectResult, bool, error) {
+			return filter.ExecTargetInspectResult{ContainerID: goodID, Protected: id == "proxy"}, true, nil
+		}
+	})
+	body := dozzleExecCreateBody(t, nil)
+	fireDrydockCase(t, handler, presetCase{"exec-create-protected-denied", http.MethodPost, "/containers/proxy/exec", body, false})
+	fireDrydockCase(t, handler, presetCase{"exec-create-unprotected-allowed", http.MethodPost, "/containers/web/exec", body, true})
 }

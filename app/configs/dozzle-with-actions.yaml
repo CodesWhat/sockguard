@@ -70,6 +70,15 @@ rules:
     action: allow
 
   # Container actions (DOZZLE_ENABLE_ACTIONS): start, stop, restart only.
+  # Dozzle sends no signal query on stop or restart. The Engine API honors
+  # ?signal= on both, which would make them arbitrary signal delivery (kill is
+  # denied below), so any request carrying a signal is refused first.
+  - match: { method: POST, path: "/containers/*/stop", query: { signal: ["*"] } }
+    action: deny
+    reason: "stop with a signal is not allowed by dozzle-with-actions preset"
+  - match: { method: POST, path: "/containers/*/restart", query: { signal: ["*"] } }
+    action: deny
+    reason: "restart with a signal is not allowed by dozzle-with-actions preset"
   - match: { method: POST, path: "/containers/*/start" }
     action: allow
   - match: { method: POST, path: "/containers/*/stop" }

@@ -17,15 +17,18 @@
 # (internal/web/terminal.go):
 #   ["sh", "-c", "command -v bash >/dev/null 2>&1 && exec bash || exec sh"]
 # Sockguard matches the whole argv, so exec create with any other command is
-# refused, and exec start re-checks the stored command before it runs.
+# refused, and exec start re-checks the stored command before it runs. Exec
+# create and exec start are inspected; exec resize is allowed by path only
+# (resizing any exec id is a nuisance, not an escalation).
 #
 # This does not limit what a person types once the shell is open. The
-# allowlist pins the program that starts, not the session. Whoever can open
-# Dozzle's Shell tab has a shell as the container's default user in every
-# container Dozzle lists, so put Dozzle behind its own authentication
-# (DOZZLE_AUTH_PROVIDER, with the shell role limited to admins). allow_root_user
-# is true because Dozzle sets no exec User and sockguard treats an empty User
-# as root. Containers labeled com.sockguard.exec=deny, including the official
+# allowlist pins the program that starts, not the session. Dozzle's own Shell
+# tab runs as the container's default user, but sockguard cannot pin the exec
+# User: allow_root_user must be true because Dozzle sends an empty User, which
+# sockguard treats as root, so a caller can also request an explicit User
+# including root with the pinned argv. Treat the grant as a root-capable shell
+# in every container Dozzle lists, and put Dozzle behind its own authentication
+# (DOZZLE_AUTH_PROVIDER, with the shell role limited to admins). Containers labeled com.sockguard.exec=deny, including the official
 # sockguard image, are always refused. Keep that label on the proxy and on any
 # container that must not be entered.
 #
