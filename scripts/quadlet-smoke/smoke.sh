@@ -64,7 +64,10 @@ for q in /usr/lib/podman/quadlet /usr/libexec/podman/quadlet; do
   if [ -x "$q" ]; then
     trial="$(mktemp -d)"
     cp "$kit"/*.container "$kit"/*.volume "$kit"/traefik/*.container "$kit"/traefik/*.network "$trial/"
-    QUADLET_UNIT_DIRS="$trial" "$q" -dryrun -user >/dev/null || { rm -rf "$trial"; fail "quadlet rejected the traefik example units"; }
+    QUADLET_UNIT_DIRS="$trial" "$q" -dryrun -user >/dev/null || {
+      rm -rf "$trial"
+      fail "quadlet rejected the traefik example units"
+    }
     rm -rf "$trial"
     break
   fi
