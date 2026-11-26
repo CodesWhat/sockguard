@@ -83,6 +83,10 @@ request_body:
     allow_host_userns: false
     allow_host_cgroupns: false
 
+    # Refuse container:<ref> and ns:<path> namespace joins, which would let a
+    # template share another container's network or PID namespace.
+    restrict_namespace_sharing: true
+
     # No host paths. Use a named volume or the container's own filesystem for
     # the agent work directory. Add the narrowest host path here if a template
     # needs one.

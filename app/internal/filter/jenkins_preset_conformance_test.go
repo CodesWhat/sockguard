@@ -100,6 +100,18 @@ func TestJenkinsPresetConformance(t *testing.T) {
 		{"create-published-port-denied", http.MethodPost, "/containers/create", agent + `,"HostConfig":{"PortBindings":{"22/tcp":[{"HostPort":"2222"}]}}}`, false},
 		{"create-publish-all-denied", http.MethodPost, "/containers/create", agent + `,"HostConfig":{"PublishAllPorts":true}}`, false},
 		{"create-volumes-from-denied", http.MethodPost, "/containers/create", agent + `,"HostConfig":{"VolumesFrom":["other"]}}`, false},
+		{"create-mounts-bind-denied", http.MethodPost, "/containers/create", agent + `,"HostConfig":{"Mounts":[{"Type":"bind","Source":"/","Target":"/host"}]}}`, false},
+		{"create-container-netns-denied", http.MethodPost, "/containers/create", agent + `,"HostConfig":{"NetworkMode":"container:victim"}}`, false},
+		{"create-container-pidns-denied", http.MethodPost, "/containers/create", agent + `,"HostConfig":{"PidMode":"container:victim"}}`, false},
+		{"create-host-ipc-denied", http.MethodPost, "/containers/create", agent + `,"HostConfig":{"IpcMode":"host"}}`, false},
+		{"create-userns-host-denied", http.MethodPost, "/containers/create", agent + `,"HostConfig":{"UsernsMode":"host"}}`, false},
+		{"create-unconfined-apparmor-denied", http.MethodPost, "/containers/create", agent + `,"HostConfig":{"SecurityOpt":["apparmor=unconfined"]}}`, false},
+		{"create-tmpfs-allowed", http.MethodPost, "/containers/create", agent + `,"HostConfig":{"Tmpfs":{"/tmp":"rw"}}}`, true},
+		{"create-image-digest-bypass-denied", http.MethodPost, "/containers/create", `{"Image":"docker.io/jenkins/inbound-agent:3396.ve02b_5cde31b_2-5-jdk21@sha256:00"}`, false},
+		{"libpod-create-denied", http.MethodPost, "/libpod/containers/create", agent + `}`, false},
+		{"libpod-containers-list-denied", http.MethodGet, "/libpod/containers/json", "", false},
+		{"dot-segment-exec-denied", http.MethodPost, "/containers/abc/../abc/exec", `{}`, false},
+		{"encoded-slash-archive-denied", http.MethodPut, "/containers/abc%2Farchive?path=/", "", false},
 		{"v-prefixed-create-privileged-denied", http.MethodPost, "/v1.45/containers/create", agent + `,"HostConfig":{"Privileged":true}}`, false},
 
 		// Pull policy: docker.io only.
