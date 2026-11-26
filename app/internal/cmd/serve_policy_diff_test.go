@@ -18,7 +18,7 @@ func TestPolicyDiffComparesRunningGeneration(t *testing.T) {
 	cfg.Admin.Enabled = true
 	versioner := admin.NewPolicyVersioner()
 	versioner.Update(buildInitialPolicySnapshot(newServeTestDeps(), &cfg, nil, false, nil))
-	handler := buildAdminHandlerChain(&cfg, newDiscardLogger(), nil, versioner)
+	handler := buildAdminHandlerChain(&cfg, newDiscardLogger(), nil, versioner, nil)
 	req := httptest.NewRequest(http.MethodPost, "/admin/policy/diff", strings.NewReader("admin:\n  enabled: true\nresponse:\n  redact_container_env: false\n"))
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
@@ -108,7 +108,7 @@ func TestPolicyDiffTracksSuccessfulReloadOnly(t *testing.T) {
 	initial.Admin.Enabled = true
 	f := newReloadCoordinatorFixture(t, &initial)
 	f.versioner.Update(buildInitialPolicySnapshot(newServeTestDeps(), &initial, nil, false, nil))
-	h := buildAdminHandlerChain(&initial, newDiscardLogger(), nil, f.versioner)
+	h := buildAdminHandlerChain(&initial, newDiscardLogger(), nil, f.versioner, nil)
 	body := "admin:\n  enabled: true\nresponse:\n  redact_container_env: false\n"
 	candidate, err := config.LoadBytes([]byte(body))
 	if err != nil {
@@ -198,7 +198,7 @@ func TestPolicyDiffRespectsAdminAccessBoundary(t *testing.T) {
 		cfg.Clients.AllowedCIDRs = []string{"10.0.0.0/8"}
 		v := admin.NewPolicyVersioner()
 		v.Update(buildInitialPolicySnapshot(newServeTestDeps(), &cfg, nil, false, nil))
-		h := buildAdminHandlerChain(&cfg, newDiscardLogger(), nil, v)
+		h := buildAdminHandlerChain(&cfg, newDiscardLogger(), nil, v, nil)
 		req := httptest.NewRequest("POST", "/admin/policy/diff", strings.NewReader(""))
 		req.RemoteAddr = "192.0.2.1:1234"
 		rec := httptest.NewRecorder()

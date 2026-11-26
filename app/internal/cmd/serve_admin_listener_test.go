@@ -67,7 +67,7 @@ func TestBuildAdminHandlerChainServesValidate(t *testing.T) {
 	versioner := admin.NewPolicyVersioner()
 	versioner.Update(admin.PolicySnapshot{Rules: 1, Source: "startup"})
 
-	handler := buildAdminHandlerChain(&cfg, newDiscardLogger(), nil, versioner)
+	handler := buildAdminHandlerChain(&cfg, newDiscardLogger(), nil, versioner, nil)
 
 	body := strings.NewReader("rules:\n  - match: { method: GET, path: /_ping }\n    action: allow\n")
 	req := httptest.NewRequest(http.MethodPost, cfg.Admin.Path, body)
@@ -99,7 +99,7 @@ func TestBuildAdminHandlerChainServesPolicyVersion(t *testing.T) {
 	versioner := admin.NewPolicyVersioner()
 	versioner.Update(admin.PolicySnapshot{Rules: 3, Source: "startup"})
 
-	handler := buildAdminHandlerChain(&cfg, newDiscardLogger(), nil, versioner)
+	handler := buildAdminHandlerChain(&cfg, newDiscardLogger(), nil, versioner, nil)
 
 	req := httptest.NewRequest(http.MethodGet, cfg.Admin.PolicyVersionPath, nil)
 	rec := httptest.NewRecorder()
@@ -138,7 +138,7 @@ func TestBuildAdminHandlerChainEmitsAuditWhenEnabled(t *testing.T) {
 	versioner := admin.NewPolicyVersioner()
 	versioner.Update(admin.PolicySnapshot{Source: "startup"})
 
-	handler := buildAdminHandlerChain(&cfg, newDiscardLogger(), auditLogger, versioner)
+	handler := buildAdminHandlerChain(&cfg, newDiscardLogger(), auditLogger, versioner, nil)
 
 	req := httptest.NewRequest(http.MethodGet, cfg.Admin.PolicyVersionPath, nil)
 	req.RemoteAddr = "127.0.0.1:5555"
@@ -167,7 +167,7 @@ func TestBuildAdminHandlerChainReturns404ForUnknownPath(t *testing.T) {
 	versioner := admin.NewPolicyVersioner()
 	versioner.Update(admin.PolicySnapshot{Source: "startup"})
 
-	handler := buildAdminHandlerChain(&cfg, newDiscardLogger(), nil, versioner)
+	handler := buildAdminHandlerChain(&cfg, newDiscardLogger(), nil, versioner, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/containers/json", nil)
 	rec := httptest.NewRecorder()
@@ -194,7 +194,7 @@ func TestBuildAdminHandlerChainEnforcesCIDRAllowlist(t *testing.T) {
 	versioner := admin.NewPolicyVersioner()
 	versioner.Update(admin.PolicySnapshot{Rules: 1, Source: "startup"})
 
-	handler := buildAdminHandlerChain(&cfg, newDiscardLogger(), nil, versioner)
+	handler := buildAdminHandlerChain(&cfg, newDiscardLogger(), nil, versioner, nil)
 
 	t.Run("disallowed IP denied", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, cfg.Admin.PolicyVersionPath, nil)
@@ -236,7 +236,7 @@ func TestBuildAdminHandlerChainNoCIDRGuardWhenAllowlistEmpty(t *testing.T) {
 	versioner := admin.NewPolicyVersioner()
 	versioner.Update(admin.PolicySnapshot{Rules: 1, Source: "startup"})
 
-	handler := buildAdminHandlerChain(&cfg, newDiscardLogger(), nil, versioner)
+	handler := buildAdminHandlerChain(&cfg, newDiscardLogger(), nil, versioner, nil)
 
 	req := httptest.NewRequest(http.MethodGet, cfg.Admin.PolicyVersionPath, nil)
 	req.RemoteAddr = "192.0.2.10:1234"
@@ -262,7 +262,7 @@ func TestBuildAdminHandlerChainSkipsCIDRGuardForUnixListener(t *testing.T) {
 	versioner := admin.NewPolicyVersioner()
 	versioner.Update(admin.PolicySnapshot{Rules: 1, Source: "startup"})
 
-	handler := buildAdminHandlerChain(&cfg, newDiscardLogger(), nil, versioner)
+	handler := buildAdminHandlerChain(&cfg, newDiscardLogger(), nil, versioner, nil)
 
 	req := httptest.NewRequest(http.MethodGet, cfg.Admin.PolicyVersionPath, nil)
 	// An IP outside the allowlist: a 403 here would mean the TCP-only gate
@@ -457,7 +457,7 @@ func TestBindAdminServerNoopWhenAdminDisabled(t *testing.T) {
 		return nil, errors.New("should not be called")
 	}
 
-	member, err := bindAdminServer(&cfg, newDiscardLogger(), nil, nil, deps, newListenerStatusBoard())
+	member, err := bindAdminServer(&cfg, newDiscardLogger(), nil, nil, deps, newListenerStatusBoard(), nil)
 	if err != nil {
 		t.Fatalf("bindAdminServer() error = %v, want nil", err)
 	}
@@ -483,7 +483,7 @@ func TestBindAdminServerNoopWhenListenerNotConfigured(t *testing.T) {
 		return nil, errors.New("should not be called")
 	}
 
-	member, err := bindAdminServer(&cfg, newDiscardLogger(), nil, nil, deps, newListenerStatusBoard())
+	member, err := bindAdminServer(&cfg, newDiscardLogger(), nil, nil, deps, newListenerStatusBoard(), nil)
 	if err != nil {
 		t.Fatalf("bindAdminServer() error = %v, want nil", err)
 	}
@@ -511,7 +511,7 @@ func TestBindAdminServerPropagatesListenerError(t *testing.T) {
 		return nil, errors.New("bind boom")
 	}
 
-	member, err := bindAdminServer(&cfg, newDiscardLogger(), nil, nil, deps, newListenerStatusBoard())
+	member, err := bindAdminServer(&cfg, newDiscardLogger(), nil, nil, deps, newListenerStatusBoard(), nil)
 	if err == nil || !strings.Contains(err.Error(), "admin listener: bind boom") {
 		t.Fatalf("error = %v, want admin listener: bind boom", err)
 	}
@@ -536,7 +536,7 @@ func TestBindAdminServerRegistersBoundStateBeforePublish(t *testing.T) {
 	deps.createAdminListener = func(*config.Config) (net.Listener, error) { return injected, nil }
 	board := newListenerStatusBoard()
 
-	member, err := bindAdminServer(&cfg, newDiscardLogger(), nil, admin.NewPolicyVersioner(), deps, board)
+	member, err := bindAdminServer(&cfg, newDiscardLogger(), nil, admin.NewPolicyVersioner(), deps, board, nil)
 	if err != nil {
 		t.Fatalf("bindAdminServer() error = %v", err)
 	}

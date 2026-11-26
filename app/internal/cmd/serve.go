@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -287,7 +288,7 @@ func runServeWithDeps(cmd *cobra.Command, args []string, deps *serveDeps) error 
 	if err != nil {
 		return err
 	}
-	adminMember, err := bindAdminServer(cfg, logger, auditLogger, versioner, deps, board)
+	adminMember, err := bindAdminServer(cfg, logger, auditLogger, versioner, deps, board, runtime.otlp)
 	if err != nil {
 		closeMembersReverse(deps, members)
 		return err
@@ -414,6 +415,7 @@ func bindAdminServer(
 	versioner *admin.PolicyVersioner,
 	deps *serveDeps,
 	board *listenerStatusBoard,
+	exporter *otlp.Exporter,
 ) (*listenerMember, error) {
 	if !cfg.Admin.Enabled || !cfg.Admin.Listen.Configured() {
 		return nil, nil
@@ -424,7 +426,7 @@ func bindAdminServer(
 	}
 	warnIfAdminListenerWideOpen(cfg, logger)
 	identity := inbound.Identity{Name: config.AdminListenerName, Role: inbound.RoleAdmin, Network: networkFor(cfg.Admin.Listen.ListenConfig)}
-	adminSwappable := reload.NewSwappableHandler(buildAdminHandlerChain(cfg, logger, auditLogger, versioner))
+	adminSwappable := reload.NewSwappableHandler(buildAdminHandlerChain(cfg, logger, auditLogger, versioner, exporter))
 	server := newAdminHTTPServer(adminSwappable)
 	server.ConnContext = inbound.ConnContext(identity, server.ConnContext)
 	member := &listenerMember{
@@ -984,7 +986,7 @@ func buildServeHandlerLayersWithRuntime(b serveHandlerBuild) ([]serveHandlerLaye
 	}
 	// withOTLP sits inside withTraceContext and withRequestID (it reads their
 	// IDs) and outside withMetrics, so it sees the final decision and status.
-	// Main chain only: the admin chain is not instrumented.
+	// The dedicated admin chain has its own otlp.AdminMiddleware layer.
 	if runtime.otlp != nil {
 		layers = append(layers, namedServeHandlerLayer("withOTLP", otlp.Middleware(runtime.otlp)))
 	}
@@ -2109,7 +2111,7 @@ func clientVisibilityProfiles(values []config.ClientProfileConfig) map[string]vi
 // distinct trust boundary whose access control is the bind target plus
 // admin.listen.tls, not the per-profile policy that gates Docker-API
 // traffic on the main listener.
-func buildAdminHandlerChain(cfg *config.Config, logger *slog.Logger, auditLogger *logging.AuditLogger, versioner *admin.PolicyVersioner) http.Handler {
+func buildAdminHandlerChain(cfg *config.Config, logger *slog.Logger, auditLogger *logging.AuditLogger, versioner *admin.PolicyVersioner, exporter *otlp.Exporter) http.Handler {
 	terminal := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Any request on the dedicated admin listener that did not match an
 		// admin path lands here. We surface it as a 404 with the same
@@ -2139,12 +2141,43 @@ func buildAdminHandlerChain(cfg *config.Config, logger *slog.Logger, auditLogger
 	if cfg.Log.Audit.Enabled && auditLogger != nil {
 		h = withAuditLog(auditLogger, cfg)(h)
 	}
+	// The OTLP layer sits inside request-ID/trace context (it reads their IDs)
+	// and outside the CIDR guard, so a denied admin request is exported with
+	// its final decision. The exporter is the process-scoped one the main
+	// chain uses; nil when otlp.enabled is false.
+	h = otlp.AdminMiddleware(exporter, adminRouteClassifier(cfg))(h)
 	h = withRequestID()(h)
-	h = withTraceContext()(h)
+	if exporter != nil {
+		h = logging.TraceContextMiddlewareWithRootSampler(otlp.RootSampler(cfg.OTLP.SampleRatio))(h)
+	} else {
+		h = withTraceContext()(h)
+	}
 	if cfg.Log.AccessLog {
 		h = withAccessLog(logger)(h)
 	}
 	return h
+}
+
+// adminRouteClassifier maps a request on the admin listener to the configured
+// admin path it addresses, or "unknown". Matching mirrors the interceptors
+// (path.Clean on both sides), and the returned value is always operator
+// configuration, never client input, so span names stay low-cardinality.
+func adminRouteClassifier(cfg *config.Config) func(*http.Request) string {
+	routes := make([]string, 0, 3)
+	for _, p := range []string{cfg.Admin.Path, cfg.Admin.PolicyVersionPath, cfg.Admin.PolicyDiffPath} {
+		if p != "" {
+			routes = append(routes, path.Clean(p))
+		}
+	}
+	return func(r *http.Request) string {
+		cleaned := path.Clean(r.URL.Path)
+		for _, route := range routes {
+			if cleaned == route {
+				return route
+			}
+		}
+		return "unknown"
+	}
 }
 
 // newAdminHTTPServer returns the http.Server for the dedicated admin
