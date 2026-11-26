@@ -1,6 +1,6 @@
 ---
 title: Presets
-description: Ready-made sockguard configs for drydock, drydock with self-update, drydock with compose, drydock with build, drydock with mediated build, Portwing, Portwing with exec, Portwing with compose, Portwing with build, Portwing with mediated build, Traefik, Portainer, Watchtower, Homepage, Homarr, Diun, Autoheal, GitHub Actions and GitLab runners, the CIS Docker Benchmark, read-only dashboards, Podman read-only monitoring, Dozzle, Dozzle with actions, Dozzle with shell, Uptime Kuma, Beszel, Arcane, Arcane with management, Dockge, Komodo, Jenkins, and Woodpecker CI.
+description: Ready-made sockguard configs for drydock, drydock with self-update, drydock with compose, drydock with build, drydock with mediated build, Portwing, Portwing with exec, Portwing with compose, Portwing with build, Portwing with mediated build, Traefik, Portainer, Watchtower, Homepage, Homarr, Diun, Autoheal, GitHub Actions and GitLab runners, the CIS Docker Benchmark, read-only dashboards, Podman read-only monitoring, Dozzle, Dozzle with actions, Dozzle with shell, Uptime Kuma, Beszel, Arcane, Arcane with management, Dockge, Komodo, Komodo with deploy, Jenkins, and Woodpecker CI.
 ---
 
 Sockguard ships with ready-made config presets for common Docker consumers. All presets are bundled in the container image at `/etc/sockguard/`.
@@ -731,6 +731,59 @@ prune action, Swarm mode, and terminals and container exec. Set
 `PERIPHERY_DISABLE_TERMINALS` and `PERIPHERY_DISABLE_CONTAINER_EXEC` to `true`.
 A deploy-capable Periphery needs container create with a caller-defined config,
 compose and image builds, which this preset does not bound.
+
+## Komodo with deploy (`komodo-with-deploy.yaml`)
+
+Extends the Komodo preset so Periphery can deploy containers and Compose stacks through the proxy.
+
+**Use for:** Komodo Deployments (`docker run`), Stacks (`docker compose up -d`, `down`, `stop`, `restart`, `pull`) and the container, image, network and volume actions in the Komodo UI.
+
+```yaml
+# Allows: everything in komodo.yaml, plus GET /info and /events
+# Allows: container create, start, stop, restart, kill, rename, wait, remove
+# Allows: POST /images/create (pull)
+# Allows: network create, connect, disconnect, remove; volume create
+# Denies: /build, /session, /grpc, exec and attach, image and volume remove, pause, prune, Swarm
+```
+
+Derived from Komodo v2.3.4 (`bin/periphery/src`). Periphery shells out to the
+docker CLI for every write: `docker pull` and `docker run` for a Deployment,
+`docker compose` for a Stack, and `docker network create` and `docker container rm`
+for the actions. Point it at sockguard with `DOCKER_HOST`.
+
+Deploying means container create with a caller-defined config, so the writes are
+bounded two ways. `ownership.owner: komodo` stamps everything Periphery creates
+with an owner label (Komodo doesn't have to set it) and hides every other
+container from it. Container-create inspection stays at its defaults, which
+refuse privileged containers, host network, PID, IPC and user namespaces, extra
+capabilities and devices, and the preset also sets `restrict_namespace_sharing`
+to deny `container:<ref>` joins. Bind mounts are limited to `/etc/komodo`
+(Periphery's root directory), network and volume creates keep the default driver
+allowlist.
+
+Builds are denied. Periphery only builds when a Build resource runs or a Stack
+sets `run_build`, so a plain Deployment or Stack deploy never calls `/build`,
+`/session` or `/grpc`. Build on a separate builder.
+
+Things that change with the preset:
+
+- Containers that already run, including Periphery, don't show up in Komodo and
+  can't be adopted. Redeploy them from Komodo. `external: true` networks and
+  volumes must have been created through the proxy.
+- A Deployment's network defaults to `host`, which is refused. Pick a bridge or
+  user network.
+- `docker login` calls `POST /auth`, which stays denied, so registry accounts
+  don't work and only public images pull. Add an allow rule for it if you accept
+  that.
+- Terminals, container exec, image and volume removal, pause and prune are
+  refused. Set `PERIPHERY_DISABLE_TERMINALS` and
+  `PERIPHERY_DISABLE_CONTAINER_EXEC` to `true`.
+
+Residual risk: anyone who can edit a Deployment or Stack in Komodo can run any
+image with any command, as root, on this host, with `/etc/komodo` mounted. Komodo
+Core's login and permissions are the trust boundary. Periphery's own hooks
+(`pre_deploy`, `post_deploy`) run inside its container and aren't mediated by
+the proxy.
 
 ## Diun (`diun.yaml`)
 

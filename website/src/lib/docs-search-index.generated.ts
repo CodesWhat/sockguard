@@ -144,6 +144,7 @@ export const DOCS_SEARCH_ITEMS: [page: number, heading: string, anchor: string][
   [6,"Arcane with management (arcane-with-management.yaml)","arcane-with-management-arcane-with-managementyaml"],
   [6,"Dockge (dockge.yaml)","dockge-dockgeyaml"],
   [6,"Komodo (komodo.yaml)","komodo-komodoyaml"],
+  [6,"Komodo with deploy (komodo-with-deploy.yaml)","komodo-with-deploy-komodo-with-deployyaml"],
   [6,"Diun (diun.yaml)","diun-diunyaml"],
   [6,"Autoheal (autoheal.yaml)","autoheal-autohealyaml"],
   [6,"GitHub Actions Self-Hosted Runner (github-actions-runner.yaml)","github-actions-self-hosted-runner-github-actions-runneryaml"],
