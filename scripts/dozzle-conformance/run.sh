@@ -94,7 +94,7 @@ if [[ ! $DOZZLE_IMAGE =~ ^amir20/dozzle:[A-Za-z0-9._-]+$ ]]; then
 fi
 
 SUFFIX="$(LC_ALL=C tr -dc 'a-z0-9' </dev/urandom | head -c 8)"
-PROJECT="sg-dozzle-${SUFFIX}"
+PROJECT="${DOZZLE_PROJECT_PREFIX:-sg-dozzle}-${SUFFIX}"
 MARKER_NAME="${PROJECT}-marker"
 SENTINEL="SG_DOZZLE_SENTINEL_${SUFFIX}"
 EVIDENCE="${OUT_DIR}/dozzle-conformance.json"
@@ -216,7 +216,14 @@ fi
 
 # 3 + 4. Sockguard's access log for the allowed flows: no denial, and every
 # route shape is in known-routes.json. Snapshot before the forbidden probes.
-ALLOWED_LOG="$(compose logs --no-color --no-log-prefix sockguard 2>/dev/null)"
+# Retry: a remote engine relay can hand back an empty snapshot right after the
+# flows finish. stderr goes to a file so a failure is visible, not swallowed.
+ALLOWED_LOG=""
+for _ in 1 2 3 4 5; do
+  ALLOWED_LOG="$(compose logs --no-color --no-log-prefix sockguard 2>"${LOG_DIR}/sockguard-allowed-flows.err")"
+  grep -q '"msg":"request' <<<"$ALLOWED_LOG" && break
+  sleep 2
+done
 printf '%s\n' "$ALLOWED_LOG" >"${LOG_DIR}/sockguard-allowed-flows.log"
 DENIED="$("${CLI[@]}" denied "$KNOWN_ROUTES" <<<"$ALLOWED_LOG")"
 if [ "$(jq 'length' <<<"$DENIED")" -eq 0 ]; then
@@ -236,8 +243,15 @@ forbidden_detail=""
 for spec in "POST /containers/create" "GET /images/json" "GET /volumes" "POST /containers/${MARKER_NAME}/stop"; do
   method="${spec%% *}"
   path="${spec#* }"
-  code="$(probe curl -sS --max-time 10 -o /dev/null -w '%{http_code}' -X "$method" \
- "http://sockguard:2375${path}" 2>/dev/null || true)"
+  # An empty code means the exec never reached curl (remote engine relay
+  # hiccup), not that sockguard answered; retry before calling it a failure.
+  code=""
+  for _ in 1 2 3; do
+    code="$(probe curl -sS --max-time 10 -o /dev/null -w '%{http_code}' -X "$method" \
+      "http://sockguard:2375${path}" 2>/dev/null || true)"
+    [ -n "$code" ] && break
+    sleep 2
+  done
   if [ "$code" != "403" ]; then
     forbidden_ok=0
     forbidden_detail="${forbidden_detail}${spec} returned '${code}' (want 403); "
