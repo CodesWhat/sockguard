@@ -1,0 +1,156 @@
+# Sockguard config for the Jenkins Docker plugin, mirrors the shipped jenkins preset.
+# Copy of app/configs/jenkins.yaml; embedded here so the compose stack
+# is self-contained. Update both files together if you change rules.
+#
+# Sockguard — Jenkins Docker Plugin Preset
+#
+# Least-privilege access for the Jenkins Docker plugin (docker-plugin) when
+# it provisions agent containers with the Inbound (JNLP) connector. Jenkins
+# creates one container per agent from an image you name, starts it, and the
+# agent dials back to Jenkins. Jenkins then stops and removes the container
+# when the agent retires.
+#
+# Allows:
+#   - Ping, version (the plugin's connection test and Swarm check)
+#   - Container list (filtered by the plugin's own labels), inspect
+#   - Image inspect and image pull from docker.io only
+#   - Container create (body-inspected, see below), start, stop, remove
+#
+# Denies:
+#   - Exec and attach: the Attach connector is not supported
+#   - Archive copy: the SSH connector and the Attach connector inject files
+#     through PUT /containers/*/archive, which is not supported
+#   - Container logs (the plugin only reads them on disconnect, as a
+#     diagnostic, and ignores failures)
+#   - Networks, volumes, build, swarm, plugins, everything else
+#   - On create: privileged, host namespaces, bind mounts, devices,
+#     capability additions, published ports, unconfined seccomp and AppArmor,
+#     sysctls, and any image outside allowed_images
+#
+# Derived from jenkinsci/docker-plugin 1337.v3ca_fd1b_b_25ef (the Jenkins
+# docker-java-api client calls in DockerTemplate, DockerCloud,
+# DockerTransientNode, DockerContainerWatchdog and DockerImagePullStrategy).
+# Jenkins pipeline steps from docker-workflow (docker.image().inside()) shell
+# out to the docker CLI with host bind mounts, --volumes-from, exec and top.
+# They are not supported by this preset.
+#
+# Authentication note:
+#   Anyone who can configure a Jenkins agent template can choose what runs in
+#   the container, within the create policy below. Restrict who can reach the
+#   sockguard listener (clients.allowed_cidrs or unix peer profiles) so only
+#   the Jenkins controller does.
+
+upstream:
+  socket: /var/run/docker.sock
+
+log:
+  level: info
+  format: json
+  access_log: true
+
+health:
+  enabled: true
+  path: /health
+
+# Owner isolation: containers created through this proxy carry an owner label,
+# and list, inspect, stop and remove are limited to containers that carry it.
+# Jenkins' own watchdog force-removes containers it finds by its JenkinsId
+# label, so this keeps it from touching anything on the host it did not create.
+ownership:
+  owner: jenkins
+
+request_body:
+  # Jenkins removes a retiring agent with its anonymous volumes when the
+  # template's "remove volumes" option is on, and the watchdog and the
+  # failed-provision cleanup force-remove. Ownership bounds both to
+  # containers this proxy created.
+  container_remove:
+    allow_force: true
+    allow_remove_volumes: true
+
+  container_create:
+    # Exact, fully qualified image references. Replace this with the agent
+    # images your templates use. Set the template's Docker Image field to the
+    # same full reference, because the match is exact and the plugin sends
+    # the image string as typed.
+    allowed_images:
+      - docker.io/jenkins/inbound-agent:3396.ve02b_5cde31b_2-5-jdk21
+
+    allow_privileged: false
+    allow_host_network: false
+    allow_host_pid: false
+    allow_host_ipc: false
+    allow_host_userns: false
+    allow_host_cgroupns: false
+
+    # Refuse container:<ref> and ns:<path> namespace joins, which would let a
+    # template share another container's network or PID namespace.
+    restrict_namespace_sharing: true
+
+    # No host paths. Use a named volume or the container's own filesystem for
+    # the agent work directory. Add the narrowest host path here if a template
+    # needs one.
+    allowed_bind_mounts: []
+
+    allow_all_devices: false
+    allowed_devices: []
+    allow_device_requests: false
+    allow_device_cgroup_rules: false
+
+    allow_all_capabilities: false
+    allowed_capabilities: []
+
+    deny_unconfined_seccomp: true
+    deny_unconfined_apparmor: true
+    allow_sysctls: false
+
+    # The Inbound connector needs no published ports. The SSH connector does,
+    # which is one more reason it is not supported here.
+    deny_published_ports: true
+
+  image_pull:
+    allow_all_registries: false
+    allowed_registries:
+      - docker.io
+
+rules:
+  # Connection test and Swarm detection both read /version.
+  - match: { method: GET, path: "/_ping" }
+    action: allow
+  - match: { method: HEAD, path: "/_ping" }
+    action: allow
+  - match: { method: GET, path: "/version" }
+    action: allow
+
+  # Container list (provisioning limits, watchdog) and inspect (launcher).
+  - match: { method: GET, path: "/containers/json" }
+    action: allow
+  - match: { method: GET, path: "/containers/*/json" }
+    action: allow
+
+  # Image inspect (pull strategy). Image names carry registry slashes, so the
+  # glob also matches the image list route; deny that one first.
+  - match: { method: GET, path: "/images/json" }
+    action: deny
+    reason: "not allowed by jenkins preset"
+  - match: { method: GET, path: "/images/**/json" }
+    action: allow
+
+  # Image pull; the registry is checked by request_body.image_pull.
+  - match: { method: POST, path: "/images/create" }
+    action: allow
+
+  # Container lifecycle; the create body is checked by container_create.
+  - match: { method: POST, path: "/containers/create" }
+    action: allow
+  - match: { method: POST, path: "/containers/*/start" }
+    action: allow
+  - match: { method: POST, path: "/containers/*/stop" }
+    action: allow
+  - match: { method: DELETE, path: "/containers/*" }
+    action: allow
+
+  # Deny everything else.
+  - match: { method: "*", path: "/**" }
+    action: deny
+    reason: "not allowed by jenkins preset"
