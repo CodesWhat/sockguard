@@ -1,0 +1,61 @@
+name: "Quality: Rootless Quadlet Smoke"
+run-name: >-
+  ${{
+    github.event_name == 'schedule' && 'Quality: Rootless Quadlet Smoke - Weekly' ||
+    github.event_name == 'pull_request' && format('Quality: Rootless Quadlet Smoke - PR #{0}', github.event.pull_request.number) ||
+    format('Quality: Rootless Quadlet Smoke - Manual by {0}', github.actor)
+  }}
+
+# Boots examples/quadlet/ as a systemd user service under rootless podman on
+# the hosted runner, with sockguard built from this checkout in front of the
+# runner user's podman.socket. scripts/quadlet-smoke/smoke.sh asserts startup,
+# an allowed call and denied calls through the filtered socket.
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '15 7 * * 1'  # Weekly on Monday at 07:15 UTC
+  pull_request:
+    paths:
+      - 'examples/quadlet/**'
+      - 'scripts/quadlet-smoke/**'
+      - '.github/workflows/quality-quadlet-smoke.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: quality-quadlet-smoke-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quadlet-smoke:
+    name: "Quadlet smoke (rootless podman)"
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43  # v2.22.3
+        with:
+          egress-policy: audit
+
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Build sockguard image
+        run: podman build -t localhost/sockguard:quadlet-smoke .
+
+      - name: Start the user systemd manager
+        run: |
+          # The runner has no logind session, so bring up user@UID by hand.
+          sudo loginctl enable-linger "$USER"
+          sudo systemctl start "user@$(id -u).service"
+          echo "XDG_RUNTIME_DIR=/run/user/$(id -u)" >> "$GITHUB_ENV"
+          echo "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u)/bus" >> "$GITHUB_ENV"
+
+      - name: Quadlet smoke
+        env:
+          SOCKGUARD_IMAGE: localhost/sockguard:quadlet-smoke
+        run: bash scripts/quadlet-smoke/smoke.sh

@@ -1,0 +1,8 @@
+# Named volume that holds the filtered sockguard socket. Consumer containers
+# mount it (Volume=sockguard-socket.volume:/var/run/sockguard:ro) and talk to
+# /var/run/sockguard/sockguard.sock.
+[Volume]
+VolumeName=sockguard-socket
+
+[Install]
+WantedBy=default.target
