@@ -487,6 +487,12 @@ func (c MutationsConfig) ToFilterOptions() filter.MutationOptions {
 				To:    r.RemapImage.To,
 			}
 		}
+		if r.RemapBindSource != nil {
+			opt.RemapBindSource = &filter.BindSourceRemapMutationOptions{
+				From: r.RemapBindSource.From,
+				To:   r.RemapBindSource.To,
+			}
+		}
 		rules = append(rules, opt)
 	}
 	return filter.MutationOptions{Rules: rules}
