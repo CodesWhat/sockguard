@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -38,6 +39,7 @@ import (
 	"github.com/codeswhat/sockguard/v3/app/internal/ratelimit"
 	"github.com/codeswhat/sockguard/v3/app/internal/reload"
 	"github.com/codeswhat/sockguard/v3/app/internal/responsefilter"
+	"github.com/codeswhat/sockguard/v3/app/internal/sdnotify"
 	"github.com/codeswhat/sockguard/v3/app/internal/upstream"
 	"github.com/codeswhat/sockguard/v3/app/internal/upstreamflavor"
 	"github.com/codeswhat/sockguard/v3/app/internal/version"
@@ -287,7 +289,7 @@ func runServeWithDeps(cmd *cobra.Command, args []string, deps *serveDeps) error 
 	if err != nil {
 		return err
 	}
-	adminMember, err := bindAdminServer(cfg, logger, auditLogger, versioner, deps, board)
+	adminMember, err := bindAdminServer(cfg, logger, auditLogger, versioner, deps, board, runtime.otlp)
 	if err != nil {
 		closeMembersReverse(deps, members)
 		return err
@@ -369,11 +371,18 @@ func runServeWithDeps(cmd *cobra.Command, args []string, deps *serveDeps) error 
 	stopReload := startConfigReload(cmd.Context(), cfg, cfgFile, coordinator, logger)
 	defer stopReload()
 
+	notifier := sdnotify.New(os.Getenv)
+	stopNotify := startSystemdNotify(cmd.Context(), notifier, runtime, logger)
+	defer stopNotify()
+
 	sigCh := make(chan os.Signal, 1)
 	deps.notifySignals(sigCh, syscall.SIGTERM, syscall.SIGINT)
 
 	var serveFailure error
 	select {
+	case cause := <-runtime.watchdogExit:
+		logger.Error("upstream watchdog exit threshold reached, shutting down", "error", cause)
+		serveFailure = fmt.Errorf("watchdog: %w", cause)
 	case sig := <-sigCh:
 		logger.Info("shutdown signal received", "signal", sig.String())
 	case result := <-fanIn:
@@ -395,6 +404,9 @@ func runServeWithDeps(cmd *cobra.Command, args []string, deps *serveDeps) error 
 		}
 	}
 	stopWatchdog()
+	if err := notifier.Stopping(); err != nil {
+		logger.Warn("systemd STOPPING notification failed", "error", err)
+	}
 
 	shutdownServers(cmd.Context(), deps, cfg, members, adminMember, runtime.metrics, board, logger)
 	logger.Info("sockguard stopped")
@@ -411,6 +423,7 @@ func bindAdminServer(
 	versioner *admin.PolicyVersioner,
 	deps *serveDeps,
 	board *listenerStatusBoard,
+	exporter *otlp.Exporter,
 ) (*listenerMember, error) {
 	if !cfg.Admin.Enabled || !cfg.Admin.Listen.Configured() {
 		return nil, nil
@@ -421,7 +434,7 @@ func bindAdminServer(
 	}
 	warnIfAdminListenerWideOpen(cfg, logger)
 	identity := inbound.Identity{Name: config.AdminListenerName, Role: inbound.RoleAdmin, Network: networkFor(cfg.Admin.Listen.ListenConfig)}
-	adminSwappable := reload.NewSwappableHandler(buildAdminHandlerChain(cfg, logger, auditLogger, versioner))
+	adminSwappable := reload.NewSwappableHandler(buildAdminHandlerChain(cfg, logger, auditLogger, versioner, exporter))
 	server := newAdminHTTPServer(adminSwappable)
 	server.ConnContext = inbound.ConnContext(identity, server.ConnContext)
 	member := &listenerMember{
@@ -627,6 +640,9 @@ type serveRuntime struct {
 	metrics        *metrics.Registry
 	health         *health.Monitor
 	readiness      *health.Monitor
+	// watchdogExit receives one error when health.watchdog.exit_after trips.
+	// serve selects on it alongside the signal and listener-failure cases.
+	watchdogExit chan error
 	// resolver is the shared upstream dial seam (endpoint selection, pooling,
 	// TLS, failover). All request paths and side channels route through it so
 	// failover is coherent across the proxy, hijack, and inspect calls.
@@ -656,7 +672,7 @@ type serveRuntime struct {
 }
 
 func newServeRuntime(cfg *config.Config, logger *slog.Logger, deps *serveDeps) (*serveRuntime, error) {
-	runtime := &serveRuntime{ownerNameLocks: ownership.NewKeyedLocks(0, 0)}
+	runtime := &serveRuntime{ownerNameLocks: ownership.NewKeyedLocks(0, 0), watchdogExit: make(chan error, 1)}
 	if cfg.Metrics.Enabled {
 		runtime.metrics = metrics.NewRegistry()
 	}
@@ -710,13 +726,53 @@ func (r *serveRuntime) startWatchdog(ctx context.Context, cfg *config.Config) fu
 		return func() {}
 	}
 
+	var tracker *health.DownTracker
+	if exitAfter, err := time.ParseDuration(cfg.Health.Watchdog.ExitAfter); err == nil && exitAfter > 0 {
+		tracker = health.NewDownTracker(exitAfter)
+	}
+
 	watchdogCtx, cancel := context.WithCancel(ctx)
 	r.health.StartWatchdog(watchdogCtx, interval, func(state health.WatchdogState) {
+		if down, tripped := tracker.Observe(state); tripped && r.watchdogExit != nil {
+			select {
+			case r.watchdogExit <- fmt.Errorf("upstream unreachable for %s (health.watchdog.exit_after=%s)", down.Round(time.Millisecond), cfg.Health.Watchdog.ExitAfter):
+			default:
+			}
+		}
 		if r.metrics == nil {
 			return
 		}
 		r.metrics.ObserveUpstreamWatchdog(state.Up)
 		r.metrics.SetUpstreamSocketState(state.Up)
+	})
+	return cancel
+}
+
+// startSystemdNotify sends READY=1 and, when the unit sets WatchdogSec=, starts
+// WATCHDOG=1 pings at half WATCHDOG_USEC. Pings stop while the active upstream
+// watchdog reports the upstream down, so systemd times the service out and
+// restarts it. It is a no-op without NOTIFY_SOCKET.
+func startSystemdNotify(ctx context.Context, n *sdnotify.Notifier, r *serveRuntime, logger *slog.Logger) func() {
+	if n == nil {
+		return func() {}
+	}
+	if err := n.Ready(); err != nil {
+		logger.Warn("systemd READY notification failed", "error", err)
+	}
+	interval, ok := sdnotify.WatchdogInterval(os.Getenv, os.Getpid())
+	if !ok {
+		return func() {}
+	}
+	pingCtx, cancel := context.WithCancel(ctx)
+	healthy := func() bool {
+		if r == nil || r.health == nil {
+			return true
+		}
+		state, known := r.health.State()
+		return !known || state.Up
+	}
+	go n.KeepAlive(pingCtx, interval, healthy, func(err error) {
+		logger.Warn("systemd WATCHDOG notification failed", "error", err)
 	})
 	return cancel
 }
@@ -967,7 +1023,7 @@ func buildServeHandlerLayersWithRuntime(b serveHandlerBuild) ([]serveHandlerLaye
 	}
 	// withOTLP sits inside withTraceContext and withRequestID (it reads their
 	// IDs) and outside withMetrics, so it sees the final decision and status.
-	// Main chain only: the admin chain is not instrumented.
+	// The dedicated admin chain has its own otlp.AdminMiddleware layer.
 	if runtime.otlp != nil {
 		layers = append(layers, namedServeHandlerLayer("withOTLP", otlp.Middleware(runtime.otlp)))
 	}
@@ -2092,7 +2148,7 @@ func clientVisibilityProfiles(values []config.ClientProfileConfig) map[string]vi
 // distinct trust boundary whose access control is the bind target plus
 // admin.listen.tls, not the per-profile policy that gates Docker-API
 // traffic on the main listener.
-func buildAdminHandlerChain(cfg *config.Config, logger *slog.Logger, auditLogger *logging.AuditLogger, versioner *admin.PolicyVersioner) http.Handler {
+func buildAdminHandlerChain(cfg *config.Config, logger *slog.Logger, auditLogger *logging.AuditLogger, versioner *admin.PolicyVersioner, exporter *otlp.Exporter) http.Handler {
 	terminal := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Any request on the dedicated admin listener that did not match an
 		// admin path lands here. We surface it as a 404 with the same
@@ -2122,12 +2178,43 @@ func buildAdminHandlerChain(cfg *config.Config, logger *slog.Logger, auditLogger
 	if cfg.Log.Audit.Enabled && auditLogger != nil {
 		h = withAuditLog(auditLogger, cfg)(h)
 	}
+	// The OTLP layer sits inside request-ID/trace context (it reads their IDs)
+	// and outside the CIDR guard, so a denied admin request is exported with
+	// its final decision. The exporter is the process-scoped one the main
+	// chain uses; nil when otlp.enabled is false.
+	h = otlp.AdminMiddleware(exporter, adminRouteClassifier(cfg))(h)
 	h = withRequestID()(h)
-	h = withTraceContext()(h)
+	if exporter != nil {
+		h = logging.TraceContextMiddlewareWithRootSampler(otlp.RootSampler(cfg.OTLP.SampleRatio))(h)
+	} else {
+		h = withTraceContext()(h)
+	}
 	if cfg.Log.AccessLog {
 		h = withAccessLog(logger)(h)
 	}
 	return h
+}
+
+// adminRouteClassifier maps a request on the admin listener to the configured
+// admin path it addresses, or "unknown". Matching mirrors the interceptors
+// (path.Clean on both sides), and the returned value is always operator
+// configuration, never client input, so span names stay low-cardinality.
+func adminRouteClassifier(cfg *config.Config) func(*http.Request) string {
+	routes := make([]string, 0, 3)
+	for _, p := range []string{cfg.Admin.Path, cfg.Admin.PolicyVersionPath, cfg.Admin.PolicyDiffPath} {
+		if p != "" {
+			routes = append(routes, path.Clean(p))
+		}
+	}
+	return func(r *http.Request) string {
+		cleaned := path.Clean(r.URL.Path)
+		for _, route := range routes {
+			if cleaned == route {
+				return route
+			}
+		}
+		return "unknown"
+	}
 }
 
 // newAdminHTTPServer returns the http.Server for the dedicated admin

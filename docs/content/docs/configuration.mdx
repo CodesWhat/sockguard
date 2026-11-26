@@ -86,6 +86,10 @@ request_body:
         allowed_capabilities:
           - ["gpu", "compute"]
         max_count: -1             # -1 = all devices; omit to allow any count
+      - driver: cdi
+        device_ids: ["nvidia.com/gpu=0"]   # exact device IDs; every request ID must equal one byte for byte
+      - driver: nvidia
+        count: 2                           # exact request Count (a ceiling is max_count)
     allow_device_cgroup_rules: false
     allowed_device_cgroup_rules:  # structured cgroup-device allowlist (empty = deny all)
       - "c 1:3 rwm"   # /dev/null (char major 1, minor 3)
@@ -161,7 +165,9 @@ request_body:
     allowed_runtimes: []          # allowlist for non-empty oci_runtime values; an empty/unset oci_runtime selects the daemon default and is always permitted
     allow_device_cgroup_rules: false     # allow any device_cgroup_rule entry (default: denied)
     allowed_device_cgroup_rules: []      # structured alternative: "<type> <major>:<minor> <perms>" strings, same grammar as container_create
-    allow_device_requests: false         # allow gpus (default: denied); no structured form, a libpod body has no driver/count/capabilities to match
+    allow_device_requests: false         # allow any gpus (default: denied); skips allowed_gpus
+    allowed_gpus: []                     # exact gpus entries a create may carry, e.g. ["nvidia.com/gpu=0"]
+    allowed_cdi_devices: []              # exact qualified CDI names allowed in devices, e.g. ["nvidia.com/gpu=0"]
     deny_unconfined_system_paths: false  # deny unmask, the systempaths=unconfined equivalent (default: allowed)
     allow_all_devices: false      # allow every devices[] host path
     allowed_devices:              # devices[] host path allowlist (the part before the first ":")
@@ -377,6 +383,8 @@ The default listener is loopback TCP `127.0.0.1:2375`, which keeps the Docker AP
 - Plaintext non-loopback TCP is rejected unless you set **both** `listen.insecure_allow_plain_tcp: true` and `listen.insecure_allow_unauthenticated_clients: true`. Both acknowledgments are required — one without the other is rejected — so a single fat-fingered flag cannot expose the listener. That mode is only for legacy compatibility on a private, trusted network.
 - `server.shutdown_grace` bounds how long sockguard waits for in-flight requests to finish, on both the main listener(s) and the admin listener, after a shutdown signal (`SIGTERM`/`SIGINT`) is received, as a Go duration string (e.g. `"30s"`). A request still running when the grace period elapses has its listener force-closed out from under it rather than being waited on indefinitely. Hijacked exec and attach sessions are closed and canceled when the drain starts, and shutdown waits for their handlers to return within the same grace period before the audit and log sinks close, so each session's audit event is written; a handler still running at the deadline is reported in the shutdown log. Defaults to `"30s"`, unchanged from sockguard's behavior before this field existed. Unlike `hijack_inactivity_timeout`, `0` is a valid value — it means "close immediately" — so every value, including an empty string, must parse as a non-negative Go duration, or config load fails validation; only a negative duration or an unparseable value is rejected. The whole `server.*` block is immutable across hot reload — changing it requires a restart.
 - `health.watchdog.enabled` starts an active upstream socket monitor that checks Docker every `health.watchdog.interval`, logs reachable/unreachable state transitions, and lets `/health` answer from the latest watchdog state instead of waiting for a scrape or probe to discover an outage. The watchdog *dials* the socket — a liveness signal that only proves the socket accepts connections.
+- `health.watchdog.exit_after` makes sockguard exit with a non-zero status once the upstream has been continuously unreachable for that long, so Docker, systemd or Kubernetes restarts it. Any reachable check resets the clock, so a flapping upstream that keeps recovering never trips it. The default `0s` never exits. It needs `health.watchdog.enabled: true` and a non-negative Go duration, and should be several multiples of `health.watchdog.interval`. The exit is a normal graceful shutdown (listeners drain within `server.shutdown_grace`), logged at `error` with the outage length, and the process then returns status 1.
+- Under a `Type=notify` systemd unit, sockguard also sends `READY=1`, `WATCHDOG=1` (every half of `WatchdogSec=`, withheld while the upstream watchdog reports it down) and `STOPPING=1`. There's no config key for it. See [systemd notifications](./observability#systemd-notifications).
 - `health.readiness.enabled` adds an opt-in `/ready` endpoint (default path `/ready`) that goes one step further than the watchdog: instead of dialing the socket, it issues a real `GET /containers/json?limit=1` against the upstream Docker API every `health.readiness.interval` (per-probe deadline `health.readiness.timeout`). It returns `200` only when the daemon actually answers, and `503` on any transport error or non-2xx — catching the failure mode where the socket stays connectable but request handling has wedged. Point a Kubernetes / load-balancer **readiness** check at `/ready` and a **liveness** check at `/health`. The path must start with `/` and must not collide with `health.path`, `metrics.path`, or `admin.path`; `interval` and `timeout` must be positive durations. The whole `health.*` block (readiness included) is immutable across hot reload — changing it requires a restart.
 - `upstream.endpoints` is the ordered list of remote daemon addresses for TCP+mTLS or unix-socket connections. When non-empty, `upstream.socket` is ignored and sockguard uses the first healthy endpoint in the list (active/passive failover). `endpoints` and `upstream.failover.*` are reload-immutable — changing them requires a restart. See [Remote Upstreams & Failover](/multi-host) for the full guide including HA failover, mTLS setup, insecure opt-ins, and the `DOCKER_*` drop-in path.
 - On v2.x, `upstream.endpoints[].insecure_skip_tls_verify` and unverified `DOCKER_TLS` remain accepted with deprecation warnings. Published `v3.0.0-rc.6` rejects the endpoint key at any value, including `false` and `null`, and rejects non-empty `DOCKER_TLS` without non-empty `DOCKER_TLS_VERIFY` for TCP hosts. Remove the endpoint key and configure `tls.ca_file`, or set `DOCKER_TLS_VERIFY=1`. Verified TLS precedence, certificate-directory resolution, Unix sockets and explicit plain TCP remain supported. See [v3 migration](/migration#from-sockguard-v2-to-v3-release-candidate).
@@ -390,7 +398,7 @@ The default listener is loopback TCP `127.0.0.1:2375`, which keeps the Docker AP
   - `sockguard validate` and every other config-only path never probe, so validation works with no daemon present.
   - The configured flavor and derived capabilities are reload-immutable, alongside `upstream.socket` and `upstream.endpoints`. Restart Sockguard as part of an upstream engine/version change. Probes run only at startup.
 - `metrics.enabled` is opt-in and serves Prometheus text metrics at `metrics.path` on the same listener. The endpoint is local to Sockguard, is never forwarded to Docker, bypasses Docker API allow rules like `/health`, and remains behind listener security plus `clients.allowed_cidrs`. Every scrape also exports a `sockguard_build_info{version,commit,build_date,go_version}` gauge and a `sockguard_start_time_seconds` gauge for version panels and uptime alerts. Request labels are finite: known methods keep their uppercase name, all other methods use `OTHER`, known route families use bounded templates, and every unknown family uses `unknown`. When the active watchdog is enabled, metrics also include `sockguard_upstream_socket_up` and `sockguard_upstream_watchdog_checks_total`; when the readiness probe is enabled, they also include `sockguard_upstream_api_up` and `sockguard_upstream_readiness_checks_total`.
-- `otlp.enabled` is opt-in and exports one span per proxied request on the main listener to an OTLP/HTTP collector as JSON (`otlp.endpoint` is the full URL including the path). `endpoint` must be an absolute `http` or `https` URL with a host and no userinfo; `http` is allowed but sends `otlp.headers` in cleartext. `timeout` and `flush_interval` are positive durations, `queue_size` is 1 to 65536, `batch_size` is 1 to `queue_size`, and `sample_ratio` is 0 to 1. Header values are secrets and are never written to logs, validation errors, or the policy diff. Viper lower-cases header names from YAML, which is harmless because HTTP header names are case-insensitive. The whole `otlp.*` block is immutable across hot reload. The admin listener is not instrumented. See [Observability](./observability#opt-in-otlp-trace-export) for what is and is never exported.
+- `otlp.enabled` is opt-in and exports one span per proxied request on the main listener to an OTLP/HTTP collector as JSON (`otlp.endpoint` is the full URL including the path). `endpoint` must be an absolute `http` or `https` URL with a host and no userinfo; `http` is allowed but sends `otlp.headers` in cleartext. `timeout` and `flush_interval` are positive durations, `queue_size` is 1 to 65536, `batch_size` is 1 to `queue_size`, and `sample_ratio` is 0 to 1. Header values are secrets and are never written to logs, validation errors, or the policy diff. Viper lower-cases header names from YAML, which is harmless because HTTP header names are case-insensitive. The whole `otlp.*` block is immutable across hot reload. The dedicated admin listener exports spans through the same exporter. See [Observability](./observability#opt-in-otlp-trace-export) for what is and is never exported.
 - `admin.enabled` is opt-in and exposes a single `POST <admin.path>` endpoint (default `/admin/validate`) that runs the same parse + validate + compile pipeline as the offline `sockguard validate` command against a YAML body in the request payload. Useful as a CI gate before promoting a candidate config to production. Running policy is never mutated. The endpoint rides the main listener, so the listener's CIDR allowlist, mTLS posture, and per-profile rate-limit / concurrency caps all apply. Bodies are hard-capped at `admin.max_request_bytes` (default 512 KiB) via `http.MaxBytesReader` and return `413` on overflow. Non-POST methods return `405` with `Allow: POST`. The response body is a structured JSON report: `{"ok": bool, "rules": int, "profiles": int, "compat_active": bool, "errors": [...]?}`. A failing candidate returns `422` with the validator's per-issue error list; a passing candidate returns `200`. `admin.path` must start with `/` and must not collide with `health.path` or `metrics.path` when those endpoints are also enabled.
 - `reload.enabled` is opt-in and turns on hot reload at runtime. Sockguard watches the candidate through `fsnotify` and also reloads on `SIGHUP`; `reload.debounce` collapses a burst of editor events. The pipeline parses, validates, compiles, and atomically swaps the handler chain on success. In-flight requests finish on the previous chain and new requests use the new one. Any load, validation, immutable-field, signature, or signed-compatibility failure preserves the active policy. Unsigned mode applies Tecnativa rule generation normally. Signed mode verifies with pinned bootstrap trust and rejects rule-generating compatibility variables with `reject_compat`. Listener, upstream endpoint, log, health, metrics, and admin fields require a restart; the signed candidate's `policy_bundle.signature_path` remains reloadable while bootstrap trust cannot be changed in process. Reload metrics use the finite result set `ok|reject_load|reject_validation|reject_immutable|reject_signature|reject_compat`. Enabling reload changes `SIGHUP` from process termination to reload.
 - W3C trace/log correlation is always on and has no config knob. Sockguard preserves valid incoming `traceparent` trace IDs and sampled flags, replaces the parent span with a proxy-local span ID for the forwarded request, and generates fresh local context when the caller does not send valid trace context.
@@ -602,6 +610,19 @@ listen:
 ```
 
 Malformed selectors (invalid IPs, malformed URIs, non-hex SPKI pins, pins that are not 32 bytes) are rejected at startup. The TLS handshake fails closed with no upstream connection when a CA-issued client certificate does not match the configured allowlist.
+
+### Generating mTLS material
+
+`sockguard tls bootstrap --dir <dir> --server-name <dns-or-ip>... --client <name>...` writes the files `listen.tls` needs and prints the matching config on stdout (progress goes to stderr).
+
+| Flag | Meaning |
+| --- | --- |
+| `--dir` | Output directory. Created `0700`; an existing one looser than `0700` is refused. Files are `0600`. |
+| `--server-name` | DNS name or IP the server certificate must cover. Repeatable, at least one. |
+| `--client` | Client name, lowercase letters, digits, `.` and `-`. Becomes the certificate CommonName and only DNS SAN. Repeatable, at least one. |
+| `--force` | Reissue the server certificate and the listed clients with new keys. Never replaces the CA. |
+
+Output files: `ca.pem`, `ca-key.pem`, `server-cert.pem`, `server-key.pem`, and `client-<name>.pem` with `client-<name>-key.pem` per client. The printed snippet sets `listen.tls.cert_file`, `key_file` and `client_ca_file`, a `clients.client_certificate_profiles` entry with `common_names: [<name>]` per client, and a `clients.profiles` entry with `ownership.owner: <name>` for you to add rules to. Rerunning is safe: it reuses the CA and valid certificates and adds new clients. See [Bootstrapping mTLS material](/security#bootstrapping-mtls-material) for the identity binding.
 
 ## Per-Client ACLs And Profiles
 
@@ -1151,7 +1172,7 @@ Sockguard serializes owner-scoped create-by-name requests with in-process locks 
 
 ## Admission Mutations
 
-`mutations.rules[]` declaratively injects fixed labels or remaps an image reference on a matched request body **before** the corresponding `container_create`/`service` body inspection above runs, image-trust verification, and owner-label stamping — so the mutated bytes get the exact same downstream policy scrutiny a client-authored body would. It is a fail-closed, deliberately narrow DSL: exactly two operations (`inject_labels`, `remap_image`), no JSON-patch, no arbitrary field paths, no templating.
+`mutations.rules[]` declaratively injects fixed labels or remaps an image reference on a matched request body **before** the corresponding `container_create`/`service` body inspection above runs, image-trust verification, and owner-label stamping — so the mutated bytes get the exact same downstream policy scrutiny a client-authored body would. It is a fail-closed, deliberately narrow DSL: exactly three operations (`inject_labels`, `remap_image`, `remap_bind_source`), no JSON-patch, no arbitrary field paths, no templating.
 
 Unlike `request_body.*` and `rules`, `mutations` is **not** part of `clients.profiles` — there is a single, global mutation authority applied identically regardless of which client profile matched the request. This is a deliberate v1 scope decision, not an oversight: per-profile mutation overrides introduce a merge-order question (which profile's rule wins when both match?) that the feature does not need to answer yet.
 
@@ -1180,6 +1201,12 @@ mutations:
         match: exact                     # unqualified refs need one exact rule each
         from: "alpine:3.21"
         to: "registry.internal.example.com/alpine:3.21"
+
+    - id: runner-workspace
+      surfaces: [container_create, libpod_container_create]
+      remap_bind_source:
+        from: "/builds"                  # path the runner container sees
+        to: "/srv/runner/builds"         # path the daemon host sees
 ```
 
 `remap_image` matches the literal image string a client sent, byte for byte — it never expands Docker's own unqualified-reference conventions (no implicit `docker.io/library/` prefix, no case folding). The `pin-internal-registry` rule above only catches requests that already spell out `docker.io/...`; a request for `alpine:3.21` or `nginx:1.27` does not start with that prefix and passes through unmodified. To also pin unqualified references, add one `match: exact` rule per expected bare image, as shown in the second rule above.
@@ -1188,12 +1215,26 @@ mutations:
 | --- | --- | --- |
 | `id` | `string` | Required, unique, `^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`. Identifies the rule in logs and audit records. |
 | `mode` | `string` | `enforce` (default), `warn`, or `audit` — see [Rollout Modes](#rollout-modes) below; the same semantics apply per rule. `warn`/`audit` rules are evaluated against an independent cloned copy of the request body and never affect what is actually forwarded. |
-| `surfaces` | `[]string` | One or more of `container_create`, `service_create`, `service_update`. No duplicates. |
+| `surfaces` | `[]string` | One or more of `container_create`, `libpod_container_create`, `service_create`, `service_update`. No duplicates. `libpod_container_create` (`POST /libpod/containers/create`) accepts only `remap_bind_source`. |
 | `inject_labels.labels` | `map[string]string` | Unconditionally sets/replaces these keys in the target label map(s). Valid only on `container_create` (`Config.Labels`) and `service_create` (both `Labels` and `TaskTemplate.ContainerSpec.Labels`) — `service_update` has no label field to mutate. Up to 32 labels per rule, 256 across all rules; keys ≤128 bytes, values ≤4096 bytes, no control characters. Keys and values must both be non-empty (whitespace-only values are rejected too). |
 | `remap_image.match` | `string` | `exact` (the whole image reference must equal `from`) or `prefix` (`from` must prefix the reference; the remainder is preserved after `to`). Matches the literal request-body string — no `docker.io/library` alias expansion or case folding. Valid on all three surfaces. |
+| `remap_bind_source.from` / `.to` | `string` | Container-visible path prefix and the host path prefix that replaces it. Both must be absolute, clean (no trailing slash, `//`, `.` or `..`), not `/`, and free of `:`, `,`, control characters and NUL. Valid only on `container_create` and `libpod_container_create`. |
 | `remap_image.from` / `.to` | `string` | ≤4096 bytes, no control characters. For `match: exact`, both must parse as valid image references. |
 
-Exactly one of `inject_labels`/`remap_image` is required per rule — never both, never neither. A rule that unconditionally injects the ownership label key (when `ownership.owner` is configured) is rejected at config load, since that key must stay under sockguard's exclusive control. Two rules that could both match the same label key or overlapping image `from` pattern on the same surface are also rejected at config load — which rule would win is otherwise silently order-dependent.
+Exactly one of `inject_labels`/`remap_image`/`remap_bind_source` is required per rule. A rule that unconditionally injects the ownership label key (when `ownership.owner` is configured) is rejected at config load, since that key must stay under sockguard's exclusive control. Two rules that could both match the same label key or overlapping image `from` pattern on the same surface are also rejected at config load — which rule would win is otherwise silently order-dependent.
+
+### Bind-source rewrite for Docker-out-of-Docker runners
+
+A CI runner that talks to the host daemon through Sockguard names bind sources by the path it sees (`/builds`), but the daemon resolves them on the host (`/srv/runner/builds`). `remap_bind_source` rewrites the matching prefix so the runner can keep using its own paths. It rewrites `HostConfig.Binds` entries and `HostConfig.Mounts` entries of `Type: bind` on `container_create`, and the `mounts` entries Podman treats as host binds (`type: bind`, or `bind`/`rbind` in `options`) on `libpod_container_create`. Target and options in a `Binds` entry are preserved.
+
+The rewrite runs before the container-create inspector, so the rewritten host path goes through `allowed_bind_mounts` and every other check exactly as a client-written path would. Allowlist the **host** path (`/srv/runner/builds`); allowlisting only the container-visible path does not admit the rewritten request. The rewrite never grants anything the allowlist would refuse.
+
+- **Boundaries.** A source matches on path components: `from: /builds` matches `/builds` and `/builds/job1`, never `/builds2`. The source is cleaned first (`//`, `/./`, trailing `/`), and the rewritten result is `to` plus the remainder.
+- **Traversal.** A source that matches the rule (before or after cleaning) and carries a `..` component, or a control character, is denied with `mutation_apply_failed` instead of being rewritten, so `/builds/../../etc` cannot step out of the mapped tree.
+- **Untouched sources.** Named volumes, anonymous volumes, relative paths and any source that does not match are left as sent and judged by the downstream inspector, so owner-label volume scoping is unchanged.
+- **Config checks.** Two rules whose `from` paths overlap are rejected, as is any rule whose `to` overlaps any rule's `from`, so a source is rewritten at most once and never depends on rule order.
+- **Not covered.** The match is lexical. Sockguard does not resolve symlinks, so the host directory a rule maps to must not contain links pointing outside it. Volume driver options (`device`), libpod `overlay_volumes`, `rootfs` and `Config.Volumes` keys are not rewritten and are checked against `allowed_bind_mounts` as written.
+- **Rollout.** `mode: audit` or `warn` records `would_apply` without changing the body.
 
 The `mutations` block uses a stricter config decode than the rest of this schema: unknown keys and YAML type-coercion (e.g. an unquoted `id: 0` silently becoming the string `"0"`) are both load-time errors here, not silently accepted.
 
@@ -1734,6 +1775,37 @@ CDI `DeviceRequests` with raw host-device paths also require `allowed_devices`
 (or `allow_all_devices`), even with `allow_device_requests: true`. Qualified CDI
 names such as `nvidia.com/gpu=all` still use the driver/capability grant.
 
+### Exact GPU and CDI grants
+
+`allow_device_requests` and a bare `allowed_device_requests` entry grant a whole
+driver. To grant specific devices, pin them. Everything below is an exact,
+case-sensitive, byte-for-byte match with no trimming and no globbing, and
+anything that does not match is denied.
+
+- `container_create.allowed_device_requests[].device_ids` lists the device IDs
+  an entry grants, for example CDI names such as `nvidia.com/gpu=0`. Every ID in
+  the request must be listed, so `nvidia.com/gpu=all` is not implied by
+  `nvidia.com/gpu=0`. A request with no IDs, or with a non-zero `Count` next to
+  its IDs (Docker rejects that combination), is refused by an entry that sets
+  `device_ids`. An entry without `device_ids` keeps its old behavior and accepts
+  any IDs.
+- `container_create.allowed_device_requests[].count` requires the request
+  `Count` to equal it exactly (`-1` for all devices). `max_count` stays a
+  ceiling; set both and both apply.
+- `libpod_container_create.allowed_gpus` lists the exact `gpus` strings a
+  libpod create may carry. `all` is just another string and has to be listed.
+- `libpod_container_create.allowed_cdi_devices` lists the exact fully qualified
+  CDI names (`vendor/class=name`) a libpod `devices` entry may name. A
+  qualified name is matched whole, so a colon inside it is not read as a
+  host-path suffix. `allowed_devices` grants host paths only and never a CDI
+  name. Config load rejects a non-qualified entry.
+
+`allow_device_requests: true` (either block) and `allow_all_devices` stay the
+blanket opt-ins and skip these lists, so existing configs behave as before. Swarm
+`POST /services/create` and `/services/{id}/update` have no device-request field
+to match; a service reaches GPUs only through generic resources and runtime
+settings the other service gates already cover.
+
 Classic build `buildargs` cannot contain `BUILDKIT_SYNTAX` while
 `request_body.build.allow_run_instructions` is false: a selected frontend cannot
 be constrained by scanning the submitted Dockerfile. This applies to both Docker
@@ -2011,6 +2083,7 @@ never flagged.
 | `SOCKGUARD_HEALTH_PATH`                        | `health.path`                         | `/health`                       | Health endpoint path. Must start with `/` and differ from `metrics.path` / `admin.path` when those are set.  |
 | `SOCKGUARD_HEALTH_WATCHDOG_ENABLED`            | `health.watchdog.enabled`             | `false`                         | Start an active upstream socket monitor. Logs reachable/unreachable transitions and feeds `/health`.         |
 | `SOCKGUARD_HEALTH_WATCHDOG_INTERVAL`           | `health.watchdog.interval`            | `5s`                            | Watchdog probe interval. Must be a positive Go duration; 1s–30s is typical.                                  |
+| `SOCKGUARD_HEALTH_WATCHDOG_EXIT_AFTER`         | `health.watchdog.exit_after`          | `0s`                            | Exit non-zero after the upstream is unreachable this long. `0s` never exits; requires the watchdog.         |
 | `SOCKGUARD_HEALTH_READINESS_ENABLED`           | `health.readiness.enabled`            | `false`                         | Serve the opt-in `/ready` probe that issues a real `GET /containers/json` against the Docker API.            |
 | `SOCKGUARD_HEALTH_READINESS_PATH`              | `health.readiness.path`               | `/ready`                        | Readiness endpoint path. Must start with `/` and differ from `health.path` / `metrics.path` / `admin.path`.  |
 | `SOCKGUARD_HEALTH_READINESS_INTERVAL`          | `health.readiness.interval`           | `10s`                           | Readiness probe interval. Must be a positive Go duration.                                                    |
@@ -2112,7 +2185,7 @@ the gates below are denied before the request reaches Docker.
 | `SOCKGUARD_REQUEST_BODY_CONTAINER_CREATE_ALLOW_ALL_DEVICES`           | `request_body.container_create.allow_all_devices`         | `false` | Allow any `HostConfig.Devices` host path. Prefer the allowlist below instead.        |
 | `SOCKGUARD_REQUEST_BODY_CONTAINER_CREATE_ALLOWED_DEVICES`             | `request_body.container_create.allowed_devices`           | *empty* | Comma-separated host device paths allowed for `HostConfig.Devices`.                  |
 | `SOCKGUARD_REQUEST_BODY_CONTAINER_CREATE_ALLOW_DEVICE_REQUESTS`       | `request_body.container_create.allow_device_requests`     | `false` | Escape hatch for device-request driver/capability checks. CDI raw host paths still require `allowed_devices` or `allow_all_devices`. Prefer `allowed_device_requests` for least-privilege access. |
-| *(YAML-only)*                                                         | `request_body.container_create.allowed_device_requests`   | *empty* | Structured `HostConfig.DeviceRequests` allowlist. Each entry has `driver` (required), `allowed_capabilities` (list of capability sets; request sets must each be a subset of at least one), and optional `max_count` (`-1` = all devices). Empty = deny all (default). Not settable via env var due to nested structure; configure in YAML. |
+| *(YAML-only)*                                                         | `request_body.container_create.allowed_device_requests`   | *empty* | Structured `HostConfig.DeviceRequests` allowlist. Each entry has `driver` (required), `allowed_capabilities` (list of capability sets; request sets must each be a subset of at least one), optional `max_count` (`-1` = all devices), optional exact `count`, and optional exact `device_ids`; see [Exact GPU and CDI grants](#exact-gpu-and-cdi-grants). Empty = deny all (default). Not settable via env var due to nested structure; configure in YAML. |
 | `SOCKGUARD_REQUEST_BODY_CONTAINER_CREATE_ALLOW_DEVICE_CGROUP_RULES`          | `request_body.container_create.allow_device_cgroup_rules`         | `false`  | Allow all `HostConfig.DeviceCgroupRules` without inspection. Prefer `allowed_device_cgroup_rules` for least-privilege access.   |
 | `SOCKGUARD_REQUEST_BODY_CONTAINER_CREATE_ALLOWED_DEVICE_CGROUP_RULES`        | `request_body.container_create.allowed_device_cgroup_rules`       | *empty*  | Comma-separated Docker cgroup rule strings (`<type> <major>:<minor> <perms>`) that `HostConfig.DeviceCgroupRules` entries must match. Wildcards (`*`) in major/minor are allowed in allowlist entries and match any value; request wildcards are only permitted when the allowlist entry also uses a wildcard at that position. Empty list = deny all (default). Example: `c 1:3 rwm,c 226:* rwm`. |
 | `SOCKGUARD_REQUEST_BODY_CONTAINER_CREATE_REQUIRE_NO_NEW_PRIVILEGES`   | `request_body.container_create.require_no_new_privileges` | `false` | Require `HostConfig.SecurityOpt` to include `no-new-privileges:true`.                |
@@ -2202,7 +2275,7 @@ Podman's native `POST /libpod/containers/create` counterpart to `container_creat
 | `SOCKGUARD_REQUEST_BODY_LIBPOD_CONTAINER_CREATE_ALLOW_TMPFS_PRIVILEGED_OPTIONS` | `request_body.libpod_container_create.allow_tmpfs_privileged_options` | `false` | **v3.1:** allow a native `mounts[]` entry of type `tmpfs` whose options turn on `exec`, `dev` or `suid`, or that lacks the bare `noexec` (`image_volume_mode: "tmpfs"` included). Independent of `container_create.allow_tmpfs_privileged_options`; also governs `libpod_volume` tmpfs options. |
 | `SOCKGUARD_REQUEST_BODY_LIBPOD_CONTAINER_CREATE_ALLOW_DEVICE_CGROUP_RULES` | `request_body.libpod_container_create.allow_device_cgroup_rules` | `false` | Allow any `device_cgroup_rule` entry. Prefer the allowlist below instead. |
 | `SOCKGUARD_REQUEST_BODY_LIBPOD_CONTAINER_CREATE_ALLOWED_DEVICE_CGROUP_RULES` | `request_body.libpod_container_create.allowed_device_cgroup_rules` | *empty* | Comma-separated `<type> <major>:<minor> <perms>` rules allowed for `device_cgroup_rule`; same matching as `container_create`. |
-| `SOCKGUARD_REQUEST_BODY_LIBPOD_CONTAINER_CREATE_ALLOW_DEVICE_REQUESTS` | `request_body.libpod_container_create.allow_device_requests` | `false` | Allow `gpus` (Podman 6+). A libpod body has no driver, count or capability sets, so `container_create.allowed_device_requests` has no libpod form. |
+| `SOCKGUARD_REQUEST_BODY_LIBPOD_CONTAINER_CREATE_ALLOW_DEVICE_REQUESTS` | `request_body.libpod_container_create.allow_device_requests` | `false` | Allow any `gpus` (Podman 6+). A libpod body has no driver, count or capability sets, so the libpod form of an exact grant is `allowed_gpus` (YAML-only), with `allowed_cdi_devices` for CDI names in `devices`; see [Exact GPU and CDI grants](#exact-gpu-and-cdi-grants). |
 | `SOCKGUARD_REQUEST_BODY_LIBPOD_CONTAINER_CREATE_DENY_UNCONFINED_SYSTEM_PATHS` | `request_body.libpod_container_create.deny_unconfined_system_paths` | `false` | Deny a non-empty `unmask`, which clears the default masked paths like `systempaths=unconfined`. |
 | `SOCKGUARD_REQUEST_BODY_LIBPOD_CONTAINER_CREATE_ALLOW_UNIFIED_CGROUP_SETTINGS` | `request_body.libpod_container_create.allow_unified_cgroup_settings` | `false` | Allow a non-empty `unified` map, raw cgroup v2 control values written straight into the container's cgroup. |
 | `SOCKGUARD_REQUEST_BODY_LIBPOD_CONTAINER_CREATE_ALLOW_ENV_HOST` | `request_body.libpod_container_create.allow_env_host` | `false` | Allow `env_host: true`, which copies the Podman daemon's environment into the container. Still refused while `allowed_env_vars`, `denied_env_vars` or `allowed_env_values` is set. |

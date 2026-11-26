@@ -590,6 +590,15 @@ func validateHealthMetrics(cfg *Config) []string {
 			errs = append(errs, fmt.Sprintf("health.watchdog.interval must be a positive duration, got %q", cfg.Health.Watchdog.Interval))
 		}
 	}
+	if d := cfg.Health.Watchdog.ExitAfter; d != "" {
+		exitAfter, err := time.ParseDuration(d)
+		switch {
+		case err != nil || exitAfter < 0:
+			errs = append(errs, fmt.Sprintf("health.watchdog.exit_after must be a non-negative duration, got %q", d))
+		case exitAfter > 0 && !cfg.Health.Watchdog.Enabled:
+			errs = append(errs, "health.watchdog.exit_after requires health.watchdog.enabled")
+		}
+	}
 	if cfg.Health.Readiness.Enabled {
 		if !strings.HasPrefix(cfg.Health.Readiness.Path, "/") {
 			errs = append(errs, fmt.Sprintf("health.readiness.path must start with /, got %q", cfg.Health.Readiness.Path))
@@ -1155,9 +1164,10 @@ const (
 var mutationRuleIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
 
 var validMutationSurfaces = map[string]struct{}{
-	"container_create": {},
-	"service_create":   {},
-	"service_update":   {},
+	"container_create":        {},
+	"libpod_container_create": {},
+	"service_create":          {},
+	"service_update":          {},
 }
 
 // mutationImageOverlapEntry is one valid remap_image rule's overlap-check
@@ -1194,6 +1204,7 @@ func validateMutationsConfig(cfg *Config) []string {
 	totalLabels := 0
 	var imageEntries []mutationImageOverlapEntry
 	var labelClaims []mutationLabelClaim
+	var bindEntries []mutationBindOverlapEntry
 
 	for i, rule := range rules {
 		prefix := fmt.Sprintf("mutations.rules[%d]", i)
@@ -1212,11 +1223,25 @@ func validateMutationsConfig(cfg *Config) []string {
 
 		errs = append(errs, validateMutationSurfaces(prefix, rule.Surfaces)...)
 
+		blocks := 0
+		for _, set := range []bool{rule.InjectLabels != nil, rule.RemapImage != nil, rule.RemapBindSource != nil} {
+			if set {
+				blocks++
+			}
+		}
 		switch {
-		case rule.InjectLabels != nil && rule.RemapImage != nil:
-			errs = append(errs, fmt.Sprintf("%s: exactly one of inject_labels or remap_image is required, got both", prefix))
-		case rule.InjectLabels == nil && rule.RemapImage == nil:
-			errs = append(errs, fmt.Sprintf("%s: exactly one of inject_labels or remap_image is required, got neither", prefix))
+		case blocks == 2:
+			errs = append(errs, fmt.Sprintf("%s: exactly one of inject_labels, remap_image or remap_bind_source is required, got both", prefix))
+		case blocks > 2:
+			errs = append(errs, fmt.Sprintf("%s: exactly one of inject_labels, remap_image or remap_bind_source is required, got all three", prefix))
+		case blocks == 0:
+			errs = append(errs, fmt.Sprintf("%s: exactly one of inject_labels, remap_image or remap_bind_source is required, got neither", prefix))
+		case rule.RemapBindSource != nil:
+			bindErrs, entry := validateMutationRemapBindSource(prefix, rule)
+			errs = append(errs, bindErrs...)
+			if entry != nil {
+				bindEntries = append(bindEntries, *entry)
+			}
 		case rule.InjectLabels != nil:
 			labelErrs, claims := validateMutationInjectLabels(prefix, rule, cfg)
 			errs = append(errs, labelErrs...)
@@ -1237,6 +1262,7 @@ func validateMutationsConfig(cfg *Config) []string {
 
 	errs = append(errs, validateMutationLabelOverlaps(labelClaims)...)
 	errs = append(errs, validateMutationImageOverlaps(imageEntries)...)
+	errs = append(errs, validateMutationBindOverlaps(bindEntries)...)
 
 	return errs
 }
@@ -1249,7 +1275,7 @@ func validateMutationSurfaces(prefix string, surfaces []string) []string {
 	seen := make(map[string]struct{}, len(surfaces))
 	for _, surface := range surfaces {
 		if _, ok := validMutationSurfaces[surface]; !ok {
-			errs = append(errs, enumValueError(prefix+".surfaces", surface, "container_create", "service_create", "service_update"))
+			errs = append(errs, enumValueError(prefix+".surfaces", surface, "container_create", "libpod_container_create", "service_create", "service_update"))
 			continue
 		}
 		if _, dup := seen[surface]; dup {
@@ -1273,6 +1299,9 @@ func validateMutationInjectLabels(prefix string, rule MutationRuleConfig, cfg *C
 	for _, surface := range rule.Surfaces {
 		if surface == "service_update" {
 			errs = append(errs, fmt.Sprintf("%s.inject_labels is not valid on surface %q: service_update has no label field to mutate", prefix, surface))
+		}
+		if surface == "libpod_container_create" {
+			errs = append(errs, fmt.Sprintf("%s.inject_labels is not valid on surface %q: only remap_bind_source applies to libpod container create", prefix, surface))
 		}
 	}
 
@@ -1371,6 +1400,12 @@ func validateMutationRemapImage(prefix string, rule MutationRuleConfig) ([]strin
 		errs = append(errs, enumValueError(prefix+".remap_image.match", remap.Match, "exact", "prefix"))
 	}
 
+	for _, surface := range rule.Surfaces {
+		if surface == "libpod_container_create" {
+			errs = append(errs, fmt.Sprintf("%s.remap_image is not valid on surface %q: only remap_bind_source applies to libpod container create", prefix, surface))
+		}
+	}
+
 	fromOK := validateMutationImageField(prefix+".remap_image.from", remap.From, &errs)
 	toOK := validateMutationImageField(prefix+".remap_image.to", remap.To, &errs)
 
@@ -1394,6 +1429,104 @@ func validateMutationRemapImage(prefix string, rule MutationRuleConfig) ([]strin
 		return errs, nil
 	}
 	return errs, &mutationImageOverlapEntry{prefix: prefix, surfaces: rule.Surfaces, match: match, from: remap.From}
+}
+
+// mutationBindOverlapEntry is one valid remap_bind_source rule's overlap-check
+// shape.
+type mutationBindOverlapEntry struct {
+	prefix string
+	from   string
+	to     string
+}
+
+// validateMutationRemapBindSource validates one rule's remap_bind_source
+// block. Both paths must be absolute and already clean so what the operator
+// wrote is exactly what is matched and written, and neither may contain the
+// characters that delimit a bind spec (":") or a Podman --mount field (","),
+// which would let a rewritten source smuggle mount options or a second
+// field. "/" is refused on either side: a root "from" would rewrite every
+// bind source, and a root "to" would hand the whole host to every match.
+// remap_bind_source applies only to the two container-create surfaces.
+func validateMutationRemapBindSource(prefix string, rule MutationRuleConfig) ([]string, *mutationBindOverlapEntry) {
+	var errs []string
+	for _, surface := range rule.Surfaces {
+		if surface != "container_create" && surface != "libpod_container_create" {
+			errs = append(errs, fmt.Sprintf("%s.remap_bind_source is not valid on surface %q: bind sources exist only on container_create and libpod_container_create", prefix, surface))
+		}
+	}
+	remap := rule.RemapBindSource
+	fromOK := validateMutationBindPath(prefix+".remap_bind_source.from", remap.From, &errs)
+	toOK := validateMutationBindPath(prefix+".remap_bind_source.to", remap.To, &errs)
+	if !fromOK || !toOK {
+		return errs, nil
+	}
+	return errs, &mutationBindOverlapEntry{prefix: prefix, from: remap.From, to: remap.To}
+}
+
+func validateMutationBindPath(field, value string, errs *[]string) bool {
+	if strings.TrimSpace(value) == "" {
+		*errs = append(*errs, requiredFieldError(field))
+		return false
+	}
+	ok := true
+	if len(value) > maxMutationImageFieldBytes {
+		*errs = append(*errs, fmt.Sprintf("%s exceeds %d bytes", field, maxMutationImageFieldBytes))
+		ok = false
+	}
+	if containsControlOrNUL(value) {
+		*errs = append(*errs, fmt.Sprintf("%s must not contain control characters or NUL", field))
+		ok = false
+	}
+	if strings.ContainsAny(value, ":,") {
+		*errs = append(*errs, fmt.Sprintf("%s must not contain ':' or ','", field))
+		ok = false
+	}
+	if !strings.HasPrefix(value, "/") {
+		*errs = append(*errs, fmt.Sprintf("%s must be an absolute path, got %q", field, value))
+		return false
+	}
+	if cleaned := path.Clean(value); cleaned != value {
+		*errs = append(*errs, fmt.Sprintf("%s must be a clean path (no trailing slash, '//', '.' or '..' components); use %q", field, cleaned))
+		ok = false
+	}
+	if value == "/" {
+		*errs = append(*errs, fmt.Sprintf("%s must not be the filesystem root", field))
+		ok = false
+	}
+	return ok
+}
+
+// mutationBindPathsOverlap reports whether two clean absolute paths are equal
+// or one contains the other on a path-component boundary.
+func mutationBindPathsOverlap(a, b string) bool {
+	return a == b || strings.HasPrefix(a, b+"/") || strings.HasPrefix(b, a+"/")
+}
+
+// validateMutationBindOverlaps rejects bind remaps whose result would depend
+// on rule order or could chain. Two "from" paths that overlap would both match
+// one source, and any rule's "to" overlapping any rule's "from" (its own
+// included) means a rewritten source could match a rule again. Rejecting both
+// keeps every rewrite a single, order-independent step.
+func validateMutationBindOverlaps(entries []mutationBindOverlapEntry) []string {
+	var errs []string
+	for i := range entries {
+		for j := range entries {
+			a, b := entries[i], entries[j]
+			if i < j && mutationBindPathsOverlap(a.from, b.from) {
+				errs = append(errs, fmt.Sprintf(
+					"%s.remap_bind_source.from and %s.remap_bind_source.from overlap: one source could match both rules, making the result order-dependent",
+					a.prefix, b.prefix,
+				))
+			}
+			if mutationBindPathsOverlap(a.to, b.from) {
+				errs = append(errs, fmt.Sprintf(
+					"%s.remap_bind_source.to overlaps %s.remap_bind_source.from: a rewritten source could be rewritten again",
+					a.prefix, b.prefix,
+				))
+			}
+		}
+	}
+	return errs
 }
 
 // validateMutationImageField checks the shared from/to shape rules (required,
@@ -2104,6 +2237,13 @@ func validateContainerCreateConfig(prefix string, cfg ContainerCreateRequestBody
 				errs = append(errs, fmt.Sprintf("%s.container_create.allowed_device_requests[%d].allowed_capabilities[%d] must be a non-empty capability set", prefix, i, j))
 			}
 		}
+		errs = append(errs, validateExactDeviceIDs(fmt.Sprintf("%s.container_create.allowed_device_requests[%d].device_ids", prefix, i), entry.DeviceIDs)...)
+		if entry.Count != nil && *entry.Count < -1 {
+			errs = append(errs, fmt.Sprintf("%s.container_create.allowed_device_requests[%d].count must be -1 or a non-negative integer, got %d", prefix, i, *entry.Count))
+		}
+		if len(entry.DeviceIDs) > 0 && entry.Count != nil && *entry.Count != 0 {
+			errs = append(errs, fmt.Sprintf("%s.container_create.allowed_device_requests[%d] cannot set device_ids with a non-zero count: Docker rejects a request carrying both", prefix, i))
+		}
 		if entry.MaxCount != nil && *entry.MaxCount < -1 {
 			errs = append(errs, fmt.Sprintf("%s.container_create.allowed_device_requests[%d].max_count must be -1 or a non-negative integer, got %d", prefix, i, *entry.MaxCount))
 		}
@@ -2129,6 +2269,12 @@ func validateLibpodContainerCreateConfig(prefix string, cfg LibpodContainerCreat
 	errs = append(errs, validateCreateImageAllowlist(prefix+".libpod_container_create.allowed_images", cfg.AllowedImages)...)
 	errs = append(errs, validateHostPathEntries(prefix, "libpod_container_create.allowed_bind_mounts", cfg.AllowedBindMounts)...)
 	errs = append(errs, validateHostPathEntries(prefix, "libpod_container_create.allowed_devices", cfg.AllowedDevices)...)
+	errs = append(errs, validateExactDeviceIDs(prefix+".libpod_container_create.allowed_gpus", cfg.AllowedGPUs)...)
+	for i, name := range cfg.AllowedCDIDevices {
+		if !filter.IsQualifiedCDIDevice(name) {
+			errs = append(errs, fmt.Sprintf("%s.libpod_container_create.allowed_cdi_devices[%d] must be a fully qualified CDI name (vendor/class=name), got %q", prefix, i, name))
+		}
+	}
 	errs = append(errs, validateLogDriverEntries(prefix, "libpod_container_create", cfg.AllowedLogDrivers, cfg.AllowedLogEndpointOptions)...)
 	errs = append(errs, validateNetworkExposureEntries(prefix, "libpod_container_create", cfg.AllowedPortHostIPs, cfg.AllowedNetworks)...)
 	for _, entry := range cfg.AllowedNamespaceSharingContainers {
@@ -2663,4 +2809,17 @@ func validOTLPHeaderName(name string) bool {
 		}
 	}
 	return true
+}
+
+// validateExactDeviceIDs refuses empty or whitespace-padded entries in an
+// exact-match device list. Matching never trims, so a padded entry could never
+// match and would only hide a typo.
+func validateExactDeviceIDs(path string, ids []string) []string {
+	var errs []string
+	for i, id := range ids {
+		if id == "" || id != strings.TrimSpace(id) {
+			errs = append(errs, fmt.Sprintf("%s[%d] must be a non-empty value without surrounding whitespace, got %q", path, i, id))
+		}
+	}
+	return errs
 }

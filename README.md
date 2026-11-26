@@ -76,6 +76,7 @@ This is a separate project from [Buildkite's Sockguard](https://github.com/build
 | Getting Started | [Getting Started](https://getsockguard.com/docs/getting-started) |
 | Configuration | [Configuration](https://getsockguard.com/docs/configuration) |
 | Multi-Host | [Multi-Host](https://getsockguard.com/docs/multi-host) |
+| Swarm Manager Nodes | [Swarm Manager Nodes](https://getsockguard.com/docs/swarm) |
 | Presets | [Presets](https://getsockguard.com/docs/presets) |
 | Podman | [Podman](https://getsockguard.com/docs/podman) |
 | Migration | [Migration](https://getsockguard.com/docs/migration) |
@@ -252,7 +253,7 @@ Most existing socket proxies stop at method/path or regex filtering. Tecnativa g
 |---|---|
 | **Default-Deny Posture** | Everything blocked unless explicitly allowed. No match means deny. |
 | **Granular Control** | Allow start/stop while blocking create/exec. Per-operation POST controls with glob matching. |
-| **YAML Configuration** | Declarative rules, glob path patterns, first-match-wins evaluation, and canonical path matching that strips API versions, collapses dot segments, and decodes escaped separators before policy evaluation. 22 bundled workload presets (including CIS Docker Benchmark, self-hosted GitHub Actions runners, GitLab Runner, Portwing with build, Portwing with mediated build, drydock with build, drydock with mediated build, and Podman read-only) plus the default config. |
+| **YAML Configuration** | Declarative rules, glob path patterns, first-match-wins evaluation, and canonical path matching that strips API versions, collapses dot segments, and decodes escaped separators before policy evaluation. 34 bundled workload presets (including CIS Docker Benchmark, self-hosted GitHub Actions runners, GitLab Runner, Jenkins, Portwing with build, Portwing with mediated build, drydock with build, drydock with mediated build, and Podman read-only) plus the default config. |
 | **Structured Access Logging** | JSON access logs with method, raw path, normalized path, decision, matched rule, latency, canonical request ID, W3C `traceparent` correlation fields, and client info. Untrusted string fields escape CR/LF record delimiters as visible `\r`/`\n` sequences before reaching `slog`, preserving forensic content without allowing forged records even through custom handlers. Use `normalized_path` for SIEM correlation and policy analysis; raw `path` is preserved for forensic replay. Canonical request IDs are generated from a buffered pool so request logging does not block on a fresh entropy read per request. |
 | **mTLS for Remote TCP** | Non-loopback TCP listeners require mutual TLS by default. Plaintext TCP is explicit legacy mode only. |
 | **Client ACL Primitives** | Optional source-CIDR admission checks, client-container label ACLs, listener certificate selectors (CN/DNS/IP/URI SAN/SPKI), profile certificate selectors (CN/DNS/IP/URI/SPIFFE/SPKI), and unix peer credentials let one proxy differentiate callers before the global rule set runs. When mTLS is enabled, certificate selectors follow the verified client leaf certificate rather than an unverified peer slice entry. The same trusted principal and selected profile scope mediated BuildKit state across its `/grpc` and `/session` connections; persistent IDs are bounded and abandoned upload grants expire. |
@@ -282,15 +283,15 @@ Most existing socket proxies stop at method/path or regex filtering. Tecnativa g
 
 <h2 align="center" id="supported-profiles">Supported Profiles</h2>
 
-### Bundled presets (22)
+### Bundled presets (33)
 
-[drydock](app/configs/drydock.yaml) · [drydock with self-update](app/configs/drydock-with-selfupdate.yaml) · [drydock with compose](app/configs/drydock-with-compose.yaml) · [drydock with build](app/configs/drydock-with-build.yaml) · [drydock with mediated build](app/configs/drydock-with-mediated-build.yaml) · [Portwing](app/configs/portwing.yaml) · [Portwing with exec](app/configs/portwing-with-exec.yaml) · [Portwing with compose](app/configs/portwing-with-compose.yaml) · [Portwing with build](app/configs/portwing-with-build.yaml) · [Portwing with mediated build](app/configs/portwing-with-mediated-build.yaml) · [Traefik](app/configs/traefik.yaml) · [Portainer](app/configs/portainer.yaml) · [Watchtower](app/configs/watchtower.yaml) · [Homepage](app/configs/homepage.yaml) · [Homarr](app/configs/homarr.yaml) · [Diun](app/configs/diun.yaml) · [Autoheal](app/configs/autoheal.yaml) · [read-only](app/configs/readonly.yaml) · [Podman read-only](app/configs/podman-readonly.yaml) · [CIS Docker Benchmark](app/configs/cis-docker-benchmark.yaml) · [GitHub Actions self-hosted runner](app/configs/github-actions-runner.yaml) · [GitLab Runner](app/configs/gitlab-runner.yaml)
+[drydock](app/configs/drydock.yaml) · [drydock with self-update](app/configs/drydock-with-selfupdate.yaml) · [drydock with compose](app/configs/drydock-with-compose.yaml) · [drydock with build](app/configs/drydock-with-build.yaml) · [drydock with mediated build](app/configs/drydock-with-mediated-build.yaml) · [Portwing](app/configs/portwing.yaml) · [Portwing with exec](app/configs/portwing-with-exec.yaml) · [Portwing with compose](app/configs/portwing-with-compose.yaml) · [Portwing with build](app/configs/portwing-with-build.yaml) · [Portwing with mediated build](app/configs/portwing-with-mediated-build.yaml) · [Traefik](app/configs/traefik.yaml) · [Portainer](app/configs/portainer.yaml) · [Watchtower](app/configs/watchtower.yaml) · [Homepage](app/configs/homepage.yaml) · [Homarr](app/configs/homarr.yaml) · [Diun](app/configs/diun.yaml) · [Autoheal](app/configs/autoheal.yaml) · [read-only](app/configs/readonly.yaml) · [Podman read-only](app/configs/podman-readonly.yaml) · [CIS Docker Benchmark](app/configs/cis-docker-benchmark.yaml) · [GitHub Actions self-hosted runner](app/configs/github-actions-runner.yaml) · [GitLab Runner](app/configs/gitlab-runner.yaml) · [Dozzle](app/configs/dozzle.yaml) · [Dozzle with actions](app/configs/dozzle-with-actions.yaml) · [Dozzle with shell](app/configs/dozzle-with-shell.yaml) · [Uptime Kuma](app/configs/uptime-kuma.yaml) · [Beszel](app/configs/beszel.yaml) · [Arcane](app/configs/arcane.yaml) · [Arcane with management](app/configs/arcane-with-management.yaml) · [Dockge](app/configs/dockge.yaml) · [Komodo](app/configs/komodo.yaml) · [Komodo with deploy](app/configs/komodo-with-deploy.yaml) · [Jenkins](app/configs/jenkins.yaml) · [Woodpecker CI](app/configs/woodpecker.yaml)
 
 Two more bundled configs ship alongside the workload presets and are not counted above, because neither one is a policy for a particular client. [`multi-listener.yaml`](app/configs/multi-listener.yaml) is a working example of the `listeners:` surface. [`discovery.yaml`](app/configs/discovery.yaml) is a deny-everything policy running in `mode: audit`, for harvesting a real allowlist from a client whose call surface you don't know yet. It forwards every request it logs as `would_deny`, so it is a bootstrapping aid on a dedicated socket and never a production policy.
 
 ### Ready-to-run compose examples
 
-[drydock](examples/compose/drydock/) · [Portwing](examples/compose/portwing/) · [Portwing + drydock (tri-tool)](examples/compose/tri-tool/) · [Traefik](examples/compose/traefik/) · [Portainer](examples/compose/portainer/) · [Watchtower](examples/compose/watchtower/) · [Homepage](examples/compose/homepage/) · [Homarr](examples/compose/homarr/) · [Diun](examples/compose/diun/) · [Autoheal](examples/compose/autoheal/) · [GitHub Actions self-hosted runner](examples/compose/github-actions-runner/) · [GitLab Runner](examples/compose/gitlab-runner/) · [CIS Docker Benchmark gate](examples/compose/cis-docker-benchmark/) · [multi-host failover](examples/compose/multi-host/)
+[drydock](examples/compose/drydock/) · [Portwing](examples/compose/portwing/) · [Portwing + drydock (tri-tool)](examples/compose/tri-tool/) · [Traefik](examples/compose/traefik/) · [Portainer](examples/compose/portainer/) · [Watchtower](examples/compose/watchtower/) · [Homepage](examples/compose/homepage/) · [Homarr](examples/compose/homarr/) · [Diun](examples/compose/diun/) · [Autoheal](examples/compose/autoheal/) · [GitHub Actions self-hosted runner](examples/compose/github-actions-runner/) · [GitLab Runner](examples/compose/gitlab-runner/) · [CIS Docker Benchmark gate](examples/compose/cis-docker-benchmark/) · [multi-host failover](examples/compose/multi-host/) · [Dozzle](examples/compose/dozzle/) · [Uptime Kuma](examples/compose/uptime-kuma/) · [Beszel](examples/compose/beszel/) · [Arcane](examples/compose/arcane/) · [Dockge](examples/compose/dockge/) · [Komodo](examples/compose/komodo/) · [Jenkins](examples/compose/jenkins/) · [Woodpecker CI](examples/compose/woodpecker/)
 
 Each example pairs a downstream Docker API consumer with a `sockguard.yaml` overlay and a short README covering audience, exposed API surface, and security tradeoffs.
 
@@ -306,13 +307,14 @@ Rules can cover method/path filters, body-aware write inspection, declarative ad
 <details>
 <summary><strong>How does Sockguard compare to other Docker socket proxies?</strong></summary>
 
-How we stack up against other Docker socket proxies. Versions checked 2026-11-01: Tecnativa `docker-socket-proxy` v0.5.0, LinuxServer `docker-socket-proxy` 3.4.7-r0-ls104, wollomatic `socket-proxy` 1.13.2, 11notes `docker-socket-proxy` v2.2.0, hectorm `cetusguard` v1.1.4. Re-checked at every release cut, so a claim below is never more than one release stale.
+How we stack up against other Docker socket proxies. Versions checked 2026-11-26: Tecnativa `docker-socket-proxy` v0.6.0, LinuxServer `docker-socket-proxy` 3.4.8-r0-ls107, wollomatic `socket-proxy` 1.14.0, 11notes `docker-socket-proxy` v2.2.0, hectorm `cetusguard` v1.2.0. Each claim was read from that release's source or README on that date; later upstream releases can change it.
 
 | Feature | Tecnativa | LinuxServer | wollomatic | 11notes | CetusGuard | **Sockguard** |
 |---------|:---------:|:-----------:|:----------:|:-------:|:----------:|:-------------:|
 | Method + path filtering | ✅ | ✅ | ✅ (regex) | Read-only by default (opt-in containers-only mode) | ✅ (regex) | ✅ |
 | Granular container write ops | Documented only (POST gate blocks them) | Partial (ALLOW_* vars) | Via regex | Start/stop only (opt-in containers-only mode) | Via regex | ✅ |
 | Request body inspection | ❌ | ❌ | Partial (bind-mount restrictions) | ❌ | ❌ | ✅ (container, exec, image, build, volume, network, secret, config, service, swarm, node, plugin) |
+| Query-string rule matching | ❌ | ❌ | ❌ | ❌ | ✅ (regex over the sorted query, v1.2.0) | ✅ (next v3.2: match.query per key, exact or * values) |
 | Per-client policies | ❌ | ❌ | Partial (IP/hostname + labels) | ❌ | ❌ | ✅ (CIDR + labels + cert selectors incl. SPKI + unix peer) |
 | Resource owner labels | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ (workload + control plane) |
 | Remote TCP mTLS (listener) | ❌ | ❌ | ❌ | ❌ | ✅ | ✅ (TLS 1.3) |
@@ -333,7 +335,7 @@ How we stack up against other Docker socket proxies. Versions checked 2026-11-01
 | Multiple main listeners | ❌ | ❌ | ❌ | ✅ (Unix + TCP) | ✅ | ✅ (Unix and/or TCP, listener-scoped TLS + profiles) |
 | Hot-reload + admin API | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ (opt-in, fsnotify/SIGHUP, validate endpoint, policy version) |
 
-`11notes/docker-socket-proxy` takes a deliberately narrow stance: it allows most Docker API reads, targets seven sensitive GET surfaces for blocking (its image-export pattern matches neither real export shape, and the same style of pattern misfired on image inspect in [11notes #12](https://github.com/11notes/docker-socket-proxy/issues/12), fixed in v2.1.6), and refuses writes by default. Its opt-in `SOCKET_PROXY_CONTAINERS_ONLY` mode (v2.2.0) instead allows only container start and stop and refuses reads. Sockguard instead starts from a configurable default deny, offers finer-grained redaction/visibility, and can authorize inspected writes. `hectorm/cetusguard` is the closest in spirit: default-deny regex rules plus frontend/backend mTLS, native libpod families, and multiple frontend addresses. Sockguard is stronger on request-body inspection, per-client profiles, ownership, read filtering, metrics, hot reload, and health-checked upstream failover; v1.6.0 closed the libpod and multi-listener gaps that were CetusGuard's remaining advantages. The full evidence and resulting priorities are in the [roadmap](https://getsockguard.com/docs/roadmap).
+`11notes/docker-socket-proxy` takes a deliberately narrow stance: it allows most Docker API reads, targets seven sensitive GET surfaces for blocking (its image-export pattern matches neither real export shape, and the same style of pattern misfired on image inspect in [11notes #12](https://github.com/11notes/docker-socket-proxy/issues/12), fixed in v2.1.6), and refuses writes by default. Its opt-in `SOCKET_PROXY_CONTAINERS_ONLY` mode (v2.2.0) instead allows only container start and stop and refuses reads. Sockguard instead starts from a configurable default deny, offers finer-grained redaction/visibility, and can authorize inspected writes. `hectorm/cetusguard` is the closest in spirit: default-deny regex rules (matched against the path, or the path plus a sorted query when the pattern contains `\?`, since v1.2.0) plus frontend/backend mTLS, native libpod families, and multiple frontend addresses. Sockguard is stronger on request-body inspection, per-client profiles, ownership, read filtering, metrics, hot reload, and health-checked upstream failover; v1.6.0 closed the libpod and multi-listener gaps that were CetusGuard's remaining advantages. `yorvolabs/yorvogate` (v0.4.0, released 2026-11-24, Apache-2.0, repository created 2026-11-08) is a newer body-inspecting gate: it decodes request bodies into the Docker Engine's own types, scopes each client to its own Compose project by token header, dedicated socket or client certificate, and checks a per-scope query allowlist. It is not a column above because its README describes a different model (trusted and scoped listeners rather than rule lists) and we haven't tested it against Sockguard's conformance suite, so no row-by-row parity claim is made. It documents certification for Docker Engine 29 only. Source: its README and SUPPORT.md at v0.4.0, read 2026-11-26. The full evidence and resulting priorities are in the [roadmap](https://getsockguard.com/docs/roadmap).
 
 </details>
 
@@ -427,14 +429,7 @@ Bundled presets and ready-to-run compose stacks are summarized in [Supported Pro
 
 <h2 align="center" id="cli">CLI</h2>
 
-Install the latest stable native binary on macOS or Linux through the CodesWhat Homebrew tap:
-
-```bash
-brew install --cask codeswhat/tap/sockguard
-sockguard version
-```
-
-The cask installs only the `sockguard` command; it does not create a service, grant Docker socket access, or generate a policy. The macOS binary is not yet Apple notarized, so the cask removes quarantine from only its staged binary after Homebrew verifies the archive checksum; see the [getting-started guide](https://getsockguard.com/docs/getting-started) for the trust boundary. That checksum only proves the downloaded archive is intact, not who published it, so it's not a substitute for Apple Developer ID signing/notarization; if your policy requires notarization or you don't want the quarantine bypass, use the container image or verify the GitHub Releases binary with cosign instead. Container deployment remains the recommended production path.
+The container image is the supported install path; see the [getting-started guide](https://getsockguard.com/docs/getting-started). Native binaries are also attached to each [GitHub release](https://github.com/CodesWhat/sockguard/releases), with cosign signatures you can verify.
 
 Kubernetes users get a Helm chart as a signed OCI artifact from v3.0.0 (stable releases only):
 
@@ -460,6 +455,13 @@ what the normalized path looks like, and the reason (if any), so
 you can sanity-check a ruleset before any traffic hits the proxy.
 It applies the same hard process-list acknowledgment gate as the
 running proxy. Output is text by default or JSON via `-o json`.
+`--profile NAME` or `--source-ip IP` evaluates against a client profile
+and reports its selection, rollout mode, ownership scope and response
+policy from the config, plus a `not_inspected` list of what an offline
+run never reads (request body, live resources). `--body-file PATH` (or `-`
+for stdin) also runs the request-body inspectors on a sample body and reports
+their allow or deny verdict and reason, listing the checks that need a live
+daemon as not evaluated.
 
 `sockguard verify` is the runtime counterpart to `validate`. It
 loads the config the way `serve` does (flags, environment, file)

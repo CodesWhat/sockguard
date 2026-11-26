@@ -1,0 +1,224 @@
+# Sockguard, Komodo Periphery with Deploy Preset
+#
+# Extends the komodo preset with the writes Periphery needs to deploy
+# containers and Compose stacks: Deployments (`docker run`), Stacks
+# (`docker compose up -d`, `down`, `stop`, `restart`, `pull`) and the
+# container, image, network and volume actions in the Komodo UI. The writes are
+# bounded by owner isolation and container-create inspection, see below.
+#
+# Allows: everything in komodo.yaml plus ping, info and events, and
+#         container create, start, stop, restart, kill, rename, wait, remove;
+#         image pull;
+#         network create, connect, disconnect and remove;
+#         volume create.
+# Denies: image builds (see below), exec and attach (terminals), image
+#         remove, volume remove, pause and unpause, every prune action, and
+#         Swarm, secrets, configs and plugins.
+#
+# Derived from Komodo v2.3.4, bin/periphery/src. Periphery shells out to the
+# docker CLI for every write (api/container/run.rs, api/container/mod.rs,
+# api/docker.rs, api/compose.rs, docker/mod.rs):
+#   Deployment deploy   docker pull -- IMAGE, then stop and remove the old
+#                       container, then
+#                       `docker run -d --name N --network NET -p -v --env
+#                       --restart --label ... EXTRA_ARGS IMAGE CMD`
+#                       -> POST /images/create, POST /containers/{id}/stop,
+#                       DELETE /containers/{id}, POST /containers/create,
+#                       POST /containers/{id}/start
+#   Container actions   docker start|restart|stop|rename and
+#                       `docker container rm` (pause, unpause and prune are
+#                       refused)
+#   Stack deploy        docker compose [-p P] up -d, down, stop, restart, pull
+#   Network create      docker network create [-d DRIVER] -- NAME and rm
+#   Reads               bollard for the inventory, `docker logs` for logs
+# The Compose plugin's own Engine calls (create, rename, wait, connect,
+# disconnect, events, info) match the dockge preset, which is derived from
+# docker/compose v5.8.0.
+#
+# How the writes are bounded, because a Deployment's `extra_args` and a
+# Stack's compose file are caller-defined:
+#   - ownership.owner stamps every container, network and volume Periphery
+#     creates through this proxy with an owner label and scopes reads,
+#     mutations and prune to resources carrying it. Komodo does not need to set
+#     the label itself, sockguard adds it on create. Containers Komodo did not
+#     create through this proxy are invisible to it and cannot be touched.
+#   - container_create inspection stays at its defaults: no privileged
+#     containers, no host network, PID, IPC or user namespaces, no extra
+#     capabilities, no devices, no sysctls. Joining another container's
+#     namespaces (`container:<ref>`) is denied too. Bind mounts are limited to
+#     /etc/komodo, Periphery's default root directory (stacks, repos and
+#     run directories live under it). Named volumes need no allowlist entry.
+#   - network and volume creates keep the default driver allowlist.
+#
+# Builds are denied. Periphery only builds when a Build resource runs or a
+# Stack sets `run_build` (api/build, api/compose.rs), both opt-in, and a plain
+# Deployment or Stack deploy never builds. `docker build` and
+# `docker compose build` use POST /build, POST /session and POST /grpc, which
+# this preset does not allow. Build on a separate builder, or start from
+# portwing-with-mediated-build.yaml's mediation policy instead.
+#
+# Consequences of owner isolation:
+#   - Containers that already run (including Periphery itself and anything
+#     created without the proxy) do not show up in Komodo and cannot be
+#     adopted. Stop them and redeploy them from Komodo.
+#   - `external: true` networks and volumes must have been created through
+#     this proxy, otherwise they read as foreign and Compose fails.
+#   - Deployments default to `--network host`, which container_create
+#     inspection denies. Set a bridge network (or a named user network) on
+#     each Deployment.
+#   - `docker login` (a Deployment or Stack with a registry account) calls
+#     POST /auth, which is denied here, so registry accounts do not work and
+#     public images only are pulled. Add an allow rule for POST /auth if you
+#     accept that.
+#
+# Residual risk: anyone who can edit a Deployment or Stack in Komodo can run
+# any image with any command, as root, on this host, with network access and
+# /etc/komodo mounted. Komodo Core's login and permissions are the trust
+# boundary, so keep them locked down. Periphery also runs `post_deploy`,
+# `pre_deploy` and other hooks inside its own container, which is outside this
+# proxy. Not supported (refused, the UI action fails): the terminal and
+# container exec (set PERIPHERY_DISABLE_TERMINALS and
+# PERIPHERY_DISABLE_CONTAINER_EXEC to true), builds, image and volume removal,
+# `docker compose down --rmi` and `-v`, inline Compose `configs:` and
+# `secrets:` with `content:` (copied in through PUT /containers/*/archive),
+# Swarm mode, and prune.
+
+upstream:
+  socket: /var/run/docker.sock
+
+log:
+  level: info
+  format: json
+  access_log: true
+
+health:
+  enabled: true
+  path: /health
+
+# Komodo reads container logs (docker logs, which the CLI serves from
+# GET /containers/{id}/logs), an explicit read-exfiltration route.
+insecure_allow_read_exfiltration: true
+
+ownership:
+  owner: komodo
+  label_key: com.sockguard.owner
+
+# Compose reads container inspect data back: it parses each network
+# endpoint's IP addresses and reuses a previous container's mounts when it
+# recreates a service. With the default redactions on, `compose up` fails with
+# `ParseAddr("<redacted>")`. Mount and network redaction are off for that
+# reason. Container env stays redacted, Compose keys recreation off its
+# config-hash label and never reads it.
+response:
+  redact_mount_paths: false
+  redact_network_topology: false
+
+request_body:
+  container_remove:
+    # `docker compose down` removes containers with force and, for anonymous
+    # volumes, v=1. Komodo's RemoveContainer is a plain `docker container rm`.
+    allow_force: true
+    allow_remove_volumes: true
+  container_create:
+    # Periphery's root directory. Must match PERIPHERY_ROOT_DIRECTORY and be
+    # mounted at the same path inside and outside the Periphery container.
+    allowed_bind_mounts:
+      - /etc/komodo
+    # Deny `container:<ref>` network, PID, IPC, UTS, user and cgroup namespace
+    # joins (an empty allowlist denies every one). Compose `network_mode:
+    # service:x` resolves to such a join and is refused.
+    restrict_namespace_sharing: true
+  network:
+    # Compose detaches containers with Force: true before it recreates or
+    # removes them, and force disconnect is denied by default. Static IPs,
+    # MACs and custom drivers stay denied.
+    allow_disconnect_force: true
+  image_pull:
+    # Deployments and Stacks pull whatever images they name. Narrow this to
+    # your registries if you can.
+    allow_all_registries: true
+
+rules:
+  # Ping and version for the CLI, info and events for the Compose plugin.
+  - match: { method: GET, path: "/_ping" }
+    action: allow
+  - match: { method: HEAD, path: "/_ping" }
+    action: allow
+  - match: { method: GET, path: "/version" }
+    action: allow
+  - match: { method: GET, path: "/info" }
+    action: allow
+  - match: { method: GET, path: "/events" }
+    action: allow
+
+  # Container reads: list, inspect, one-shot stats and logs.
+  - match: { method: GET, path: "/containers/json" }
+    action: allow
+  - match: { method: GET, path: "/containers/*/json" }
+    action: allow
+  - match: { method: GET, path: "/containers/*/stats" }
+    action: allow
+  - match: { method: GET, path: "/containers/*/logs" }
+    action: allow
+
+  # Container lifecycle. `docker run` is create plus start. Compose renames
+  # the old container while recreating it and waits on one-shot dependencies.
+  - match: { method: POST, path: "/containers/create" }
+    action: allow
+  - match: { method: POST, path: "/containers/*/start" }
+    action: allow
+  - match: { method: POST, path: "/containers/*/stop" }
+    action: allow
+  - match: { method: POST, path: "/containers/*/restart" }
+    action: allow
+  - match: { method: POST, path: "/containers/*/kill" }
+    action: allow
+  - match: { method: POST, path: "/containers/*/rename" }
+    action: allow
+  - match: { method: POST, path: "/containers/*/wait" }
+    action: allow
+  - match: { method: DELETE, path: "/containers/*" }
+    action: allow
+
+  # Images: reads and pull. Image names can be namespaced
+  # (ghcr.io/owner/repo:tag), so the middle is matched with `**`. The trailing
+  # /json or /history segment keeps the exfiltration validator happy by not
+  # matching /images/get or /images/*/get (raw tarball export). No image
+  # remove, push, tag, load or prune.
+  - match: { method: GET, path: "/images/json" }
+    action: allow
+  - match: { method: GET, path: "/images/**/json" }
+    action: allow
+  - match: { method: GET, path: "/images/**/history" }
+    action: allow
+  - match: { method: POST, path: "/images/create" }
+    action: allow
+
+  # Networks: list and inspect, plus the stack network lifecycle and
+  # multi-network attach.
+  - match: { method: GET, path: "/networks" }
+    action: allow
+  - match: { method: GET, path: "/networks/*" }
+    action: allow
+  - match: { method: POST, path: "/networks/create" }
+    action: allow
+  - match: { method: POST, path: "/networks/*/connect" }
+    action: allow
+  - match: { method: POST, path: "/networks/*/disconnect" }
+    action: allow
+  - match: { method: DELETE, path: "/networks/*" }
+    action: allow
+
+  # Volumes: list, inspect and create. Removal is not allowed because it is
+  # irreversible data loss and no deploy path needs it.
+  - match: { method: GET, path: "/volumes" }
+    action: allow
+  - match: { method: GET, path: "/volumes/*" }
+    action: allow
+  - match: { method: POST, path: "/volumes/create" }
+    action: allow
+
+  # Deny everything else, including /build, /session and /grpc.
+  - match: { method: "*", path: "/**" }
+    action: deny
+    reason: "not allowed by komodo-with-deploy preset"

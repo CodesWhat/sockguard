@@ -21,7 +21,9 @@ const routes = [
   "/docs/podman",
   "/docs/presets",
   "/docs/roadmap",
+  "/docs/rootless-quadlet",
   "/docs/security",
+  "/docs/swarm",
   "/docs/verification",
 ] as const;
 

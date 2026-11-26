@@ -1,0 +1,97 @@
+# Sockguard config for Arcane, mirrors the shipped arcane preset.
+# Copy of app/configs/arcane.yaml; embedded here so the compose stack
+# is self-contained. Update both files together if you change rules.
+#
+# Least-privilege access for Arcane's default read-only management view
+# (dashboard, container, image, volume and network lists and detail pages,
+# container logs, stats and process list, live events, disk usage).
+# Allows: ping, version, info, events, system df, and GET on container,
+# image, volume and network list/inspect, plus container logs, stats, top
+# and image history.
+# Denies: every write and every other read. That includes the container
+# actions (start, stop, restart, redeploy, remove), the updater, image
+# pulls and prunes, volume and network create/remove, compose project
+# deploys, the browse and backup helpers, and the Swarm pages.
+# Swarm mode and Podman are untested with this preset.
+#
+# Derived from Arcane v3.1.1 (getarcaneapp/arcane), backend/internal/docker/
+# service.go, backend/internal/container/service.go and
+# backend/internal/container/children/stats/service.go.
+
+upstream:
+  socket: /var/run/docker.sock
+
+log:
+  level: info
+  format: json
+  access_log: true
+
+health:
+  enabled: true
+  path: /health
+
+# Arcane's container detail page streams container logs, which are an
+# explicit read-exfiltration route.
+insecure_allow_read_exfiltration: true
+
+# Response redaction stays on (the defaults). Container env, mount paths and
+# network addresses are redacted, so Arcane's detail pages show placeholders
+# or empty values for them.
+
+rules:
+  # Arcane pings the daemon to negotiate the API version.
+  - match: { method: GET, path: "/_ping" }
+    action: allow
+  - match: { method: HEAD, path: "/_ping" }
+    action: allow
+
+  # Engine identity and capabilities: Info, ServerVersion.
+  - match: { method: GET, path: "/version" }
+    action: allow
+  - match: { method: GET, path: "/info" }
+    action: allow
+
+  # The event stream keeps Arcane's inventory current.
+  - match: { method: GET, path: "/events" }
+    action: allow
+
+  # Disk usage (verbose) for the dashboard and the prune pages.
+  - match: { method: GET, path: "/system/df" }
+    action: allow
+
+  # Container reads: list, inspect, stats, process list and logs.
+  - match: { method: GET, path: "/containers/json" }
+    action: allow
+  - match: { method: GET, path: "/containers/*/json" }
+    action: allow
+  - match: { method: GET, path: "/containers/*/stats" }
+    action: allow
+  - match: { method: GET, path: "/containers/*/top" }
+    action: allow
+  - match: { method: GET, path: "/containers/*/logs" }
+    action: allow
+
+  # Image list and inspect. Image names span slashes (ghcr.io/org/app:tag),
+  # so these use "**". The /json and /history suffixes keep the glob from
+  # swallowing /images/get and /images/{name}/get, which export image
+  # layers and stay denied. "**" can match nothing, so the first rule also
+  # covers GET /images/json (the list).
+  - match: { method: GET, path: "/images/**/json" }
+    action: allow
+  - match: { method: GET, path: "/images/**/history" }
+    action: allow
+
+  # Volume and network reads.
+  - match: { method: GET, path: "/volumes" }
+    action: allow
+  - match: { method: GET, path: "/volumes/*" }
+    action: allow
+  - match: { method: GET, path: "/networks" }
+    action: allow
+  - match: { method: GET, path: "/networks/*" }
+    action: allow
+
+  # Deny everything else
+  - match: { method: "*", path: "/**" }
+    action: deny
+    reason: "not allowed by arcane preset"

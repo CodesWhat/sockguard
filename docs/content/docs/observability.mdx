@@ -327,6 +327,29 @@ State-change semantics are once-per-edge: the watchdog logs only when the
 reachability flips, not on every interval, so log volume scales with outages
 rather than with the configured interval.
 
+## systemd notifications
+
+Under systemd, sockguard speaks the `sd_notify` protocol with no setup beyond the unit. It needs nothing from the config file. When `NOTIFY_SOCKET` is unset (anywhere but a `Type=notify` unit) all of it is a no-op.
+
+| Message | When |
+|---|---|
+| `READY=1` | Every listener is bound and serving. |
+| `WATCHDOG=1` | Every half of `WatchdogSec=` (read from `WATCHDOG_USEC`), while the upstream is healthy. |
+| `STOPPING=1` | A shutdown signal, a listener failure or the `health.watchdog.exit_after` exit begins the drain. |
+
+The ping follows the active upstream watchdog above. While `health.watchdog.enabled` has the upstream marked unreachable, sockguard stops pinging, so systemd restarts the unit once `WatchdogSec=` runs out. That is the systemd-side counterpart of `health.watchdog.exit_after`, and the two work together or alone. Without `health.watchdog.enabled` there is no upstream verdict, so the pings only show that the process is alive. `NOTIFY_SOCKET` may be a filesystem path or an abstract socket (a leading `@`). If `WATCHDOG_PID` is set and names another process, the pings are off.
+
+A ready-to-use unit is in `examples/systemd/sockguard.service`:
+
+```ini
+[Service]
+Type=notify
+ExecStart=/usr/local/bin/sockguard serve --config /etc/sockguard/sockguard.yaml
+WatchdogSec=30s
+Restart=on-failure
+NotifyAccess=main
+```
+
 ## Readiness probe
 
 The watchdog *dials* the upstream socket — a liveness signal that only proves
@@ -489,10 +512,18 @@ in the `sockguard_otlp_*` metrics above. On shutdown the queue is flushed after
 the listeners drain, for at most the shorter of 5 seconds and
 `server.shutdown_grace`; whatever is left after that is dropped.
 
-### Not instrumented
+### Admin listener spans
 
-Only the main listener's chain exports spans. The dedicated admin listener is
-not instrumented.
+The dedicated admin listener (`admin.listen`) exports spans through the same
+exporter, queue and metrics as the main listener. The span layer sits outside
+the admin client CIDR gate, so a request refused at the access boundary is
+exported with its `deny` decision and 403 status. `http.route` is the
+configured admin path the request addressed (`admin.path`,
+`admin.policy_version_path` or `admin.policy_diff_path`), or `unknown` for
+anything else, so a client-chosen path never reaches a span name or attribute.
+Candidate YAML bodies, query strings and headers are never exported, same as
+the main chain. Admin endpoints mounted in-band on the main listener are
+covered by the main chain's spans.
 
 ## Production checklist
 

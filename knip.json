@@ -2,7 +2,7 @@
   "$schema": "https://unpkg.com/knip@6/schema.json",
   "workspaces": {
     ".": {
-      "entry": ["scripts/*.mjs"],
+      "entry": ["scripts/*.mjs", "scripts/dozzle-conformance/cli.mjs"],
       "ignore": [
         "scripts/tri-tool-conformance/controller-clock-offset.cjs",
         "scripts/tri-tool-conformance/controller-header-proxy.cjs"

@@ -1,0 +1,150 @@
+# Sockguard, Woodpecker CI Preset
+#
+# Bounded access for a Woodpecker agent running the docker backend
+# (WOODPECKER_BACKEND=docker, the default). The agent creates one named
+# volume and one bridge network per workflow, then one container per step
+# (and per service), starts them, waits for exit, streams their logs and
+# tears everything down again.
+# Allows: ping, version, info, container create/start/stop/kill/wait/inspect/
+#   logs/remove, image pull, network create/connect/remove, volume create/remove.
+# Denies: exec, attach, stats, events, image build/list/inspect, volume and
+# network reads, swarm, secrets, configs, plugins, and every other route.
+#
+# Derived from Woodpecker v3.21.0, pipeline/backend/docker/docker.go and
+# convert.go. The agent never runs exec: step commands are injected as the
+# container entrypoint.
+#
+# Bounding the writes:
+#   - Privileged steps are refused. Woodpecker sets HostConfig.Privileged from
+#     a step's `privileged: true`, which only an admin-trusted plugin may use.
+#     Those pipelines (docker-in-docker, buildx) are not supported here.
+#   - Host namespaces, devices, capability additions, sysctls and published
+#     ports are all refused. The docker backend sets none of them.
+#   - Bind mounts are refused (allowed_bind_mounts is empty). Woodpecker mounts
+#     the workflow's named volume, not a host path. A trusted repo's
+#     `volumes:` host paths and WOODPECKER_BACKEND_DOCKER_VOLUMES need an
+#     explicit allowed_bind_mounts entry, kept as narrow as possible.
+#   - ownership.owner stamps every container, network and volume the agent
+#     creates with an owner label and restricts the agent to those. Woodpecker
+#     only sets its own wp_uuid and wp_step labels, so the owner label is the
+#     isolation key. Attaching a step to a pre-existing network
+#     (WOODPECKER_BACKEND_DOCKER_NETWORK) is refused because that network is not
+#     owned by the agent.
+#
+# Residual risk: the agent still runs arbitrary images and arbitrary step
+# commands from every pipeline it accepts, as root unless a step sets `user`,
+# and those steps have outbound network access. Sockguard keeps that code
+# off the host, it does not make untrusted pipelines safe. Restrict who can
+# reach the proxy socket (clients.unix_peer_profiles or clients.allowed_cidrs)
+# to the agent process.
+#
+# Not supported: the kubernetes and local backends, Windows engines, Podman,
+# pull-through registry auth beyond what image_pull allows, and the
+# privileged/trusted-volume workflows above.
+
+upstream:
+  socket: /var/run/docker.sock
+
+log:
+  level: info
+  format: json
+  access_log: true
+
+health:
+  enabled: true
+  path: /health
+
+# The agent streams every step's output from the container logs endpoint,
+# which is an explicit read-exfiltration route.
+insecure_allow_read_exfiltration: true
+
+# Every resource the agent creates carries this label, and every later call
+# that names a container, network or volume must resolve to the same owner.
+# Change the owner if several proxies share one daemon.
+ownership:
+  owner: woodpecker
+
+request_body:
+  container_create:
+    allow_privileged: false
+    allow_host_network: false
+    allow_host_pid: false
+    allow_host_ipc: false
+    allow_host_userns: false
+    allow_host_cgroupns: false
+    allowed_bind_mounts: []
+    allow_all_devices: false
+    allowed_devices: []
+    allow_device_requests: false
+    allow_device_cgroup_rules: false
+    allow_all_capabilities: false
+    allowed_capabilities: []
+    deny_unconfined_seccomp: true
+    deny_unconfined_apparmor: true
+    allow_sysctls: false
+    deny_published_ports: true
+
+  # Woodpecker pulls whatever image a pipeline names, from any registry.
+  image_pull:
+    allow_all_registries: true
+
+  # DestroyStep removes a stopped container and its anonymous volumes
+  # (v=1) without force.
+  container_remove:
+    allow_force: false
+    allow_remove_volumes: true
+
+rules:
+  # client.New negotiates the API version with a ping, then Load calls Info
+  # to learn the engine OS and architecture.
+  - match: { method: GET, path: "/_ping" }
+    action: allow
+  - match: { method: HEAD, path: "/_ping" }
+    action: allow
+  - match: { method: GET, path: "/version" }
+    action: allow
+  - match: { method: GET, path: "/info" }
+    action: allow
+
+  # Workflow setup: one named volume and one bridge network.
+  - match: { method: POST, path: "/volumes/create" }
+    action: allow
+  - match: { method: POST, path: "/networks/create" }
+    action: allow
+
+  # Step start: optional pull, create, network connect, start. The create
+  # body is inspected by request_body.container_create above.
+  - match: { method: POST, path: "/images/create" }
+    action: allow
+  - match: { method: POST, path: "/containers/create" }
+    action: allow
+  - match: { method: POST, path: "/networks/*/connect" }
+    action: allow
+  - match: { method: POST, path: "/containers/*/start" }
+    action: allow
+
+  # Step run: wait for exit, read the exit code, stream the log.
+  - match: { method: POST, path: "/containers/*/wait" }
+    action: allow
+  - match: { method: GET, path: "/containers/*/json" }
+    action: allow
+  - match: { method: GET, path: "/containers/*/logs" }
+    action: allow
+
+  # Step teardown: stop, kill, remove. Workflow teardown: remove the volume
+  # (forced, retried while in use) and the network.
+  - match: { method: POST, path: "/containers/*/stop" }
+    action: allow
+  - match: { method: POST, path: "/containers/*/kill" }
+    action: allow
+  - match: { method: DELETE, path: "/containers/*" }
+    action: allow
+  - match: { method: DELETE, path: "/volumes/*" }
+    action: allow
+  - match: { method: DELETE, path: "/networks/*" }
+    action: allow
+
+  # Deny everything else
+  - match: { method: "*", path: "/**" }
+    action: deny
+    reason: "not allowed by woodpecker preset"

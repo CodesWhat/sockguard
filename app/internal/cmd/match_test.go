@@ -499,6 +499,9 @@ func executeRootCommand(t *testing.T, args ...string) (stdout string, stderr str
 	oldMatchMethod := matchMethod
 	oldMatchPath := matchPath
 	oldMatchOutput := matchOutput
+	oldMatchProfile := matchProfile
+	oldMatchSourceIP := matchSourceIP
+	oldMatchBodyFile := matchBodyFile
 
 	var out bytes.Buffer
 	var errOut bytes.Buffer
@@ -511,6 +514,10 @@ func executeRootCommand(t *testing.T, args ...string) (stdout string, stderr str
 		matchMethod = oldMatchMethod
 		matchPath = oldMatchPath
 		matchOutput = oldMatchOutput
+		matchProfile = oldMatchProfile
+		matchSourceIP = oldMatchSourceIP
+		matchBodyFile = oldMatchBodyFile
+		rootCmd.SetIn(nil)
 		rootCmd.SetOut(nil)
 		rootCmd.SetErr(nil)
 		rootCmd.SetArgs(nil)

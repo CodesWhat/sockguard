@@ -40,8 +40,11 @@ const maxMutationBodyBytes = 1 << 20 // 1 MiB
 // packages rather than centralized.
 const (
 	mutationSurfaceContainerCreate = "container_create"
-	mutationSurfaceServiceCreate   = "service_create"
-	mutationSurfaceServiceUpdate   = "service_update"
+	// mutationSurfaceLibpodContainerCreate is POST /libpod/containers/create,
+	// which only remap_bind_source applies to.
+	mutationSurfaceLibpodContainerCreate = "libpod_container_create"
+	mutationSurfaceServiceCreate         = "service_create"
+	mutationSurfaceServiceUpdate         = "service_update"
 )
 
 // Mutation rule outcome vocabulary, matching the audit/access log schema.
@@ -80,6 +83,8 @@ type MutationRuleOptions struct {
 	Surfaces     []string
 	InjectLabels *InjectLabelsMutationOptions
 	RemapImage   *ImageRemapMutationOptions
+	// RemapBindSource rewrites a bind-mount source prefix. See mutation_bind.go.
+	RemapBindSource *BindSourceRemapMutationOptions
 }
 
 // InjectLabelsMutationOptions unconditionally sets/replaces the configured
@@ -103,13 +108,18 @@ type mutationRuleKind int
 const (
 	mutationRuleInjectLabels mutationRuleKind = iota
 	mutationRuleRemapImage
+	mutationRuleRemapBindSource
 )
 
 func (k mutationRuleKind) String() string {
-	if k == mutationRuleRemapImage {
+	switch k {
+	case mutationRuleRemapImage:
 		return "remap_image"
+	case mutationRuleRemapBindSource:
+		return "remap_bind_source"
+	default:
+		return "inject_labels"
 	}
-	return "inject_labels"
 }
 
 // compiledMutationRule is one rule fanned out to one surface bucket.
@@ -122,6 +132,9 @@ type compiledMutationRule struct {
 	remapMatch string
 	remapFrom  string
 	remapTo    string
+
+	bindFrom string
+	bindTo   string
 }
 
 // mutationEngine is the compiled, immutable form of MutationOptions,
@@ -154,8 +167,12 @@ func newMutationEngine(opts MutationOptions) *mutationEngine {
 			cr.remapMatch = strings.ToLower(strings.TrimSpace(r.RemapImage.Match))
 			cr.remapFrom = r.RemapImage.From
 			cr.remapTo = r.RemapImage.To
+		case r.RemapBindSource != nil:
+			cr.kind = mutationRuleRemapBindSource
+			cr.bindFrom = r.RemapBindSource.From
+			cr.bindTo = r.RemapBindSource.To
 		default:
-			// Config validation guarantees exactly one of the two blocks is
+			// Config validation guarantees exactly one of the three blocks is
 			// set before this ever runs; skip defensively rather than panic
 			// if that invariant is ever violated by a future caller (e.g. a
 			// test constructing MutationOptions directly).
@@ -188,6 +205,13 @@ func newContainerCreateMutationPolicy(engine *mutationEngine) mutationPolicy {
 	return mutationPolicy{
 		engine:  engine,
 		surface: func(string) string { return mutationSurfaceContainerCreate },
+	}
+}
+
+func newLibpodContainerCreateMutationPolicy(engine *mutationEngine) mutationPolicy {
+	return mutationPolicy{
+		engine:  engine,
+		surface: func(string) string { return mutationSurfaceLibpodContainerCreate },
 	}
 }
 
@@ -389,6 +413,8 @@ func applyMutationRule(doc map[string]any, surface string, rule compiledMutation
 		return applyInjectLabels(doc, surface, rule.labels)
 	case mutationRuleRemapImage:
 		return applyRemapImage(doc, surface, rule)
+	case mutationRuleRemapBindSource:
+		return applyRemapBindSource(doc, surface, rule)
 	default:
 		return mutationOutcomeNoop, nil
 	}

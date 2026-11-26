@@ -891,6 +891,13 @@ type LibpodContainerCreateRequestBodyConfig struct {
 	AllowDeviceRequests       bool     `mapstructure:"allow_device_requests"`
 	DenyUnconfinedSystemPaths bool     `mapstructure:"deny_unconfined_system_paths"`
 
+	// AllowedGPUs lists the exact gpus entries a libpod create may carry, and
+	// AllowedCDIDevices the exact fully qualified CDI names (vendor/class=name)
+	// it may carry in devices. Both are byte-for-byte matches, default empty
+	// (deny), and are skipped by allow_device_requests and allow_all_devices.
+	AllowedGPUs       []string `mapstructure:"allowed_gpus"`
+	AllowedCDIDevices []string `mapstructure:"allowed_cdi_devices"`
+
 	// AllowUnifiedCgroupSettings permits a non-empty "unified" map, raw
 	// cgroup v2 knobs Podman writes straight into the container's cgroup.
 	// No Docker Engine API analog. Default false.
@@ -962,6 +969,12 @@ type AllowedDeviceRequest struct {
 	Driver              string     `mapstructure:"driver"`
 	AllowedCapabilities [][]string `mapstructure:"allowed_capabilities"`
 	MaxCount            *int       `mapstructure:"max_count"`
+	// DeviceIDs, when set, pins the request to these exact device IDs (for
+	// example CDI names like nvidia.com/gpu=0). Matching is byte for byte; a
+	// request with no IDs or a non-zero Count is denied against this entry.
+	DeviceIDs []string `mapstructure:"device_ids"`
+	// Count, when set, requires the request Count to equal it exactly.
+	Count *int `mapstructure:"count"`
 }
 
 // ExecRequestBodyConfig configures body inspection for exec creation/start.
@@ -1899,6 +1912,10 @@ type HealthConfig struct {
 type HealthWatchdogConfig struct {
 	Enabled  bool   `mapstructure:"enabled"`
 	Interval string `mapstructure:"interval"`
+	// ExitAfter makes the process exit non-zero once the upstream has been
+	// continuously unreachable for this long, so an orchestrator restarts it.
+	// "0s" (the default) never exits.
+	ExitAfter string `mapstructure:"exit_after"`
 }
 
 // HealthReadinessConfig configures the optional readiness endpoint. Unlike the
@@ -2113,7 +2130,7 @@ type MutationsConfig struct {
 }
 
 // MutationRuleConfig is one declarative admission-mutation rule. Exactly one
-// of InjectLabels/RemapImage must be set; validate.go enforces this and the
+// of InjectLabels/RemapImage/RemapBindSource must be set; validate.go enforces this and the
 // remaining bounds (rule/label counts, key/value sizes, surface/action
 // compatibility, overlap rejection, owner-label-key reservation).
 type MutationRuleConfig struct {
@@ -2132,6 +2149,22 @@ type MutationRuleConfig struct {
 	// RemapImage configures a single string-field image replace mutation.
 	// Mutually exclusive with InjectLabels.
 	RemapImage *ImageRemapMutationConfig `mapstructure:"remap_image"`
+	// RemapBindSource configures a host-path prefix rewrite of bind-mount
+	// sources, for Docker-out-of-Docker runners. Mutually exclusive with
+	// InjectLabels and RemapImage.
+	RemapBindSource *BindSourceRemapMutationConfig `mapstructure:"remap_bind_source"`
+}
+
+// BindSourceRemapMutationConfig rewrites a bind-mount source from the path a
+// Docker-out-of-Docker client sees (From) to the path the daemon's host sees
+// (To). Both must be absolute, already-clean paths with no ":", ",", control
+// characters or NUL. A source matches only on a path-component boundary
+// (From "/builds" matches "/builds" and "/builds/x", never "/builds2"), and
+// a ".." component in a matching source is refused. Valid on the
+// container_create and libpod_container_create surfaces.
+type BindSourceRemapMutationConfig struct {
+	From string `mapstructure:"from"`
+	To   string `mapstructure:"to"`
 }
 
 // InjectLabelsMutationConfig unconditionally sets/replaces the configured
@@ -2286,8 +2319,9 @@ func Defaults() Config {
 			Enabled: true,
 			Path:    "/health",
 			Watchdog: HealthWatchdogConfig{
-				Enabled:  false,
-				Interval: "5s",
+				Enabled:   false,
+				Interval:  "5s",
+				ExitAfter: "0s",
 			},
 			Readiness: HealthReadinessConfig{
 				Enabled:  false,

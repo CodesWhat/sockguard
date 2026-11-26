@@ -1,0 +1,45 @@
+# Sockguard config for the rootless Quadlet kit: read-only access to the
+# user's own Podman socket. Everything not listed is denied.
+#
+# The upstream path is where sockguard.container bind-mounts the user socket
+# inside the container, not the host path.
+
+upstream:
+  socket: /run/podman/podman.sock
+  flavor: podman
+
+listen:
+  socket: /var/run/sockguard/sockguard.sock
+
+log:
+  level: info
+  format: json
+  access_log: true
+
+health:
+  enabled: true
+  path: /health
+
+rules:
+  - match: { method: GET, path: "/_ping" }
+    action: allow
+  - match: { method: HEAD, path: "/_ping" }
+    action: allow
+  - match: { method: GET, path: "/version" }
+    action: allow
+  - match: { method: GET, path: "/containers/json" }
+    action: allow
+  - match: { method: GET, path: "/containers/*/json" }
+    action: allow
+  - match: { method: GET, path: "/libpod/_ping" }
+    action: allow
+  - match: { method: GET, path: "/libpod/version" }
+    action: allow
+  - match: { method: GET, path: "/libpod/containers/json" }
+    action: allow
+  - match: { method: GET, path: "/libpod/containers/*/json" }
+    action: allow
+
+  - match: { method: "*", path: "/**" }
+    action: deny
+    reason: not part of the read-only Quadlet policy

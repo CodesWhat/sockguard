@@ -1,0 +1,10 @@
+{"msg": "request_would_deny", "method": "GET", "path": "/v1.45/containers/0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef/json?secret=hunter2", "normalized_path": "/containers/0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef/json", "decision": "would_deny", "rollout_mode": "warn", "client": "10.0.0.9:5555", "request_id": "r1"}
+{"msg": "request_would_deny", "method": "GET", "path": "/containers/abcdef012345/json", "normalized_path": "/containers/abcdef012345/json", "decision": "would_deny", "rollout_mode": "audit"}
+{"msg": "request_would_deny", "method": "POST", "path": "/containers/web/restart?t=5", "normalized_path": "/containers/web/restart", "decision": "would_deny", "rollout_mode": "audit"}
+{"msg": "request_would_deny", "method": "GET", "path": "/containers/json", "normalized_path": "/containers/json", "decision": "would_deny", "rollout_mode": "warn"}
+{"msg": "request_would_deny", "method": "GET", "path": "/containers/json", "normalized_path": "/containers/json", "decision": "would_deny", "rollout_mode": "warn"}
+{"msg": "request", "method": "GET", "path": "/version", "normalized_path": "/version", "decision": "allow"}
+{"msg": "request_denied", "method": "DELETE", "path": "/containers/x", "normalized_path": "/containers/x", "decision": "deny"}
+{"msg": "request_would_deny", "method": "GET", "path": "/containers/**", "normalized_path": "/containers/**", "decision": "would_deny"}
+{"msg": "request_would_deny", "method": "GET", "path": "/a/../b", "normalized_path": "/a/../b", "decision": "would_deny"}
+not json at all

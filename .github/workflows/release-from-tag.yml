@@ -375,7 +375,7 @@ jobs:
     steps:
       # PKG-1: block mode. Hosts come from this job's harden-runner audit log
       # for the v2.1.0 and v2.1.0-rc.2 tag runs.
-      #   github.com: Checkout, GoReleaser's push to CodesWhat/homebrew-tap, and
+      #   github.com: Checkout and
       #     the release downloads for Setup Go, syft, cosign and goreleaser
       #   api.github.com: GoReleaser's release API calls, the gh calls in Publish
       #     and verify release notes, and Attest binary archive provenance
@@ -465,17 +465,6 @@ jobs:
           # off (zizmor cache-poisoning).
           cache: false
 
-      - name: Require Homebrew tap token
-        if: ${{ needs.verify-ci.outputs.latest == 'true' }}
-        env:
-          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
-        run: |
-          set -euo pipefail
-          test -n "${HOMEBREW_TAP_TOKEN}" || {
-            echo "::error::HOMEBREW_TAP_TOKEN is required to publish stable releases to CodesWhat/homebrew-tap."
-            exit 1
-          }
-
       - name: Download release notes
         id: download_release_notes
         continue-on-error: true
@@ -554,7 +543,6 @@ jobs:
           workdir: app
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          HOMEBREW_TAP_TOKEN: ${{ needs.verify-ci.outputs.latest == 'true' && secrets.HOMEBREW_TAP_TOKEN || '' }}
           RELEASE_LATEST: ${{ needs.verify-ci.outputs.latest }}
 
       - name: Publish and verify release notes
@@ -1096,71 +1084,12 @@ jobs:
           subject-digest: ${{ steps.digest.outputs.value }}
           push-to-registry: true
 
-  verify-homebrew:
-    name: "Release: Verify Homebrew"
-    needs: [verify-ci, release]
-    if: ${{ needs.verify-ci.outputs.latest == 'true' }}
-    runs-on: macos-15
-    timeout-minutes: 20
-    permissions:
-      contents: read
-    env:
-      HOMEBREW_NO_ANALYTICS: "1"
-      HOMEBREW_NO_AUTO_UPDATE: "1"
-      # GitHub-hosted macOS runners default to --no-quarantine. Clear it so
-      # this exercises the same Gatekeeper path as a normal user install.
-      HOMEBREW_CASK_OPTS: ""
-
-    steps:
-      - name: Harden Runner
-        uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43  # v2.22.3
-        with:
-          egress-policy: block
-          allowed-endpoints: >
-            api.github.com:443
-            formulae.brew.sh:443
-            github.com:443
-            raw.githubusercontent.com:443
-            release-assets.githubusercontent.com:443
-
-      - name: Verify Homebrew cask install
-        env:
-          RELEASE_VERSION: ${{ github.ref_name }}
-        run: |
-          set -euo pipefail
-          # GoReleaser pushes the cask to a per-release tap branch and the tap
-          # merges it into main through a checked PR. Wait (bounded, under the
-          # hardened runner's job budget) for tap main to carry this version.
-          want="${RELEASE_VERSION#v}"
-          cask_url="https://raw.githubusercontent.com/CodesWhat/homebrew-tap/main/Casks/sockguard.rb"
-          for attempt in $(seq 1 16); do
-            have="$(curl -fsSL --connect-timeout 5 --max-time 10 "$cask_url" | sed -n 's/^  version "\(.*\)"$/\1/p' || true)"
-            if [ "$have" = "$want" ]; then
-              break
-            fi
-            if [ "$attempt" -eq 16 ]; then
-              echo "::error::Tap main still has sockguard ${have:-unknown}, not ${want}, after 8 minutes. Check the sockguard-${want} tap PR."
-              exit 1
-            fi
-            sleep 30
-          done
-          brew tap CodesWhat/tap https://github.com/CodesWhat/homebrew-tap.git
-          brew install --cask codeswhat/tap/sockguard
-          if xattr -p com.apple.quarantine "$(command -v sockguard)" >/dev/null 2>&1; then
-            echo "::error::Homebrew-installed sockguard retained its quarantine attribute."
-            exit 1
-          fi
-          sockguard version -o json | jq -e \
-            --arg version "${RELEASE_VERSION#v}" \
-            '.version == $version'
-          brew uninstall --cask sockguard
-
   publish-chart:
     # HELM-PUB. Publishes the chart as an OCI artifact at
     # oci://ghcr.io/codeswhat/charts/sockguard and signs it keyless like the
     # image, so `helm install` has a signed, immutable source.
     #
-    # Gated exactly like `latest` and the Homebrew cask: verify-ci's `latest`
+    # Gated like `latest`: verify-ci's `latest`
     # output is true only for a stable tag whose SHA is the default branch
     # HEAD. Prereleases and maintenance lines publish no chart, so an older
     # 2.4.x patch can never move the chart channel backwards.
@@ -1173,7 +1102,7 @@ jobs:
     # references the immutable image digest rather than a mutable tag.
     #
     # Chart publishing is isolated from the image release. Nothing else
-    # needs this job: verify-published (QA-6), verify-homebrew and
+    # needs this job: verify-published (QA-6) and
     # pin-chart-digest do not wait on it, so a chart failure cannot skip or
     # redden them. verify-chart is the chart's own signature check.
     #
@@ -1548,7 +1477,7 @@ jobs:
   verify-chart:
     # Runs the documented `cosign verify` against the published chart. Its own
     # job on purpose: a chart problem is its own red check and must not skip
-    # or fail verify-published (image + tarball QA-6), Homebrew, or the pin.
+    # or fail verify-published (image + tarball QA-6) or the pin.
     # `latest` and the chart's publish-chart both skip together, so a skipped
     # publish-chart makes this a skip too.
     name: "Release: Verify Published Helm Chart"
@@ -1948,8 +1877,8 @@ jobs:
     # waits on the jobs that assert the artifacts are the ones this pipeline
     # built.
     name: "Release: Pin Chart Image Digest"
-    needs: [release, verify-published, verify-homebrew]
-    if: ${{ always() && !contains(github.ref_name, '-') && needs.release.result == 'success' && needs.verify-published.result == 'success' && (needs.verify-homebrew.result == 'success' || needs.verify-homebrew.result == 'skipped') }}
+    needs: [release, verify-published]
+    if: ${{ always() && !contains(github.ref_name, '-') && needs.release.result == 'success' && needs.verify-published.result == 'success' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:

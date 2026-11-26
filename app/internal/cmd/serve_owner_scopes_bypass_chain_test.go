@@ -20,7 +20,7 @@ func seedTwoOwners(d *tenancyDaemon) {
 		d.add("container", c.name, c.owner, nil)
 	}
 	d.add("volume", "a-vol", "A", func(r *tenantRes) { r.data = "vol-data-of-A" })
-	d.add("volume", "b-vol", "B", func(r *tenantRes) { r.data = "vol-data-of-B"; r.labels["note"] = "B-PRIVATE-NOTE" })
+	d.add("volume", "b-vol", "B", func(r *tenantRes) { r.data = "vol-data-of-B"; r.labels["note"] = "B-PRIVATE-MEMO" })
 	d.add("network", "a-net", "A", nil)
 	d.add("network", "b-net", "B", nil)
 	d.add("network", "a-net/alias", "B", nil)
@@ -41,7 +41,7 @@ func requireRefused(t *testing.T, label string, status int, body string) {
 	if status != http.StatusForbidden && status != http.StatusNotFound {
 		t.Errorf("%s: status = %d, want 403 or 404; body %s", label, status, body)
 	}
-	for _, leak := range []string{"B-PRIVATE-NOTE", "vol-data-of-B", "data-of-B", "B-LOG-OR-ARCHIVE-DATA", "B-UNLOCK-KEY", "B-DOCKERFILE-STEP"} {
+	for _, leak := range []string{"B-PRIVATE-MEMO", "vol-data-of-B", "data-of-B", "B-LOG-OR-ARCHIVE-DATA", "B-UNLOCK-KEY", "B-DOCKERFILE-STEP"} {
 		if strings.Contains(body, leak) {
 			t.Errorf("%s: response leaks B data %q: %s", label, leak, body)
 		}
@@ -291,7 +291,7 @@ func TestServeChainTwoOwnersListsAndPrunesStayScoped(t *testing.T) {
 			if !strings.Contains(body, label(who.mine)) {
 				t.Errorf("%s GET %s: own resources missing: %s", who.name, path, body)
 			}
-			if strings.Contains(body, label(who.theirs)) || strings.Contains(body, "B-PRIVATE-NOTE") && who.name == "A" {
+			if strings.Contains(body, label(who.theirs)) || strings.Contains(body, "B-PRIVATE-MEMO") && who.name == "A" {
 				t.Errorf("%s GET %s shows the other owner's resource: %s", who.name, path, body)
 			}
 		}
@@ -306,7 +306,7 @@ func TestServeChainTwoOwnersListsAndPrunesStayScoped(t *testing.T) {
 	if err := json.Unmarshal([]byte(body), &df); err != nil {
 		t.Fatalf("decode df: %v\n%s", err, body)
 	}
-	for _, leak := range []string{"b-web", "b-vol", "b-image", "B-DOCKERFILE-STEP", "bc-B", "B-PRIVATE-NOTE"} {
+	for _, leak := range []string{"b-web", "b-vol", "b-image", "B-DOCKERFILE-STEP", "bc-B", "B-PRIVATE-MEMO"} {
 		if strings.Contains(body, leak) {
 			t.Errorf("A system/df leaks %q: %s", leak, body)
 		}

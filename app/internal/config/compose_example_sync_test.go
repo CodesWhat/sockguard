@@ -109,6 +109,46 @@ func TestComposeExamplesInSyncWithCanonicalPresets(t *testing.T) {
 			example:   filepath.Join("..", "..", "..", "examples", "compose", "homarr", "sockguard.yaml"),
 		},
 		{
+			name:      "dozzle",
+			canonical: filepath.Join("..", "..", "configs", "dozzle.yaml"),
+			example:   filepath.Join("..", "..", "..", "examples", "compose", "dozzle", "sockguard.yaml"),
+		},
+		{
+			name:      "uptime-kuma",
+			canonical: filepath.Join("..", "..", "configs", "uptime-kuma.yaml"),
+			example:   filepath.Join("..", "..", "..", "examples", "compose", "uptime-kuma", "sockguard.yaml"),
+		},
+		{
+			name:      "beszel",
+			canonical: filepath.Join("..", "..", "configs", "beszel.yaml"),
+			example:   filepath.Join("..", "..", "..", "examples", "compose", "beszel", "sockguard.yaml"),
+		},
+		{
+			name:      "arcane",
+			canonical: filepath.Join("..", "..", "configs", "arcane.yaml"),
+			example:   filepath.Join("..", "..", "..", "examples", "compose", "arcane", "sockguard.yaml"),
+		},
+		{
+			name:      "dockge",
+			canonical: filepath.Join("..", "..", "configs", "dockge.yaml"),
+			example:   filepath.Join("..", "..", "..", "examples", "compose", "dockge", "sockguard.yaml"),
+		},
+		{
+			name:      "komodo",
+			canonical: filepath.Join("..", "..", "configs", "komodo.yaml"),
+			example:   filepath.Join("..", "..", "..", "examples", "compose", "komodo", "sockguard.yaml"),
+		},
+		{
+			name:      "jenkins",
+			canonical: filepath.Join("..", "..", "configs", "jenkins.yaml"),
+			example:   filepath.Join("..", "..", "..", "examples", "compose", "jenkins", "sockguard.yaml"),
+		},
+		{
+			name:      "woodpecker",
+			canonical: filepath.Join("..", "..", "configs", "woodpecker.yaml"),
+			example:   filepath.Join("..", "..", "..", "examples", "compose", "woodpecker", "sockguard.yaml"),
+		},
+		{
 			name:      "diun",
 			canonical: filepath.Join("..", "..", "configs", "diun.yaml"),
 			example:   filepath.Join("..", "..", "..", "examples", "compose", "diun", "sockguard.yaml"),

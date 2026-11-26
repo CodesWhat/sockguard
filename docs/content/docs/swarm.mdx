@@ -1,0 +1,343 @@
+---
+title: Swarm Manager Nodes
+description: Run sockguard as a global service on Docker Swarm manager nodes. Stack file, socket mount, overlay network and mTLS, which presets cover Swarm reads and writes, how service create is inspected, and what was checked against a live Swarm.
+---
+
+Swarm's control API only answers on manager nodes. A worker's Docker socket
+refuses `/services`, `/nodes`, `/swarm` and the rest, so sockguard has to sit
+on a manager to guard them. This page covers running it there as a **global
+service constrained to managers**, how consumers reach it, and which parts of
+the policy matter for Swarm.
+
+## Shape of the deployment
+
+```text
+manager 1   sockguard task ── /var/run/docker.sock (local manager daemon)
+manager 2   sockguard task ── /var/run/docker.sock
+manager 3   sockguard task ── /var/run/docker.sock
+                  ▲
+   overlay network "sockguard-net", mTLS on :2376
+                  ▲
+        consumers (deploy tool, dashboard, reverse proxy)
+```
+
+- One sockguard task per manager (`mode: global`, `node.role == manager`). A
+  consumer that reaches any task gets the same cluster answers, because every
+  manager serves the same Raft state and forwards writes to the leader.
+- Each task talks to its **own** node's `/var/run/docker.sock`. Nothing crosses
+  the network on the upstream side.
+- Consumers are usually not on the same node, so a shared unix socket is the
+  wrong transport. Listen on TCP inside the overlay network and require client
+  certificates. A non-loopback TCP listener without mTLS needs both
+  `insecure_allow_plain_tcp` and `insecure_allow_unauthenticated_clients`, which
+  is not what you want on a cluster network.
+
+<Callout type="warn">
+Do not add a worker node to the constraint. A worker's daemon cannot serve the
+Swarm API, so a sockguard task there would pass health checks and then fail every
+Swarm request. If a manager is also your only node (single-node swarm), the same
+stack works unchanged.
+</Callout>
+
+## Stack file
+
+```yaml filename="sockguard-stack.yml"
+services:
+  sockguard:
+    image: codeswhat/sockguard:2.4.9   # pin a release tag, not latest
+    command: ["serve", "-c", "/etc/sockguard/sockguard.yaml"]
+    # Primary group = the group that owns /var/run/docker.sock on the managers.
+    user: "65532:${DOCKER_SOCK_GID:?set to the GID of /var/run/docker.sock on every manager}"
+    read_only: true
+    cap_drop:
+      - ALL
+    volumes:
+      - type: bind
+        source: /var/run/docker.sock
+        target: /var/run/docker.sock
+        read_only: true
+    configs:
+      - source: sockguard-policy
+        target: /etc/sockguard/sockguard.yaml
+    secrets:
+      - sockguard-server-cert
+      - sockguard-server-key
+      - sockguard-client-ca
+    networks:
+      - sockguard-net
+    deploy:
+      mode: global
+      placement:
+        constraints:
+          - node.role == manager
+      update_config:
+        order: stop-first
+        failure_action: rollback
+      restart_policy:
+        condition: any
+
+configs:
+  sockguard-policy:
+    file: ./sockguard.yaml
+
+secrets:
+  sockguard-server-cert:
+    file: ./certs/server-cert.pem
+  sockguard-server-key:
+    file: ./certs/server-key.pem
+  sockguard-client-ca:
+    file: ./certs/ca.pem
+
+networks:
+  sockguard-net:
+    driver: overlay
+    attachable: true
+```
+
+Deploy it from a manager:
+
+```bash
+export DOCKER_SOCK_GID=$(stat -c '%g' /var/run/docker.sock)
+docker stack deploy -c sockguard-stack.yml sockguard
+```
+
+What each choice is for:
+
+- **`user: "65532:<gid>"` instead of `group_add`.** `docker stack deploy` rejects
+  `group_add` (`services.sockguard: additional property 'group_add' is not
+  allowed`), so the supplementary-group approach from the
+  [Compose example](/getting-started#docker-compose-recommended) does not carry
+  over. Setting the primary group to the socket's group gives the same access.
+  If you create the service with `docker service create`, `--group <gid>` works
+  as it does for Compose.
+- **Every manager needs the same socket GID.** The stack carries one number. If
+  your managers differ, fix the nodes, or run one stack per GID with a
+  `node.labels` constraint.
+- **`security_opt` is dropped.** `docker stack deploy` prints `Ignoring
+  unsupported options: security_opt`, so `no-new-privileges:true` from the
+  Compose example never reaches the service. `docker service create` has no
+  flag for it either. Nothing on the sockguard side depends on it, but do not
+  count on it being set.
+- **`read_only: true` and `cap_drop: [ALL]` are applied**, as are the `configs`
+  and `secrets`. Swarm mounts secrets under `/run/secrets/<name>` (mode `0444`
+  by default) and the config at the `target` path, which replaces the default
+  `/etc/sockguard/sockguard.yaml` from the image.
+- **The socket mount is read-only on the mount, not on the API.** `read_only:
+  true` on a bind of `docker.sock` does not make the daemon read-only. The
+  policy file is what limits writes.
+- **`stop-first` updates.** Each manager runs one task, so a rolling update
+  briefly leaves that manager without a sockguard task. Consumers reaching the
+  service VIP are routed to a manager that still has one. Use `start-first`
+  only if the published or host port is not bound on the node.
+
+## Policy file
+
+The listener takes its certificates from the swarm secrets, and the rules
+below cover what a deploy tool or dashboard needs against a Swarm.
+
+```yaml filename="sockguard.yaml"
+listen:
+  address: 0.0.0.0:2376
+  tls:
+    cert_file: /run/secrets/sockguard-server-cert
+    key_file: /run/secrets/sockguard-server-key
+    client_ca_file: /run/secrets/sockguard-client-ca
+    dns_names:
+      - deployer          # SAN the client certificate must carry
+
+upstream:
+  socket: /var/run/docker.sock
+
+health:
+  enabled: true
+  path: /health
+
+request_body:
+  service:
+    allowed_bind_mounts: []
+    require_non_root_user: true
+    require_drop_all_capabilities: true
+
+rules:
+  - match: { method: GET, path: "/_ping" }
+    action: allow
+  - match: { method: HEAD, path: "/_ping" }
+    action: allow
+  - match: { method: GET, path: "/version" }
+    action: allow
+  - match: { method: GET, path: "/info" }
+    action: allow
+  - match: { method: GET, path: "/swarm" }
+    action: allow
+  - match: { method: GET, path: "/nodes" }
+    action: allow
+  - match: { method: GET, path: "/nodes/*" }
+    action: allow
+  - match: { method: GET, path: "/services" }
+    action: allow
+  - match: { method: GET, path: "/services/*" }
+    action: allow
+  - match: { method: GET, path: "/tasks" }
+    action: allow
+  - match: { method: GET, path: "/tasks/*" }
+    action: allow
+  - match: { method: GET, path: "/networks/*" }
+    action: allow
+  - match: { method: GET, path: "/distribution/**" }
+    action: allow
+  - match: { method: POST, path: "/services/create" }
+    action: allow
+  - match: { method: POST, path: "/services/*/update" }
+    action: allow
+  - match: { method: DELETE, path: "/services/*" }
+    action: allow
+  - match: { method: "*", path: "/**" }
+    action: deny
+    reason: "no matching allow rule"
+```
+
+Notes on the rules:
+
+- `GET /info` is there because the `docker` CLI calls it before `docker node
+  ls`. `GET /networks/*` and `GET /distribution/**` are there because `docker
+  service create` resolves the network and the image digest first. A tool that
+  talks to the API directly may not need any of the three. `/info` is redacted
+  by the default response policy.
+- Everything is exact-path allow rules and a final deny. Secrets, configs,
+  `/swarm/**` writes, `/nodes/*/update`, containers and exec are all refused by
+  that last rule.
+- Sockguard strips the `/v1.NN/` prefix before matching, so the rules do not
+  carry a version.
+- Check a file offline with `sockguard validate -c sockguard.yaml --strict`. It
+  opens the certificate files, so run it where they exist, or point a copy at
+  local paths. `sockguard verify` is the runtime counterpart and works as a
+  container healthcheck. See [CLI Commands](/getting-started#cli-commands).
+
+## Reaching sockguard from consumers
+
+Consumers on `sockguard-net` use the service name, which resolves to the
+service VIP and balances across managers, or `tasks.sockguard` for one A record
+per task.
+
+```bash
+export DOCKER_HOST=tcp://sockguard:2376
+export DOCKER_TLS_VERIFY=1
+export DOCKER_CERT_PATH=/certs   # ca.pem, cert.pem, key.pem
+docker service ls
+```
+
+The server certificate must list the name the client dials (`sockguard`,
+`tasks.sockguard`, or an IP SAN). The client certificate is checked against the
+`listen.tls` selectors, here `dns_names: [deployer]`. See
+[Configuration](/configuration#mtls-client-selectors) for `common_names`,
+`uri_sans` and key pins.
+
+Consumers outside the cluster can use a published port in `host` mode on each
+manager (`published: 2376, target: 2376, mode: host`). That binds the port only
+on nodes running a task, and only once per node. Keep client-certificate
+checks on, and add `clients.allowed_cidrs` for the networks you expect.
+
+## Which presets cover Swarm
+
+The bundled presets are Compose-oriented and mostly container-centric. Their
+Swarm coverage is narrow, and only one of them can write.
+
+| Preset | Swarm routes it allows | Writes |
+|--------|------------------------|--------|
+| `drydock*.yaml`, `portwing*.yaml` | `GET /services`, `GET /services/*` | none |
+| `homepage.yaml` | `GET /services`, `GET /services/*`, `GET /tasks` | none |
+| `traefik.yaml` | `GET /services`, `GET /tasks`, `GET /nodes/*` (Traefik's task discovery inspects each task's node) | none |
+| `portainer.yaml` | `/swarm/**`, `/services/**`, `GET /tasks/**`, `/nodes/**`, `/configs/**`, `/secrets/**` | yes, inspected (see below) |
+| `readonly.yaml` | every `GET` | none |
+
+Every preset's listener is a loopback TCP address by default, so none of them
+works unmodified as the swarm policy above. Start from the preset your consumer
+needs and replace its `listen` block with the mTLS one. Presets are listed in
+[Presets](/presets).
+
+`portainer.yaml` is deliberately wide and sets `insecure_allow_body_blind_writes`
+and `insecure_allow_read_exfiltration`. For a manager-node deployment that only
+needs to deploy and update services, the rule list above is a tighter starting
+point.
+
+## What `POST /services/create` and `/update` check
+
+Swarm service writes run through `request_body.service`, and the defaults are
+already restrictive. With no extra configuration sockguard denies a service that:
+
+- attaches the `host` network (by name, ID or ID prefix),
+- bind-mounts a path outside `request_body.service.allowed_bind_mounts`
+  (default: none), or uses a `{{ ... }}` template in a bind source,
+- uses an image outside Docker Hub official images
+  (`allow_official: true` by default),
+- adds capabilities outside `allowed_capabilities` or sets sysctls without
+  `allow_sysctls`.
+
+Opt-in rails mirror the container-create ones: `require_non_root_user`,
+`require_no_new_privileges`, `require_readonly_rootfs`,
+`require_drop_all_capabilities`, seccomp, AppArmor and SELinux denials,
+`allowed_registries`, `allowed_images`, published-port and network allowlists,
+log-driver allowlists and CPU limit requirements. The full list is in
+[Configuration](/configuration#request-body-policy-reference). Image trust
+(`image_trust`) verifies the service's `ContainerSpec` image too.
+
+Two practical points for CLI users:
+
+- **`require_no_new_privileges` rejects every service the Docker CLI creates.**
+  Neither `docker service create` nor `docker stack deploy` can set
+  `ContainerSpec.Privileges.NoNewPrivileges`. Turn it on only if every
+  consumer talks to the API directly.
+- **Registry allowlists need a registry.** Official images pass by default.
+  A private registry needs `allowed_registries` (or `allowed_images` for exact
+  references with a tag or digest) before its images are accepted.
+
+Swarm cluster writes have their own block, `request_body.swarm`. `init`, `join`
+and `update` refuse `ForceNewCluster`, external CAs, token and unlock-key
+rotation, autolock and signing-CA changes unless the matching `allow_*` key is
+set, `POST /swarm/join` needs `allowed_join_remote_addrs`, `unlock` is denied
+by default, and `POST /nodes/*/update` blocks role, availability, name and
+label changes unless `request_body.node` allows them. None of those routes is
+in the example above. The details are in [Security](/security).
+
+## What was verified
+
+Checked against a live Swarm on a throwaway single-node cluster (Docker Engine
+29.9.1, API 1.56) running the stable `codeswhat/sockguard` release (2.4.9) as a
+global service constrained to managers:
+
+- The service starts with the bind-mounted socket, the swarm config at
+  `/etc/sockguard/sockguard.yaml`, the three swarm secrets, `user:
+  65532:<gid>`, `read_only` and `cap_drop: ALL`, and reports the upstream
+  healthy.
+- A client holding the `deployer` certificate listed nodes and services over
+  mTLS.
+- `docker secret ls` was denied by the final rule. Creating a service on the
+  host network, as root, or with a `/etc` bind mount was denied with the
+  `service denied: ...` reasons above. A non-root service with `cap_drop: ALL`
+  on an official image was created.
+- `docker stack deploy` rejected `group_add` and ignored `security_opt`, as
+  noted above. The service it created carried `User`, `ReadOnly`,
+  `CapabilityDrop`, the bind mount, the secrets and the config.
+
+Checked against Docker's documentation only, not run: `docker service create`
+flag spellings (`--mode global`, `--constraint node.role==manager`, `--mount`,
+`--group`, `--cap-drop`, `--read-only`, `--secret`, `--config`, `--network`,
+`--publish mode=host`) and the Compose `deploy` keys (`mode`,
+`placement.constraints`, `restart_policy`, `update_config.order`). The test engine
+could not create an overlay network (its host has no `br_netfilter`), so the
+live run used host networking with the same listener and policy. The overlay
+network, service VIP and `tasks.sockguard` DNS names, multi-manager behaviour,
+the rolling update and the host-mode published port were not exercised.
+
+The live run used the stable 2.4.9 image. The configuration on this page also
+passes `sockguard validate --strict` built from the current v3 tree, but a v3
+image was not run on the swarm.
+
+<Callout type="warn">
+`docker service rm` through sockguard currently returns a `502` with `upstream
+Docker response rejected by sockguard policy` even though the daemon removes the
+service. Seen on 2.4.9, and the current v3.2 source has the same path: the
+response filter parses the empty `200` body that `DELETE /services/{id}`
+returns as JSON. Until that is fixed, treat a `502` on service
+removal as a success and confirm with `docker service ls`.
+</Callout>

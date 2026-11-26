@@ -301,6 +301,10 @@ html {
 #nd-page figure.shiki code {
   color: var(--shiki-dark, var(--code-fg)) !important;
 }
+/* Shiki's comment gray (#6A737D) is 3.6:1 on the code background; lift it to AA. */
+#nd-page figure.shiki span[style*="--shiki-dark:#6A737D" i] {
+  color: #9ca3af !important;
+}
 #nd-page figure.shiki,
 #nd-page .prose figure {
   background: var(--dd-bg-code);

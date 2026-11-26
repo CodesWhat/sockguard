@@ -207,6 +207,8 @@ func (c LibpodContainerCreateRequestBodyConfig) ToFilterOptions() filter.LibpodC
 		AllowDeviceCgroupRules:            c.AllowDeviceCgroupRules,
 		AllowedDeviceCgroupRules:          c.AllowedDeviceCgroupRules,
 		AllowDeviceRequests:               c.AllowDeviceRequests,
+		AllowedGPUs:                       c.AllowedGPUs,
+		AllowedCDIDevices:                 c.AllowedCDIDevices,
 		DenyUnconfinedSystemPaths:         c.DenyUnconfinedSystemPaths,
 		AllowUnifiedCgroupSettings:        c.AllowUnifiedCgroupSettings,
 		AllowEnvHost:                      c.AllowEnvHost,
@@ -487,6 +489,12 @@ func (c MutationsConfig) ToFilterOptions() filter.MutationOptions {
 				To:    r.RemapImage.To,
 			}
 		}
+		if r.RemapBindSource != nil {
+			opt.RemapBindSource = &filter.BindSourceRemapMutationOptions{
+				From: r.RemapBindSource.From,
+				To:   r.RemapBindSource.To,
+			}
+		}
 		rules = append(rules, opt)
 	}
 	return filter.MutationOptions{Rules: rules}
@@ -506,6 +514,8 @@ func toFilterAllowedDeviceRequests(entries []AllowedDeviceRequest) []filter.Allo
 			Driver:              e.Driver,
 			AllowedCapabilities: e.AllowedCapabilities,
 			MaxCount:            e.MaxCount,
+			DeviceIDs:           e.DeviceIDs,
+			Count:               e.Count,
 		})
 	}
 	return out

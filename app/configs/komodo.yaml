@@ -1,0 +1,87 @@
+# Sockguard, Komodo Periphery Preset
+#
+# Least-privilege access for the Komodo Periphery agent's monitoring surface:
+# the container, image, network and volume inventory and stats Komodo Core
+# polls, container inspect, image history and container logs.
+# Allows: ping, version, container list + inspect + stats + logs, image list +
+# inspect + history, network list + inspect, volume list + inspect.
+# Denies: every write and every other read. That includes deployments, stacks
+# and builds (container create, start, stop, restart, pause, remove, rename,
+# image pull and remove, prune, build, docker compose), the terminal features
+# (exec and attach), Swarm mode, and system disk-usage and event reads.
+# Komodo actions that need those calls fail with a deny.
+#
+# Derived from Komodo v2.3.4, bin/periphery/src (docker/container.rs,
+# docker/image.rs, docker/network.rs, docker/volume.rs, docker/stats.rs,
+# api/container/mod.rs, api/docker.rs). Periphery reads the inventory through
+# the bollard client and shells out to the docker CLI for stats and logs.
+
+upstream:
+  socket: /var/run/docker.sock
+
+log:
+  level: info
+  format: json
+  access_log: true
+
+health:
+  enabled: true
+  path: /health
+
+# Komodo reads container logs (docker logs, which the CLI serves from
+# GET /containers/{id}/logs), an explicit read-exfiltration route.
+insecure_allow_read_exfiltration: true
+
+# Response redaction stays on (the defaults). Komodo's inventory views read
+# names, ids, images, state, labels and ports, none of which are redacted.
+# Container env, mount paths and network addresses stay redacted, so Komodo's
+# container detail view shows placeholder or empty values for those.
+
+rules:
+  # The docker CLI pings the daemon to negotiate the API version and reads
+  # /version for client and server compatibility.
+  - match: { method: GET, path: "/_ping" }
+    action: allow
+  - match: { method: HEAD, path: "/_ping" }
+    action: allow
+  - match: { method: GET, path: "/version" }
+    action: allow
+
+  # Container reads: list, inspect, one-shot stats (docker stats --no-stream
+  # and bollard stats with stream=false) and logs (docker logs).
+  - match: { method: GET, path: "/containers/json" }
+    action: allow
+  - match: { method: GET, path: "/containers/*/json" }
+    action: allow
+  - match: { method: GET, path: "/containers/*/stats" }
+    action: allow
+  - match: { method: GET, path: "/containers/*/logs" }
+    action: allow
+
+  # Image reads: list, inspect and history. Image names can be namespaced
+  # (ghcr.io/owner/repo:tag), so the middle is matched with `**`. The trailing
+  # /json or /history segment keeps the exfiltration validator happy by not
+  # matching /images/get or /images/*/get (raw tarball export).
+  - match: { method: GET, path: "/images/json" }
+    action: allow
+  - match: { method: GET, path: "/images/**/json" }
+    action: allow
+  - match: { method: GET, path: "/images/**/history" }
+    action: allow
+
+  # Network reads: list and inspect (verbose).
+  - match: { method: GET, path: "/networks" }
+    action: allow
+  - match: { method: GET, path: "/networks/*" }
+    action: allow
+
+  # Volume reads: list and inspect.
+  - match: { method: GET, path: "/volumes" }
+    action: allow
+  - match: { method: GET, path: "/volumes/*" }
+    action: allow
+
+  # Deny everything else
+  - match: { method: "*", path: "/**" }
+    action: deny
+    reason: "not allowed by komodo preset"

@@ -670,7 +670,17 @@ var responseTable = []tableEntry{
 
 // dispatchTableEntry walks responseTable and calls the appropriate modify function
 // for the first entry whose path/inspect predicate matches normPath.
+//
+// Table-driven redaction is a read-side feature, so it only runs on GET. A
+// write on a table path (DELETE /services/{id}, POST /services/create) returns
+// an empty or non-resource body, and decoding that as the resource rejects or
+// rewrites a response the daemon got right. A GET that comes back 2xx with an
+// empty body is still rejected, on purpose: it is malformed, and relaying it
+// unredacted would fail open.
 func (f *Filter) dispatchTableEntry(normPath string, resp *http.Response) error {
+	if resp.Request.Method != http.MethodGet {
+		return nil
+	}
 	for _, e := range responseTable {
 		matched := (e.path != "" && normPath == e.path) ||
 			(e.inspect != nil && e.inspect(normPath))

@@ -349,7 +349,7 @@ func (c *reloadCoordinator) reload() {
 	// enforcing a stale clients.allowed_cidrs.
 	var newAdminHandler http.Handler
 	if c.adminSwappable != nil {
-		newAdminHandler = buildAdminHandlerChain(newCfg, c.logger, c.auditLogger, c.versioner)
+		newAdminHandler = buildAdminHandlerChain(newCfg, c.logger, c.auditLogger, c.versioner, c.runtime.otlp)
 	}
 
 	warnIfCreateAllowedWithResponseRedaction(newCfg, c.logger)

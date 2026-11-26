@@ -207,7 +207,7 @@ func TestBindListenersCaptureUnixSocketIdentityForEveryRole(t *testing.T) {
 	adminCfg := testServeConfig()
 	adminCfg.Admin.Enabled = true
 	adminCfg.Admin.Listen.Socket = "/run/admin.sock"
-	admin, err := bindAdminServer(adminCfg, newDiscardLogger(), nil, nil, deps, newListenerStatusBoard())
+	admin, err := bindAdminServer(adminCfg, newDiscardLogger(), nil, nil, deps, newListenerStatusBoard(), nil)
 	if err != nil {
 		t.Fatalf("bind admin listener: %v", err)
 	}
@@ -356,7 +356,7 @@ func TestBindAdminServerStampsDedicatedAdminIdentity(t *testing.T) {
 	cfg := bindBarrierConfig()
 	deps := newServeTestDeps()
 	deps.createAdminListener = func(*config.Config) (net.Listener, error) { return &serveTestListener{}, nil }
-	member, err := bindAdminServer(cfg, newDiscardLogger(), nil, nil, deps, newListenerStatusBoard())
+	member, err := bindAdminServer(cfg, newDiscardLogger(), nil, nil, deps, newListenerStatusBoard(), nil)
 	if err != nil {
 		t.Fatalf("bindAdminServer: %v", err)
 	}

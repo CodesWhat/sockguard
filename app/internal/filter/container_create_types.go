@@ -18,6 +18,13 @@ type AllowedDeviceRequestEntry struct {
 	Driver              string
 	AllowedCapabilities [][]string
 	MaxCount            *int
+	// DeviceIDs, when non-empty, pins the request to an exact set of device
+	// IDs (for example CDI names such as nvidia.com/gpu=0). Every ID in the
+	// request must equal a listed ID byte for byte, and a request with no IDs
+	// or with a non-zero Count (Docker rejects both together) is refused.
+	DeviceIDs []string
+	// Count, when non-nil, requires the request Count to equal it exactly.
+	Count *int
 }
 
 // allowedDeviceRequestEntry is the pre-processed form stored in
@@ -26,6 +33,8 @@ type allowedDeviceRequestEntry struct {
 	driver              string     // lowercase
 	allowedCapabilities [][]string // each inner slice sorted + deduped
 	maxCount            *int
+	deviceIDs           []string // exact, case-sensitive; empty means unconstrained
+	count               *int     // exact request Count; nil means unconstrained
 }
 
 // dockerDeviceRequest mirrors the Docker API HostConfig.DeviceRequests element.

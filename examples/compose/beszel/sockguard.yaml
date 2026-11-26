@@ -1,0 +1,71 @@
+# Sockguard config for the Beszel agent, mirrors the shipped beszel preset.
+# Copy of app/configs/beszel.yaml; embedded here so the compose stack
+# is self-contained. Update both files together if you change rules.
+#
+# Least-privilege access for the Beszel agent's default container monitoring
+# (container list, per-container stats, health, image update checks).
+# Allows: ping, version, info, container list + inspect + stats, image inspect.
+# Denies: every write and every other read. That includes the hub's container
+# log view (GET /containers/{id}/logs), which is not supported by this base
+# preset because logs are a read-exfiltration route. See the Beszel section
+# in docs/content/docs/presets.mdx to opt in.
+# Podman and Swarm are untested with this preset.
+#
+# Derived from henrygd/beszel v0.21.2, agent/docker.go and
+# agent/docker_registry.go.
+
+upstream:
+  socket: /var/run/docker.sock
+
+log:
+  level: info
+  format: json
+  access_log: true
+
+health:
+  enabled: true
+  path: /health
+
+# Response redaction stays on (the defaults). The agent reads names, ids,
+# image, status, labels and stats, none of which are redacted. It deletes
+# Config.Env from inspect responses before forwarding them to the hub, and
+# sockguard already redacts container env, so nothing is lost.
+
+rules:
+  # The agent never pings, but sockguard warns when a rule set refuses
+  # /_ping because most Docker clients and health probes call it.
+  - match: { method: GET, path: "/_ping" }
+    action: allow
+  - match: { method: HEAD, path: "/_ping" }
+    action: allow
+
+  # Engine identity: ServerVersion gates one-shot stats (Docker 25.0.0+) and
+  # Podman detection; Info feeds the host details panel.
+  - match: { method: GET, path: "/version" }
+    action: allow
+  - match: { method: GET, path: "/info" }
+    action: allow
+
+  # Container reads: list each poll, stats per running container, inspect for
+  # Podman health fallback and the hub's container details view.
+  - match: { method: GET, path: "/containers/json" }
+    action: allow
+  - match: { method: GET, path: "/containers/*/json" }
+    action: allow
+  - match: { method: GET, path: "/containers/*/stats" }
+    action: allow
+
+  # Image update check (on by default, disabled with DOCKER_IMAGE_CHECK=false).
+  # The agent path-escapes the image reference, so slashes arrive as %2F and
+  # sockguard decodes them before matching.
+  # The image list shares the shape of the glob, so deny it first.
+  - match: { method: GET, path: "/images/json" }
+    action: deny
+    reason: "not allowed by beszel preset"
+  - match: { method: GET, path: "/images/**/json" }
+    action: allow
+
+  # Deny everything else
+  - match: { method: "*", path: "/**" }
+    action: deny
+    reason: "not allowed by beszel preset"
