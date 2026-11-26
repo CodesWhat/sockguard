@@ -1899,6 +1899,10 @@ type HealthConfig struct {
 type HealthWatchdogConfig struct {
 	Enabled  bool   `mapstructure:"enabled"`
 	Interval string `mapstructure:"interval"`
+	// ExitAfter makes the process exit non-zero once the upstream has been
+	// continuously unreachable for this long, so an orchestrator restarts it.
+	// "0s" (the default) never exits.
+	ExitAfter string `mapstructure:"exit_after"`
 }
 
 // HealthReadinessConfig configures the optional readiness endpoint. Unlike the
@@ -2286,8 +2290,9 @@ func Defaults() Config {
 			Enabled: true,
 			Path:    "/health",
 			Watchdog: HealthWatchdogConfig{
-				Enabled:  false,
-				Interval: "5s",
+				Enabled:   false,
+				Interval:  "5s",
+				ExitAfter: "0s",
 			},
 			Readiness: HealthReadinessConfig{
 				Enabled:  false,

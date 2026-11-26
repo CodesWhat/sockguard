@@ -374,6 +374,9 @@ func runServeWithDeps(cmd *cobra.Command, args []string, deps *serveDeps) error 
 
 	var serveFailure error
 	select {
+	case cause := <-runtime.watchdogExit:
+		logger.Error("upstream watchdog exit threshold reached, shutting down", "error", cause)
+		serveFailure = fmt.Errorf("watchdog: %w", cause)
 	case sig := <-sigCh:
 		logger.Info("shutdown signal received", "signal", sig.String())
 	case result := <-fanIn:
@@ -627,6 +630,9 @@ type serveRuntime struct {
 	metrics        *metrics.Registry
 	health         *health.Monitor
 	readiness      *health.Monitor
+	// watchdogExit receives one error when health.watchdog.exit_after trips.
+	// serve selects on it alongside the signal and listener-failure cases.
+	watchdogExit chan error
 	// resolver is the shared upstream dial seam (endpoint selection, pooling,
 	// TLS, failover). All request paths and side channels route through it so
 	// failover is coherent across the proxy, hijack, and inspect calls.
@@ -656,7 +662,7 @@ type serveRuntime struct {
 }
 
 func newServeRuntime(cfg *config.Config, logger *slog.Logger, deps *serveDeps) (*serveRuntime, error) {
-	runtime := &serveRuntime{ownerNameLocks: ownership.NewKeyedLocks(0, 0)}
+	runtime := &serveRuntime{ownerNameLocks: ownership.NewKeyedLocks(0, 0), watchdogExit: make(chan error, 1)}
 	if cfg.Metrics.Enabled {
 		runtime.metrics = metrics.NewRegistry()
 	}
@@ -710,8 +716,19 @@ func (r *serveRuntime) startWatchdog(ctx context.Context, cfg *config.Config) fu
 		return func() {}
 	}
 
+	var tracker *health.DownTracker
+	if exitAfter, err := time.ParseDuration(cfg.Health.Watchdog.ExitAfter); err == nil && exitAfter > 0 {
+		tracker = health.NewDownTracker(exitAfter)
+	}
+
 	watchdogCtx, cancel := context.WithCancel(ctx)
 	r.health.StartWatchdog(watchdogCtx, interval, func(state health.WatchdogState) {
+		if down, tripped := tracker.Observe(state); tripped && r.watchdogExit != nil {
+			select {
+			case r.watchdogExit <- fmt.Errorf("upstream unreachable for %s (health.watchdog.exit_after=%s)", down.Round(time.Millisecond), cfg.Health.Watchdog.ExitAfter):
+			default:
+			}
+		}
 		if r.metrics == nil {
 			return
 		}
