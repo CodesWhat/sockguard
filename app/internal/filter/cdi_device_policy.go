@@ -6,3 +6,9 @@ import "regexp"
 // Keep the grammar aligned with tags.cncf.io/container-device-interface's
 // parser without adding its implementation to the request path.
 var qualifiedCDIDevice = regexp.MustCompile(`^[A-Za-z](?:[A-Za-z0-9_.-]*[A-Za-z0-9])?/[A-Za-z](?:[A-Za-z0-9_.-]*[A-Za-z0-9])?=[A-Za-z0-9](?:[A-Za-z0-9_.:-]*[A-Za-z0-9])?$`)
+
+// IsQualifiedCDIDevice reports whether name is a fully qualified CDI device
+// name (vendor/class=name).
+func IsQualifiedCDIDevice(name string) bool {
+	return qualifiedCDIDevice.MatchString(name)
+}
