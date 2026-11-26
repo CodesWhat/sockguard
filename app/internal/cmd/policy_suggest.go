@@ -87,7 +87,7 @@ func runPolicySuggest(cmd *cobra.Command, _ []string) error {
 	if policySuggestFrom == "-" {
 		in = cmd.InOrStdin()
 	} else {
-		f, err := os.Open(policySuggestFrom)
+		f, err := os.Open(policySuggestFrom) // #nosec G304 -- access log path is an explicit local CLI flag.
 		if err != nil {
 			return fmt.Errorf("access log: %w", err)
 		}

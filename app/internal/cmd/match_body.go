@@ -64,7 +64,7 @@ func inspectMatchBody(cmd *cobra.Command, source string, req *http.Request, poli
 		out.Source = "stdin"
 		reader = io.NopCloser(cmd.InOrStdin())
 	} else {
-		f, err := os.Open(source)
+		f, err := os.Open(source) // #nosec G304 -- body file is an explicit local CLI argument.
 		if err != nil {
 			return nil, fmt.Errorf("body file: %w", err)
 		}

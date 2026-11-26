@@ -105,8 +105,10 @@ expect 403 POST /containers/create
 expect 403 DELETE /containers/does-not-exist
 expect 403 GET /images/json
 
-# The same denial must hold on the native libpod surface.
-expect 200 GET /libpod/containers/json
+# The same denial must hold on the native libpod surface. Podman's libpod
+# router only serves versioned paths, so the allow probe carries a version
+# prefix (sockguard strips it before matching, same as the Docker routes).
+expect 200 GET /v5.0.0/libpod/containers/json
 expect 403 POST /libpod/containers/create
 
 echo "quadlet smoke: all checks passed"
