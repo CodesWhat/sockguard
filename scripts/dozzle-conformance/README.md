@@ -47,7 +47,16 @@ Options: `--sockguard-image REF` (allowlisted sockguard references only, default
 `codeswhat/sockguard:latest`), `--dozzle-image amir20/dozzle:<tag>`, `--out DIR`.
 
 The script shells out to `docker` and never starts an engine. For a remote test
-engine, put a `docker` shim first on `PATH` that forwards to it.
+engine, put a `docker` shim first on `PATH` that forwards to it (the shim must
+drop its own directory from `PATH` before calling the real CLI, or it recurses).
+`DOZZLE_PROJECT_PREFIX` replaces the default `sg-dozzle` compose project prefix so
+concurrent runs on a shared engine stay separate. Steps that read state back
+through a remote relay (the access-log snapshot and the forbidden probes) retry
+on an empty result, because the relay occasionally returns nothing.
+
+First real run: 2026-11-26 against the NAS test engine with
+`codeswhat/sockguard:latest` (2.4.3) and `amir20/dozzle:v11.5.0`, all assertions
+passed.
 
 ## Updating known-routes.json
 
