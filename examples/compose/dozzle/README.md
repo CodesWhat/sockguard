@@ -26,6 +26,14 @@ Dozzle reads its Docker endpoint from `DOCKER_HOST`, and the proxy has to be rea
 
 Container actions and the shell (`DOZZLE_ENABLE_ACTIONS`, `DOZZLE_ENABLE_SHELL`) are not supported by this preset. Sockguard refuses the calls they make, so turning them on gives you buttons that fail. Swarm mode and agent mode are untested.
 
+## Enabling container actions
+
+To get Dozzle's start, stop and restart buttons, point the sockguard service at `app/configs/dozzle-with-actions.yaml` (or copy it over `sockguard.yaml`) and set `DOZZLE_ENABLE_ACTIONS=true` on the Dozzle service. The preset adds `POST /containers/*/start`, `stop` and `restart` and nothing else.
+
+- Container remove, kill, create and exec stay denied. Dozzle's server route accepts a `remove` action, but its UI never offers one.
+- `DOZZLE_ENABLE_ACTIONS` also switches on Dozzle's image update, host prune and self-update buttons. They need image pulls, container create and prune, so they fail with a refusal.
+- Anyone who can open the UI can restart every container Dozzle lists. Set `DOZZLE_AUTH_PROVIDER`.
+
 ## Behavior notes
 
 - Mount paths and network addresses stay redacted (the sockguard defaults), so Dozzle's container details show placeholders or empty values for them. Container env is redacted too, and Dozzle doesn't read it.

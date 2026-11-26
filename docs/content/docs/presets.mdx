@@ -1,6 +1,6 @@
 ---
 title: Presets
-description: Ready-made sockguard configs for drydock, drydock with self-update, drydock with compose, drydock with build, drydock with mediated build, Portwing, Portwing with exec, Portwing with compose, Portwing with build, Portwing with mediated build, Traefik, Portainer, Watchtower, Homepage, Homarr, Dozzle, Diun, Autoheal, GitHub Actions and GitLab runners, the CIS Docker Benchmark, read-only dashboards, and Podman read-only monitoring.
+description: Ready-made sockguard configs for drydock, drydock with self-update, drydock with compose, drydock with build, drydock with mediated build, Portwing, Portwing with exec, Portwing with compose, Portwing with build, Portwing with mediated build, Traefik, Portainer, Watchtower, Homepage, Homarr, Dozzle, Dozzle with actions, Diun, Autoheal, GitHub Actions and GitLab runners, the CIS Docker Benchmark, read-only dashboards, and Podman read-only monitoring.
 ---
 
 Sockguard ships with ready-made config presets for common Docker consumers. All presets are bundled in the container image at `/etc/sockguard/`.
@@ -492,6 +492,27 @@ addresses. Container actions (`DOZZLE_ENABLE_ACTIONS`) and the shell
 (`DOZZLE_ENABLE_SHELL`) are not supported and sockguard refuses the calls they
 make. Dozzle's volume and disk-size readout (`GET /system/df`) is denied and
 Dozzle carries on without it. Swarm mode and agent mode are untested.
+
+## Dozzle with Actions (`dozzle-with-actions.yaml`)
+
+Extends the Dozzle preset with the buttons behind `DOZZLE_ENABLE_ACTIONS`.
+
+**Use for:** Dozzle where operators start, stop and restart containers from the UI.
+
+```yaml
+# Extends dozzle.yaml with:
+# Allows: POST /containers/{id}/start, /stop, /restart
+# Denies: container remove, kill, rename, update, create, exec, image pulls,
+#         prune and Dozzle's self-update
+```
+
+Dozzle's server route also accepts a `remove` action, but its UI only offers
+start, stop and restart, so `DELETE /containers/{id}` stays denied. The same
+flag also switches on Dozzle's image-update flow (pull, recreate, roll back),
+the host prune buttons and its self-update. Those need container create and
+remove, image pulls and prune, so they fail with a refusal under this preset.
+Anyone who can open Dozzle's UI can restart every container it lists, so put
+Dozzle behind its own authentication (`DOZZLE_AUTH_PROVIDER`).
 
 ## Diun (`diun.yaml`)
 
