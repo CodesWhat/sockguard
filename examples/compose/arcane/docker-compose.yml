@@ -1,4 +1,4 @@
-# examples/compose/dozzle/docker-compose.yml
+# examples/compose/arcane/docker-compose.yml
 #
 # Sockguard + Arcane, TCP mode (plain, private Docker network only).
 # Arcane reaches Docker through DOCKER_HOST, which takes a TCP URL, so
