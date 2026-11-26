@@ -199,6 +199,7 @@ export const DOCS_SEARCH_ITEMS: [page: number, heading: string, anchor: string][
   [11,"Useful PromQL","useful-promql"],
   [11,"Active upstream watchdog","active-upstream-watchdog"],
   [11,"Example watchdog log lines","example-watchdog-log-lines"],
+  [11,"systemd notifications","systemd-notifications"],
   [11,"Readiness probe","readiness-probe"],
   [11,"Trace and log correlation","trace-and-log-correlation"],
   [11,"Field reference","field-reference"],

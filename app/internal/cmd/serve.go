@@ -39,6 +39,7 @@ import (
 	"github.com/codeswhat/sockguard/v3/app/internal/ratelimit"
 	"github.com/codeswhat/sockguard/v3/app/internal/reload"
 	"github.com/codeswhat/sockguard/v3/app/internal/responsefilter"
+	"github.com/codeswhat/sockguard/v3/app/internal/sdnotify"
 	"github.com/codeswhat/sockguard/v3/app/internal/upstream"
 	"github.com/codeswhat/sockguard/v3/app/internal/upstreamflavor"
 	"github.com/codeswhat/sockguard/v3/app/internal/version"
@@ -370,6 +371,10 @@ func runServeWithDeps(cmd *cobra.Command, args []string, deps *serveDeps) error 
 	stopReload := startConfigReload(cmd.Context(), cfg, cfgFile, coordinator, logger)
 	defer stopReload()
 
+	notifier := sdnotify.New(os.Getenv)
+	stopNotify := startSystemdNotify(cmd.Context(), notifier, runtime, logger)
+	defer stopNotify()
+
 	sigCh := make(chan os.Signal, 1)
 	deps.notifySignals(sigCh, syscall.SIGTERM, syscall.SIGINT)
 
@@ -399,6 +404,9 @@ func runServeWithDeps(cmd *cobra.Command, args []string, deps *serveDeps) error 
 		}
 	}
 	stopWatchdog()
+	if err := notifier.Stopping(); err != nil {
+		logger.Warn("systemd STOPPING notification failed", "error", err)
+	}
 
 	shutdownServers(cmd.Context(), deps, cfg, members, adminMember, runtime.metrics, board, logger)
 	logger.Info("sockguard stopped")
@@ -736,6 +744,35 @@ func (r *serveRuntime) startWatchdog(ctx context.Context, cfg *config.Config) fu
 		}
 		r.metrics.ObserveUpstreamWatchdog(state.Up)
 		r.metrics.SetUpstreamSocketState(state.Up)
+	})
+	return cancel
+}
+
+// startSystemdNotify sends READY=1 and, when the unit sets WatchdogSec=, starts
+// WATCHDOG=1 pings at half WATCHDOG_USEC. Pings stop while the active upstream
+// watchdog reports the upstream down, so systemd times the service out and
+// restarts it. It is a no-op without NOTIFY_SOCKET.
+func startSystemdNotify(ctx context.Context, n *sdnotify.Notifier, r *serveRuntime, logger *slog.Logger) func() {
+	if n == nil {
+		return func() {}
+	}
+	if err := n.Ready(); err != nil {
+		logger.Warn("systemd READY notification failed", "error", err)
+	}
+	interval, ok := sdnotify.WatchdogInterval(os.Getenv, os.Getpid())
+	if !ok {
+		return func() {}
+	}
+	pingCtx, cancel := context.WithCancel(ctx)
+	healthy := func() bool {
+		if r == nil || r.health == nil {
+			return true
+		}
+		state, known := r.health.State()
+		return !known || state.Up
+	}
+	go n.KeepAlive(pingCtx, interval, healthy, func(err error) {
+		logger.Warn("systemd WATCHDOG notification failed", "error", err)
 	})
 	return cancel
 }
