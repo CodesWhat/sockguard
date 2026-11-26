@@ -1,6 +1,6 @@
 ---
 title: Presets
-description: Ready-made sockguard configs for drydock, drydock with self-update, drydock with compose, drydock with build, drydock with mediated build, Portwing, Portwing with exec, Portwing with compose, Portwing with build, Portwing with mediated build, Traefik, Portainer, Watchtower, Homepage, Homarr, Dozzle, Dozzle with actions, Dozzle with shell, Diun, Autoheal, GitHub Actions and GitLab runners, the CIS Docker Benchmark, read-only dashboards, and Podman read-only monitoring.
+description: Ready-made sockguard configs for drydock, Uptime Kuma, drydock with self-update, drydock with compose, drydock with build, drydock with mediated build, Portwing, Portwing with exec, Portwing with compose, Portwing with build, Portwing with mediated build, Traefik, Portainer, Watchtower, Homepage, Homarr, Dozzle, Dozzle with actions, Dozzle with shell, Diun, Autoheal, GitHub Actions and GitLab runners, the CIS Docker Benchmark, read-only dashboards, and Podman read-only monitoring.
 ---
 
 Sockguard ships with ready-made config presets for common Docker consumers. All presets are bundled in the container image at `/etc/sockguard/`.
@@ -552,6 +552,27 @@ refused, including the official sockguard image. The Attach tab
 and the exec allowlist does not cover it, so it stays denied and the tab fails
 with a refusal. Dozzle never calls exec inspect, so `GET /exec/{id}/json` stays
 denied.
+
+## Uptime Kuma (`uptime-kuma.yaml`)
+
+Least-privilege access for [Uptime Kuma](https://github.com/louislam/uptime-kuma)'s Docker Container monitor.
+
+**Use for:** Uptime Kuma monitoring container state and healthchecks, and nothing else.
+
+```yaml
+# Allows: GET container list, GET container inspect
+# Denies: every other Docker API route, including ping, version, events and logs
+```
+
+Derived from Uptime Kuma 2.5.12 (`server/model/monitor.js` and `server/docker.js`).
+The monitor sends one `GET /containers/{name}/json` per check and the Docker
+Host "Test" button sends `GET /containers/json?all=true`. Uptime Kuma sends no
+ping or version call, so the preset allows neither. It reads only the inspect
+`State` block, so the default response redaction (env, mount paths, network
+addresses) doesn't affect it, and no `insecure_*` flag is set. Uptime Kuma has
+no container actions, log view or exec feature; the Docker Container monitor
+and the Host test are the supported workflows and everything else is refused.
+Only 2.5.12 was checked. 1.x and the 3.0 betas were not.
 
 ## Diun (`diun.yaml`)
 
