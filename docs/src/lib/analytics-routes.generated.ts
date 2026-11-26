@@ -7,6 +7,7 @@ const routes = [
   "/compare/linuxserver",
   "/compare/tecnativa",
   "/compare/wollomatic",
+  "/compare/yorvogate",
   "/docs",
   "/docs/admin",
   "/docs/cis-docker-benchmark",

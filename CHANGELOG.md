@@ -50,6 +50,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Add YorvoGate as a sixth comparison column, a `/compare/yorvogate` page, footer and llms.txt links, read from its README, configuration reference and SUPPORT.md at v0.4.0 on 2026-11-26. A cell says "No" only where those documents don't describe the feature, and neither the table nor the page makes a parity claim in either direction.
 - Refresh the competitor comparison from primary sources read 2026-11-26: Tecnativa v0.6.0, LinuxServer 3.4.8-r0-ls107, wollomatic 1.14.0, 11notes v2.2.0 and CetusGuard v1.2.0. Add a query-string rule matching row (CetusGuard matches the query since v1.2.0; the others match the path only), correct the CetusGuard pages that said it filters on method and path only, add a sourced note on YorvoGate v0.4.0 without a parity claim, and drop the Tecnativa highlight built on issue #180, which is one unconfirmed report the maintainer could not reproduce. The README and docs no longer promise that a claim is never more than one release stale.
 - Route warnings now cover libpod manifests, and the known-route catalog is pinned to Engine API 1.57 (docker-v29.10.0) and Podman 6.2.0.
 - Link codeswhat.com from the site and docs footers and the README, and add a Get started button to the landing hero that jumps to the install section.

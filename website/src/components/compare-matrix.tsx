@@ -31,6 +31,7 @@ const TOOLS: Tool[] = [
   { name: "wollomatic", slug: "wollomatic", key: "wollomatic" },
   { name: "11notes", slug: "11notes", key: "elevenNotes" },
   { name: "CetusGuard", slug: "cetusguard", key: "cetusguard" },
+  { name: "YorvoGate", slug: "yorvogate", key: "yorvogate" },
 ];
 
 const REGION_LABEL = "Sockguard comparison matrix. Scroll sideways to see every column.";

@@ -266,6 +266,7 @@ test("the README comparison table carries the same rows and cells as the site", 
         row.wollomatic,
         row.elevenNotes,
         row.cetusguard,
+        row.yorvogate,
         row.sockguard,
       ],
       `README row "${row.feature}" differs from comparison-rows.ts`,
@@ -276,7 +277,7 @@ test("the README comparison table carries the same rows and cells as the site", 
 test("each compare page names itself an alternative in its title, H1 and lead", () => {
   const dir = new URL("../lib/comparison-route-data/", import.meta.url);
   const routeFiles = readdirSync(dir).filter((name) => name.endsWith(".tsx"));
-  assert.equal(routeFiles.length, 5);
+  assert.equal(routeFiles.length, 6);
   for (const name of routeFiles) {
     const source = readFileSync(new URL(name, dir), "utf8");
     assert.match(source, /metadataTitle: "[^"]*alternative/, `${name} title`);
