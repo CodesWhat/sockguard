@@ -1,6 +1,6 @@
 ---
 title: Presets
-description: Ready-made sockguard configs for drydock, Beszel, Uptime Kuma, drydock with self-update, drydock with compose, drydock with build, drydock with mediated build, Portwing, Portwing with exec, Portwing with compose, Portwing with build, Portwing with mediated build, Traefik, Portainer, Watchtower, Homepage, Homarr, Dozzle, Dozzle with actions, Dozzle with shell, Diun, Autoheal, GitHub Actions and GitLab runners, the CIS Docker Benchmark, read-only dashboards, and Podman read-only monitoring.
+description: Ready-made sockguard configs for drydock, Arcane, Beszel, Uptime Kuma, drydock with self-update, drydock with compose, drydock with build, drydock with mediated build, Portwing, Portwing with exec, Portwing with compose, Portwing with build, Portwing with mediated build, Traefik, Portainer, Watchtower, Homepage, Homarr, Dozzle, Dozzle with actions, Dozzle with shell, Diun, Autoheal, GitHub Actions and GitLab runners, the CIS Docker Benchmark, read-only dashboards, and Podman read-only monitoring.
 ---
 
 Sockguard ships with ready-made config presets for common Docker consumers. All presets are bundled in the container image at `/etc/sockguard/`.
@@ -596,6 +596,32 @@ hub shows an error for it. To enable it, add an allow rule for
 `insecure_allow_read_exfiltration: true`. Set `DOCKER_IMAGE_CHECK=false` on the
 agent and drop the image rule if you don't use update checks. Podman and Swarm
 are untested.
+
+## Arcane (`arcane.yaml`)
+
+Least-privilege access for [Arcane](https://github.com/getarcaneapp/arcane)'s read-only view.
+
+**Use for:** Arcane's dashboard and its container, image, volume and network pages, container logs, stats and process list, live events and disk usage. Nothing else.
+
+```yaml
+# Allows: GET /_ping, /version, /info, /events, /system/df
+# Allows: GET container list + inspect + stats + top + logs
+# Allows: GET image list + inspect + history, volume and network list + inspect
+# Denies: every other Docker API route
+```
+
+Derived from Arcane v3.1.1 (`backend/internal/docker/service.go`,
+`backend/internal/container/`). Arcane's detail page streams logs, so this
+preset sets `insecure_allow_read_exfiltration: true`. Logs are the only
+exfiltration route it allows; archive, export, attach and image save stay
+denied. Container env, mount paths and network addresses stay redacted, so
+Arcane's detail pages show placeholders or empty values for them.
+
+Unsupported, and refused: container actions (start, stop, restart, redeploy,
+remove), the image updater and pulls, prunes, compose projects, volume and
+network create or remove, volume browsing and backups, and Swarm. Those
+buttons fail with a sockguard denial. Swarm mode and Podman are untested. A
+management variant is not shipped yet.
 
 ## Diun (`diun.yaml`)
 
