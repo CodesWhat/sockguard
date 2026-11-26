@@ -1,0 +1,70 @@
+# Sockguard config for Dozzle, mirrors the shipped dozzle preset.
+# Copy of app/configs/dozzle.yaml; embedded here so the compose stack
+# is self-contained. Update both files together if you change rules.
+#
+# Least-privilege access for Dozzle's default read-only view (container list,
+# live and historical logs, stats, events).
+# Allows: ping, version, info, events, container list + inspect + logs + stats.
+# Denies: every write and every other read. That includes the container
+# actions (DOZZLE_ENABLE_ACTIONS: start/stop/restart/remove), the shell and
+# attach features (DOZZLE_ENABLE_SHELL: exec and attach), image pulls, volume
+# and disk-usage reads, and the Swarm service and node reads.
+# Swarm mode and agent mode are untested with this preset.
+#
+# Derived from Dozzle v11.5.0, internal/container/docker/client.go.
+
+upstream:
+  socket: /var/run/docker.sock
+
+log:
+  level: info
+  format: json
+  access_log: true
+
+health:
+  enabled: true
+  path: /health
+
+# Dozzle's whole purpose is reading container logs, which are an explicit
+# read-exfiltration route.
+insecure_allow_read_exfiltration: true
+
+# Response redaction stays on (the defaults). Dozzle's list view reads names,
+# ids, images, state, labels and ports, none of which are redacted. Container
+# env stays redacted because Dozzle never reads it. Mount paths and network
+# addresses also stay redacted, so those two details show placeholder or empty
+# values in Dozzle's container panel instead of real host paths and IPs.
+
+rules:
+  # Dozzle pings the daemon on connect to negotiate the API version.
+  - match: { method: GET, path: "/_ping" }
+    action: allow
+  - match: { method: HEAD, path: "/_ping" }
+    action: allow
+
+  # Engine identity: Info (host name, id, root dir, swarm state) and
+  # ServerVersion (Podman detection).
+  - match: { method: GET, path: "/version" }
+    action: allow
+  - match: { method: GET, path: "/info" }
+    action: allow
+
+  # Container start/die/health events drive the live container list and the
+  # per-container stats streams.
+  - match: { method: GET, path: "/events" }
+    action: allow
+
+  # Container reads
+  - match: { method: GET, path: "/containers/json" }
+    action: allow
+  - match: { method: GET, path: "/containers/*/json" }
+    action: allow
+  - match: { method: GET, path: "/containers/*/stats" }
+    action: allow
+  - match: { method: GET, path: "/containers/*/logs" }
+    action: allow
+
+  # Deny everything else
+  - match: { method: "*", path: "/**" }
+    action: deny
+    reason: "not allowed by dozzle preset"
