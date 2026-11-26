@@ -109,6 +109,11 @@ func TestComposeExamplesInSyncWithCanonicalPresets(t *testing.T) {
 			example:   filepath.Join("..", "..", "..", "examples", "compose", "homarr", "sockguard.yaml"),
 		},
 		{
+			name:      "komodo",
+			canonical: filepath.Join("..", "..", "configs", "komodo.yaml"),
+			example:   filepath.Join("..", "..", "..", "examples", "compose", "komodo", "sockguard.yaml"),
+		},
+		{
 			name:      "diun",
 			canonical: filepath.Join("..", "..", "configs", "diun.yaml"),
 			example:   filepath.Join("..", "..", "..", "examples", "compose", "diun", "sockguard.yaml"),
