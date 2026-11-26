@@ -105,12 +105,18 @@ func TestShippedPresetsDoNotTriggerPingWarning(t *testing.T) {
 	if err != nil || len(paths) == 0 {
 		t.Fatalf("glob presets: %v (%d found)", err, len(paths))
 	}
+	// uptime-kuma sends no ping call (it only lists and inspects containers),
+	// so its preset deliberately grants nothing else.
+	pingExempt := map[string]bool{"uptime-kuma.yaml": true}
 	for _, path := range paths {
 		t.Run(filepath.Base(path), func(t *testing.T) {
 			clearSockguardEnv(t)
 			cfg, err := config.Load(path)
 			if err != nil {
 				t.Fatalf("Load(%s): %v", path, err)
+			}
+			if pingExempt[filepath.Base(path)] {
+				t.Skip("preset deliberately omits GET /_ping")
 			}
 			if got := pingWarningOutput(cfg); got != "" {
 				t.Fatalf("%s triggers the ping warning: %s", path, got)
