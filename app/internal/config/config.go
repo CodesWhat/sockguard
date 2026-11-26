@@ -982,6 +982,12 @@ type ExecRequestBodyConfig struct {
 	AllowPrivileged bool       `mapstructure:"allow_privileged"`
 	AllowRootUser   bool       `mapstructure:"allow_root_user"`
 	AllowedCommands [][]string `mapstructure:"allowed_commands"`
+	// AllowedUsers, when non-empty, pins the exec User to these exact values
+	// (whitespace-trimmed, case-sensitive, no group stripping). The empty
+	// string is a valid entry meaning "User unset". It applies on top of
+	// allow_root_user, which still decides whether a root or empty User
+	// passes. Default empty means no pin.
+	AllowedUsers []string `mapstructure:"allowed_users"`
 	// AllowedEnvVars, when non-empty, restricts the exec-create Env array to
 	// these variable names — matched by name only (the substring before the
 	// first "="), exact string comparison, case-sensitive; the value is

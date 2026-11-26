@@ -2494,3 +2494,26 @@ func TestValidateWatchdogExitAfter(t *testing.T) {
 		})
 	}
 }
+
+func TestValidateExecAllowedUsers(t *testing.T) {
+	cfg := Defaults()
+	cfg.RequestBody.Exec.AllowedUsers = []string{"", "app", "1000:1000"}
+	if err := Validate(&cfg); err != nil {
+		t.Fatalf("Validate() error = %v, want nil (the empty string is a valid entry)", err)
+	}
+
+	for name, entries := range map[string][]string{
+		"padded":    {" app"},
+		"trailing":  {"app "},
+		"duplicate": {"app", "app"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			cfg := Defaults()
+			cfg.RequestBody.Exec.AllowedUsers = entries
+			err := Validate(&cfg)
+			if err == nil || !strings.Contains(err.Error(), "request_body.exec.allowed_users") {
+				t.Fatalf("Validate() = %v, want an allowed_users error", err)
+			}
+		})
+	}
+}

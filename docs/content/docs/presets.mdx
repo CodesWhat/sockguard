@@ -529,6 +529,7 @@ Extends the Dozzle preset with the Shell tab behind `DOZZLE_ENABLE_SHELL`.
 # request_body.exec:
 #   allow_privileged: false
 #   allow_root_user: true   # Dozzle sends an empty User, read as root
+#   allowed_users: [""]     # only an unset User passes; explicit users are refused
 #   allowed_commands:
 #     - ["sh", "-c", "command -v bash >/dev/null 2>&1 && exec bash || exec sh"]
 # Denies: any other exec command, container actions, the Attach tab, images
@@ -543,9 +544,12 @@ not set `insecure_allow_body_blind_writes`.
 The pin limits what starts, not what a person types afterwards. Anyone who can
 open the Shell tab has a shell in every container Dozzle lists. Dozzle's own
 tab runs as the container's default user, but sockguard cannot pin the exec
-User (`allow_root_user` must be true because Dozzle sends an empty User, read
-as root), so the preset admits any User with the pinned argv. Treat the grant
-as a root-capable shell, put Dozzle behind its own authentication and limit the
+User on its own (`allow_root_user` must be true because Dozzle sends an empty
+User, read as root), so `allowed_users: [""]` pins it: a request with any
+explicit User, root included, is refused on create and on the exec-start
+re-check. The shell then runs as the container's configured user, which is
+still root for images that default to it. Treat the grant as a shell in every
+container Dozzle lists, put Dozzle behind its own authentication and limit the
 shell role. Containers labeled `com.sockguard.exec=deny` are always
 refused, including the official sockguard image. The Attach tab
 (`POST /containers/{id}/attach`) feeds stdin to the container's main process

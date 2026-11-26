@@ -251,6 +251,7 @@ func (c ExecRequestBodyConfig) ToFilterOptions() filter.ExecOptions {
 	return filter.ExecOptions{
 		AllowPrivileged:  c.AllowPrivileged,
 		AllowRootUser:    c.AllowRootUser,
+		AllowedUsers:     c.AllowedUsers,
 		AllowedCommands:  c.AllowedCommands,
 		AllowedEnvVars:   c.AllowedEnvVars,
 		DeniedEnvVars:    c.DeniedEnvVars,
