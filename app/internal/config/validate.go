@@ -590,6 +590,15 @@ func validateHealthMetrics(cfg *Config) []string {
 			errs = append(errs, fmt.Sprintf("health.watchdog.interval must be a positive duration, got %q", cfg.Health.Watchdog.Interval))
 		}
 	}
+	if d := cfg.Health.Watchdog.ExitAfter; d != "" {
+		exitAfter, err := time.ParseDuration(d)
+		switch {
+		case err != nil || exitAfter < 0:
+			errs = append(errs, fmt.Sprintf("health.watchdog.exit_after must be a non-negative duration, got %q", d))
+		case exitAfter > 0 && !cfg.Health.Watchdog.Enabled:
+			errs = append(errs, "health.watchdog.exit_after requires health.watchdog.enabled")
+		}
+	}
 	if cfg.Health.Readiness.Enabled {
 		if !strings.HasPrefix(cfg.Health.Readiness.Path, "/") {
 			errs = append(errs, fmt.Sprintf("health.readiness.path must start with /, got %q", cfg.Health.Readiness.Path))

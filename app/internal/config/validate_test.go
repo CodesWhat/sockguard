@@ -2461,3 +2461,36 @@ func TestValidateLimitsConfig_PackedBurstLimit(t *testing.T) {
 		})
 	}
 }
+
+func TestValidateWatchdogExitAfter(t *testing.T) {
+	cases := []struct {
+		name      string
+		enabled   bool
+		exitAfter string
+		wantErr   string
+	}{
+		{"default off", false, "0s", ""},
+		{"empty ok", true, "", ""},
+		{"valid", true, "30s", ""},
+		{"invalid", true, "soon", `health.watchdog.exit_after must be a non-negative duration, got "soon"`},
+		{"negative", true, "-1s", `health.watchdog.exit_after must be a non-negative duration, got "-1s"`},
+		{"needs watchdog", false, "30s", "health.watchdog.exit_after requires health.watchdog.enabled"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := Defaults()
+			cfg.Health.Watchdog.Enabled = tc.enabled
+			cfg.Health.Watchdog.ExitAfter = tc.exitAfter
+			err := Validate(&cfg)
+			if tc.wantErr == "" {
+				if err != nil && strings.Contains(err.Error(), "exit_after") {
+					t.Fatalf("unexpected exit_after error: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("error = %v, want containing %q", err, tc.wantErr)
+			}
+		})
+	}
+}
