@@ -489,10 +489,18 @@ in the `sockguard_otlp_*` metrics above. On shutdown the queue is flushed after
 the listeners drain, for at most the shorter of 5 seconds and
 `server.shutdown_grace`; whatever is left after that is dropped.
 
-### Not instrumented
+### Admin listener spans
 
-Only the main listener's chain exports spans. The dedicated admin listener is
-not instrumented.
+The dedicated admin listener (`admin.listen`) exports spans through the same
+exporter, queue and metrics as the main listener. The span layer sits outside
+the admin client CIDR gate, so a request refused at the access boundary is
+exported with its `deny` decision and 403 status. `http.route` is the
+configured admin path the request addressed (`admin.path`,
+`admin.policy_version_path` or `admin.policy_diff_path`), or `unknown` for
+anything else, so a client-chosen path never reaches a span name or attribute.
+Candidate YAML bodies, query strings and headers are never exported, same as
+the main chain. Admin endpoints mounted in-band on the main listener are
+covered by the main chain's spans.
 
 ## Production checklist
 

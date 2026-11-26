@@ -17,7 +17,7 @@ func adminReloadFixture(t *testing.T, initialCIDRs []string) (*reloadCoordinator
 	initial.Admin.Listen.Address = "127.0.0.1:0"
 	initial.Clients.AllowedCIDRs = initialCIDRs
 	f := newReloadCoordinatorFixture(t, &initial)
-	adminSwappable := reload.NewSwappableHandler(buildAdminHandlerChain(&initial, newDiscardLogger(), nil, nil))
+	adminSwappable := reload.NewSwappableHandler(buildAdminHandlerChain(&initial, newDiscardLogger(), nil, nil, nil))
 	f.coordinator.setAdminSwappable(adminSwappable)
 	return f, adminSwappable, initial
 }

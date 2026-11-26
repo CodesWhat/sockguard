@@ -41,6 +41,31 @@ func Middleware(e *Exporter) func(http.Handler) http.Handler {
 	})
 }
 
+// AdminMiddleware is Middleware for the dedicated admin listener. Admin paths
+// are not Docker API paths, so the route comes from classify, which must
+// return one of a small fixed set of operator-configured routes or "unknown"
+// and never any part of the client-supplied path. Install it outside the
+// admin access gate (client ACL) so denied requests are exported too, and
+// inside the trace-context and request-ID middlewares. The span carries the
+// same allowlisted fields as the main chain: no request body, query string
+// or headers.
+func AdminMiddleware(e *Exporter, classify func(*http.Request) string) func(http.Handler) http.Handler {
+	if e == nil || classify == nil {
+		return func(next http.Handler) http.Handler { return next }
+	}
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			route := classify(r)
+			logging.ObserveRequestsMiddleware(func(s logging.RequestSummary) {
+				if !s.Sampled || s.TraceID == "" || s.SpanID == "" {
+					return
+				}
+				e.Enqueue(buildSpanWithRoute(s, route))
+			})(next).ServeHTTP(w, r)
+		})
+	}
+}
+
 // knownMethods bounds the method label: anything else is "_OTHER", per the
 // OpenTelemetry HTTP semantic conventions.
 var knownMethods = map[string]bool{
@@ -71,11 +96,16 @@ func capString(s string) string {
 // this function reaches the wire: no query string, headers, bodies, free-text
 // reason or client-supplied request ID.
 func buildSpan(s logging.RequestSummary) Span {
+	return buildSpanWithRoute(s, metrics.RouteCategory(s.NormalizedPath))
+}
+
+// buildSpanWithRoute is buildSpan with the route supplied by the caller,
+// for listeners whose paths are not Docker API paths.
+func buildSpanWithRoute(s logging.RequestSummary, route string) Span {
 	method := s.Method
 	if !knownMethods[method] {
 		method = "_OTHER"
 	}
-	route := metrics.RouteCategory(s.NormalizedPath)
 
 	attrs := make([]Attr, 0, 12)
 	attrs = append(attrs,
