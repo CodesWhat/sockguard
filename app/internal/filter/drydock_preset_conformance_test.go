@@ -365,6 +365,7 @@ func compileDrydockRules(t *testing.T, rules []config.RuleConfig) []*filter.Comp
 		cr, err := filter.CompileRule(filter.Rule{
 			Methods: methods,
 			Pattern: rule.Match.Path,
+			Query:   rule.Match.Query,
 			Action:  filter.Action(rule.Action),
 			Reason:  rule.Reason,
 			Index:   i,

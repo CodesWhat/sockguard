@@ -26,6 +26,23 @@ Dozzle reads its Docker endpoint from `DOCKER_HOST`, and the proxy has to be rea
 
 Container actions and the shell (`DOZZLE_ENABLE_ACTIONS`, `DOZZLE_ENABLE_SHELL`) are not supported by this preset. Sockguard refuses the calls they make, so turning them on gives you buttons that fail. Swarm mode and agent mode are untested.
 
+## Enabling container actions
+
+To get Dozzle's start, stop and restart buttons, point the sockguard service at `app/configs/dozzle-with-actions.yaml` (or copy it over `sockguard.yaml`) and set `DOZZLE_ENABLE_ACTIONS=true` on the Dozzle service. The preset adds `POST /containers/*/start`, `stop` and `restart` and nothing else.
+
+- Container remove, kill, create and exec stay denied. Dozzle's server route accepts a `remove` action, but its UI never offers one.
+- `DOZZLE_ENABLE_ACTIONS` also switches on Dozzle's image update, host prune and self-update buttons. They need image pulls, container create and prune, so they fail with a refusal.
+- Anyone who can open the UI can restart every container Dozzle lists. Set `DOZZLE_AUTH_PROVIDER`.
+
+## Enabling the shell
+
+To get Dozzle's Shell tab, point the sockguard service at `app/configs/dozzle-with-shell.yaml` and set `DOZZLE_ENABLE_SHELL=true` on the Dozzle service. The preset allows exec create, start and resize, and pins `request_body.exec.allowed_commands` to the one command Dozzle v11.5.0 sends for every shell: `sh -c "command -v bash >/dev/null 2>&1 && exec bash || exec sh"`. Any other exec command is refused.
+
+- The pin limits what starts, not what is typed afterwards. Anyone who can open the Shell tab has a shell in every container Dozzle lists, so set `DOZZLE_AUTH_PROVIDER` and limit who holds the shell role.
+- `allow_root_user` is on because Dozzle sets no exec User and sockguard treats an empty User as root. Containers labeled `com.sockguard.exec=deny` (the official sockguard image carries it) are always refused.
+- The Attach tab stays denied. It feeds stdin to the container's main process and the exec allowlist does not cover it.
+- The actions and shell variants are separate. To run both, merge the exec rules and `request_body.exec` block of the shell preset into the actions preset by hand.
+
 ## Behavior notes
 
 - Mount paths and network addresses stay redacted (the sockguard defaults), so Dozzle's container details show placeholders or empty values for them. Container env is redacted too, and Dozzle doesn't read it.

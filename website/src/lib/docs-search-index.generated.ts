@@ -123,6 +123,8 @@ export const DOCS_SEARCH_ITEMS: [page: number, heading: string, anchor: string][
   [5,"Homepage (homepage.yaml)","homepage-homepageyaml"],
   [5,"Homarr (homarr.yaml)","homarr-homarryaml"],
   [5,"Dozzle (dozzle.yaml)","dozzle-dozzleyaml"],
+  [5,"Dozzle with Actions (dozzle-with-actions.yaml)","dozzle-with-actions-dozzle-with-actionsyaml"],
+  [5,"Dozzle with Shell (dozzle-with-shell.yaml)","dozzle-with-shell-dozzle-with-shellyaml"],
   [5,"Diun (diun.yaml)","diun-diunyaml"],
   [5,"Autoheal (autoheal.yaml)","autoheal-autohealyaml"],
   [5,"GitHub Actions Self-Hosted Runner (github-actions-runner.yaml)","github-actions-self-hosted-runner-github-actions-runneryaml"],
