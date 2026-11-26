@@ -86,6 +86,10 @@ request_body:
         allowed_capabilities:
           - ["gpu", "compute"]
         max_count: -1             # -1 = all devices; omit to allow any count
+      - driver: cdi
+        device_ids: ["nvidia.com/gpu=0"]   # exact device IDs; every request ID must equal one byte for byte
+      - driver: nvidia
+        count: 2                           # exact request Count (a ceiling is max_count)
     allow_device_cgroup_rules: false
     allowed_device_cgroup_rules:  # structured cgroup-device allowlist (empty = deny all)
       - "c 1:3 rwm"   # /dev/null (char major 1, minor 3)
@@ -161,7 +165,9 @@ request_body:
     allowed_runtimes: []          # allowlist for non-empty oci_runtime values; an empty/unset oci_runtime selects the daemon default and is always permitted
     allow_device_cgroup_rules: false     # allow any device_cgroup_rule entry (default: denied)
     allowed_device_cgroup_rules: []      # structured alternative: "<type> <major>:<minor> <perms>" strings, same grammar as container_create
-    allow_device_requests: false         # allow gpus (default: denied); no structured form, a libpod body has no driver/count/capabilities to match
+    allow_device_requests: false         # allow any gpus (default: denied); skips allowed_gpus
+    allowed_gpus: []                     # exact gpus entries a create may carry, e.g. ["nvidia.com/gpu=0"]
+    allowed_cdi_devices: []              # exact qualified CDI names allowed in devices, e.g. ["nvidia.com/gpu=0"]
     deny_unconfined_system_paths: false  # deny unmask, the systempaths=unconfined equivalent (default: allowed)
     allow_all_devices: false      # allow every devices[] host path
     allowed_devices:              # devices[] host path allowlist (the part before the first ":")
@@ -1734,6 +1740,37 @@ CDI `DeviceRequests` with raw host-device paths also require `allowed_devices`
 (or `allow_all_devices`), even with `allow_device_requests: true`. Qualified CDI
 names such as `nvidia.com/gpu=all` still use the driver/capability grant.
 
+### Exact GPU and CDI grants
+
+`allow_device_requests` and a bare `allowed_device_requests` entry grant a whole
+driver. To grant specific devices, pin them. Everything below is an exact,
+case-sensitive, byte-for-byte match with no trimming and no globbing, and
+anything that does not match is denied.
+
+- `container_create.allowed_device_requests[].device_ids` lists the device IDs
+  an entry grants, for example CDI names such as `nvidia.com/gpu=0`. Every ID in
+  the request must be listed, so `nvidia.com/gpu=all` is not implied by
+  `nvidia.com/gpu=0`. A request with no IDs, or with a non-zero `Count` next to
+  its IDs (Docker rejects that combination), is refused by an entry that sets
+  `device_ids`. An entry without `device_ids` keeps its old behavior and accepts
+  any IDs.
+- `container_create.allowed_device_requests[].count` requires the request
+  `Count` to equal it exactly (`-1` for all devices). `max_count` stays a
+  ceiling; set both and both apply.
+- `libpod_container_create.allowed_gpus` lists the exact `gpus` strings a
+  libpod create may carry. `all` is just another string and has to be listed.
+- `libpod_container_create.allowed_cdi_devices` lists the exact fully qualified
+  CDI names (`vendor/class=name`) a libpod `devices` entry may name. A
+  qualified name is matched whole, so a colon inside it is not read as a
+  host-path suffix. `allowed_devices` grants host paths only and never a CDI
+  name. Config load rejects a non-qualified entry.
+
+`allow_device_requests: true` (either block) and `allow_all_devices` stay the
+blanket opt-ins and skip these lists, so existing configs behave as before. Swarm
+`POST /services/create` and `/services/{id}/update` have no device-request field
+to match; a service reaches GPUs only through generic resources and runtime
+settings the other service gates already cover.
+
 Classic build `buildargs` cannot contain `BUILDKIT_SYNTAX` while
 `request_body.build.allow_run_instructions` is false: a selected frontend cannot
 be constrained by scanning the submitted Dockerfile. This applies to both Docker
@@ -2112,7 +2149,7 @@ the gates below are denied before the request reaches Docker.
 | `SOCKGUARD_REQUEST_BODY_CONTAINER_CREATE_ALLOW_ALL_DEVICES`           | `request_body.container_create.allow_all_devices`         | `false` | Allow any `HostConfig.Devices` host path. Prefer the allowlist below instead.        |
 | `SOCKGUARD_REQUEST_BODY_CONTAINER_CREATE_ALLOWED_DEVICES`             | `request_body.container_create.allowed_devices`           | *empty* | Comma-separated host device paths allowed for `HostConfig.Devices`.                  |
 | `SOCKGUARD_REQUEST_BODY_CONTAINER_CREATE_ALLOW_DEVICE_REQUESTS`       | `request_body.container_create.allow_device_requests`     | `false` | Escape hatch for device-request driver/capability checks. CDI raw host paths still require `allowed_devices` or `allow_all_devices`. Prefer `allowed_device_requests` for least-privilege access. |
-| *(YAML-only)*                                                         | `request_body.container_create.allowed_device_requests`   | *empty* | Structured `HostConfig.DeviceRequests` allowlist. Each entry has `driver` (required), `allowed_capabilities` (list of capability sets; request sets must each be a subset of at least one), and optional `max_count` (`-1` = all devices). Empty = deny all (default). Not settable via env var due to nested structure; configure in YAML. |
+| *(YAML-only)*                                                         | `request_body.container_create.allowed_device_requests`   | *empty* | Structured `HostConfig.DeviceRequests` allowlist. Each entry has `driver` (required), `allowed_capabilities` (list of capability sets; request sets must each be a subset of at least one), optional `max_count` (`-1` = all devices), optional exact `count`, and optional exact `device_ids`; see [Exact GPU and CDI grants](#exact-gpu-and-cdi-grants). Empty = deny all (default). Not settable via env var due to nested structure; configure in YAML. |
 | `SOCKGUARD_REQUEST_BODY_CONTAINER_CREATE_ALLOW_DEVICE_CGROUP_RULES`          | `request_body.container_create.allow_device_cgroup_rules`         | `false`  | Allow all `HostConfig.DeviceCgroupRules` without inspection. Prefer `allowed_device_cgroup_rules` for least-privilege access.   |
 | `SOCKGUARD_REQUEST_BODY_CONTAINER_CREATE_ALLOWED_DEVICE_CGROUP_RULES`        | `request_body.container_create.allowed_device_cgroup_rules`       | *empty*  | Comma-separated Docker cgroup rule strings (`<type> <major>:<minor> <perms>`) that `HostConfig.DeviceCgroupRules` entries must match. Wildcards (`*`) in major/minor are allowed in allowlist entries and match any value; request wildcards are only permitted when the allowlist entry also uses a wildcard at that position. Empty list = deny all (default). Example: `c 1:3 rwm,c 226:* rwm`. |
 | `SOCKGUARD_REQUEST_BODY_CONTAINER_CREATE_REQUIRE_NO_NEW_PRIVILEGES`   | `request_body.container_create.require_no_new_privileges` | `false` | Require `HostConfig.SecurityOpt` to include `no-new-privileges:true`.                |
@@ -2202,7 +2239,7 @@ Podman's native `POST /libpod/containers/create` counterpart to `container_creat
 | `SOCKGUARD_REQUEST_BODY_LIBPOD_CONTAINER_CREATE_ALLOW_TMPFS_PRIVILEGED_OPTIONS` | `request_body.libpod_container_create.allow_tmpfs_privileged_options` | `false` | **v3.1:** allow a native `mounts[]` entry of type `tmpfs` whose options turn on `exec`, `dev` or `suid`, or that lacks the bare `noexec` (`image_volume_mode: "tmpfs"` included). Independent of `container_create.allow_tmpfs_privileged_options`; also governs `libpod_volume` tmpfs options. |
 | `SOCKGUARD_REQUEST_BODY_LIBPOD_CONTAINER_CREATE_ALLOW_DEVICE_CGROUP_RULES` | `request_body.libpod_container_create.allow_device_cgroup_rules` | `false` | Allow any `device_cgroup_rule` entry. Prefer the allowlist below instead. |
 | `SOCKGUARD_REQUEST_BODY_LIBPOD_CONTAINER_CREATE_ALLOWED_DEVICE_CGROUP_RULES` | `request_body.libpod_container_create.allowed_device_cgroup_rules` | *empty* | Comma-separated `<type> <major>:<minor> <perms>` rules allowed for `device_cgroup_rule`; same matching as `container_create`. |
-| `SOCKGUARD_REQUEST_BODY_LIBPOD_CONTAINER_CREATE_ALLOW_DEVICE_REQUESTS` | `request_body.libpod_container_create.allow_device_requests` | `false` | Allow `gpus` (Podman 6+). A libpod body has no driver, count or capability sets, so `container_create.allowed_device_requests` has no libpod form. |
+| `SOCKGUARD_REQUEST_BODY_LIBPOD_CONTAINER_CREATE_ALLOW_DEVICE_REQUESTS` | `request_body.libpod_container_create.allow_device_requests` | `false` | Allow any `gpus` (Podman 6+). A libpod body has no driver, count or capability sets, so the libpod form of an exact grant is `allowed_gpus` (YAML-only), with `allowed_cdi_devices` for CDI names in `devices`; see [Exact GPU and CDI grants](#exact-gpu-and-cdi-grants). |
 | `SOCKGUARD_REQUEST_BODY_LIBPOD_CONTAINER_CREATE_DENY_UNCONFINED_SYSTEM_PATHS` | `request_body.libpod_container_create.deny_unconfined_system_paths` | `false` | Deny a non-empty `unmask`, which clears the default masked paths like `systempaths=unconfined`. |
 | `SOCKGUARD_REQUEST_BODY_LIBPOD_CONTAINER_CREATE_ALLOW_UNIFIED_CGROUP_SETTINGS` | `request_body.libpod_container_create.allow_unified_cgroup_settings` | `false` | Allow a non-empty `unified` map, raw cgroup v2 control values written straight into the container's cgroup. |
 | `SOCKGUARD_REQUEST_BODY_LIBPOD_CONTAINER_CREATE_ALLOW_ENV_HOST` | `request_body.libpod_container_create.allow_env_host` | `false` | Allow `env_host: true`, which copies the Podman daemon's environment into the container. Still refused while `allowed_env_vars`, `denied_env_vars` or `allowed_env_values` is set. |

@@ -362,6 +362,8 @@ func newContainerCreatePolicy(opts ContainerCreateOptions) containerCreatePolicy
 			driver:              driver,
 			allowedCapabilities: canonCaps,
 			maxCount:            entry.MaxCount,
+			deviceIDs:           slices.Clone(entry.DeviceIDs),
+			count:               entry.Count,
 		})
 	}
 
@@ -1789,12 +1791,39 @@ func deviceRequestAllowed(req dockerDeviceRequest, driver string, allowlist []al
 		if !countAllowed(req.Count, entry.maxCount) {
 			continue
 		}
+		if entry.count != nil && req.Count != *entry.count {
+			continue
+		}
+		if !deviceIDsAllowed(req, entry.deviceIDs) {
+			continue
+		}
 		if !capabilitySetsAllowed(req.Capabilities, entry.allowedCapabilities) {
 			continue
 		}
 		return true
 	}
 	return false
+}
+
+// deviceIDsAllowed enforces an entry's exact device_ids list. An entry with no
+// list places no constraint on the IDs. With a list, the request must name at
+// least one ID, every ID must equal a listed one exactly (no trimming, no case
+// folding, no globbing), and Count must be zero: the Docker daemon rejects a
+// request carrying both, and a leftover Count could widen what a runtime hands
+// out, so the combination fails closed here.
+func deviceIDsAllowed(req dockerDeviceRequest, allowed []string) bool {
+	if len(allowed) == 0 {
+		return true
+	}
+	if len(req.DeviceIDs) == 0 || req.Count != 0 {
+		return false
+	}
+	for _, id := range req.DeviceIDs {
+		if !slices.Contains(allowed, id) {
+			return false
+		}
+	}
+	return true
 }
 
 // countAllowed reports whether the request Count is permitted by maxCount.

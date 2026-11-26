@@ -65,6 +65,7 @@ export const DOCS_SEARCH_ITEMS: [page: number, heading: string, anchor: string][
   [2,"Logging And Audit","logging-and-audit"],
   [2,"Rule Matching","rule-matching"],
   [2,"Mount source changes and native mount types","mount-source-changes-and-native-mount-types"],
+  [2,"Exact GPU and CDI grants","exact-gpu-and-cdi-grants"],
   [2,"Podman RUN build controls","podman-run-build-controls"],
   [2,"BuildKit image ownership","buildkit-image-ownership"],
   [2,"Container launch fields","container-launch-fields"],

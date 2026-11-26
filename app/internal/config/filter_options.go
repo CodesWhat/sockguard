@@ -207,6 +207,8 @@ func (c LibpodContainerCreateRequestBodyConfig) ToFilterOptions() filter.LibpodC
 		AllowDeviceCgroupRules:            c.AllowDeviceCgroupRules,
 		AllowedDeviceCgroupRules:          c.AllowedDeviceCgroupRules,
 		AllowDeviceRequests:               c.AllowDeviceRequests,
+		AllowedGPUs:                       c.AllowedGPUs,
+		AllowedCDIDevices:                 c.AllowedCDIDevices,
 		DenyUnconfinedSystemPaths:         c.DenyUnconfinedSystemPaths,
 		AllowUnifiedCgroupSettings:        c.AllowUnifiedCgroupSettings,
 		AllowEnvHost:                      c.AllowEnvHost,
@@ -506,6 +508,8 @@ func toFilterAllowedDeviceRequests(entries []AllowedDeviceRequest) []filter.Allo
 			Driver:              e.Driver,
 			AllowedCapabilities: e.AllowedCapabilities,
 			MaxCount:            e.MaxCount,
+			DeviceIDs:           e.DeviceIDs,
+			Count:               e.Count,
 		})
 	}
 	return out

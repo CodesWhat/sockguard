@@ -2104,6 +2104,13 @@ func validateContainerCreateConfig(prefix string, cfg ContainerCreateRequestBody
 				errs = append(errs, fmt.Sprintf("%s.container_create.allowed_device_requests[%d].allowed_capabilities[%d] must be a non-empty capability set", prefix, i, j))
 			}
 		}
+		errs = append(errs, validateExactDeviceIDs(fmt.Sprintf("%s.container_create.allowed_device_requests[%d].device_ids", prefix, i), entry.DeviceIDs)...)
+		if entry.Count != nil && *entry.Count < -1 {
+			errs = append(errs, fmt.Sprintf("%s.container_create.allowed_device_requests[%d].count must be -1 or a non-negative integer, got %d", prefix, i, *entry.Count))
+		}
+		if len(entry.DeviceIDs) > 0 && entry.Count != nil && *entry.Count != 0 {
+			errs = append(errs, fmt.Sprintf("%s.container_create.allowed_device_requests[%d] cannot set device_ids with a non-zero count: Docker rejects a request carrying both", prefix, i))
+		}
 		if entry.MaxCount != nil && *entry.MaxCount < -1 {
 			errs = append(errs, fmt.Sprintf("%s.container_create.allowed_device_requests[%d].max_count must be -1 or a non-negative integer, got %d", prefix, i, *entry.MaxCount))
 		}
@@ -2129,6 +2136,12 @@ func validateLibpodContainerCreateConfig(prefix string, cfg LibpodContainerCreat
 	errs = append(errs, validateCreateImageAllowlist(prefix+".libpod_container_create.allowed_images", cfg.AllowedImages)...)
 	errs = append(errs, validateHostPathEntries(prefix, "libpod_container_create.allowed_bind_mounts", cfg.AllowedBindMounts)...)
 	errs = append(errs, validateHostPathEntries(prefix, "libpod_container_create.allowed_devices", cfg.AllowedDevices)...)
+	errs = append(errs, validateExactDeviceIDs(prefix+".libpod_container_create.allowed_gpus", cfg.AllowedGPUs)...)
+	for i, name := range cfg.AllowedCDIDevices {
+		if !filter.IsQualifiedCDIDevice(name) {
+			errs = append(errs, fmt.Sprintf("%s.libpod_container_create.allowed_cdi_devices[%d] must be a fully qualified CDI name (vendor/class=name), got %q", prefix, i, name))
+		}
+	}
 	errs = append(errs, validateLogDriverEntries(prefix, "libpod_container_create", cfg.AllowedLogDrivers, cfg.AllowedLogEndpointOptions)...)
 	errs = append(errs, validateNetworkExposureEntries(prefix, "libpod_container_create", cfg.AllowedPortHostIPs, cfg.AllowedNetworks)...)
 	for _, entry := range cfg.AllowedNamespaceSharingContainers {
@@ -2663,4 +2676,17 @@ func validOTLPHeaderName(name string) bool {
 		}
 	}
 	return true
+}
+
+// validateExactDeviceIDs refuses empty or whitespace-padded entries in an
+// exact-match device list. Matching never trims, so a padded entry could never
+// match and would only hide a typo.
+func validateExactDeviceIDs(path string, ids []string) []string {
+	var errs []string
+	for i, id := range ids {
+		if id == "" || id != strings.TrimSpace(id) {
+			errs = append(errs, fmt.Sprintf("%s[%d] must be a non-empty value without surrounding whitespace, got %q", path, i, id))
+		}
+	}
+	return errs
 }
