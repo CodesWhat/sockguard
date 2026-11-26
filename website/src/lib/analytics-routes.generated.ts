@@ -22,6 +22,7 @@ const routes = [
   "/docs/presets",
   "/docs/roadmap",
   "/docs/security",
+  "/docs/swarm",
   "/docs/verification",
 ] as const;
 
