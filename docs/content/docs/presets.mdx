@@ -1,6 +1,6 @@
 ---
 title: Presets
-description: Ready-made sockguard configs for drydock, drydock with self-update, drydock with compose, drydock with build, drydock with mediated build, Portwing, Portwing with exec, Portwing with compose, Portwing with build, Portwing with mediated build, Traefik, Portainer, Watchtower, Homepage, Homarr, Diun, Autoheal, GitHub Actions and GitLab runners, the CIS Docker Benchmark, read-only dashboards, and Podman read-only monitoring.
+description: Ready-made sockguard configs for drydock, drydock with self-update, drydock with compose, drydock with build, drydock with mediated build, Portwing, Portwing with exec, Portwing with compose, Portwing with build, Portwing with mediated build, Traefik, Portainer, Watchtower, Homepage, Homarr, Diun, Autoheal, GitHub Actions and GitLab runners, Jenkins, the CIS Docker Benchmark, read-only dashboards, and Podman read-only monitoring.
 ---
 
 Sockguard ships with ready-made config presets for common Docker consumers. All presets are bundled in the container image at `/etc/sockguard/`.
@@ -572,6 +572,23 @@ that require a privileged build container will fail through the proxy
 until the operator either removes the flag or moves the affected
 project to a different runner. This is the secure default; widening it
 is an audit-trail-bearing edit.
+
+## Jenkins Docker Plugin (`jenkins.yaml`)
+
+Least-privilege access for the Jenkins [Docker plugin](https://plugins.jenkins.io/docker-plugin/) provisioning agent containers with the Inbound (JNLP) connector.
+
+**Use for:** Jenkins clouds that create one agent container per build from a pinned image and remove it when the agent retires.
+
+```yaml
+# Allows: GET /_ping, /version, container list + inspect, image inspect
+# Allows: POST /images/create (docker.io only)
+# Allows: POST /containers/create (body-inspected), start, stop; DELETE /containers/{id}
+# Denies: every other Docker API route
+```
+
+Derived from jenkinsci/docker-plugin `1337.v3ca_fd1b_b_25ef`. Container create is bounded by `request_body.container_create`: the image must exactly match an entry in `allowed_images` (replace the shipped `jenkins/inbound-agent` entry with your own, fully qualified), and privileged mode, host namespaces, bind mounts, devices, capability additions, sysctls, unconfined seccomp and AppArmor, and published ports are all refused. `ownership.owner` scopes list, inspect, stop and remove to containers created through the proxy, and force and anonymous-volume removal are allowed because the plugin uses both.
+
+Not supported, and refused: the Attach connector (exec and archive copy), the SSH connector (archive copy and published ports), the plugin's log read on disconnect, template options that need host mounts or `--volumes-from`, and docker-workflow's `docker.image().inside()` and `docker.build()`, which run the `docker` CLI with host bind mounts, exec and top. Anyone who can edit an agent template can still run the allowed image with any command and environment; pin images by digest and restrict who can configure clouds and templates. See the [compose example](https://github.com/CodesWhat/sockguard/tree/main/examples/compose/jenkins).
 
 ## CIS Docker Benchmark (`cis-docker-benchmark.yaml`)
 

@@ -126,6 +126,7 @@ export const DOCS_SEARCH_ITEMS: [page: number, heading: string, anchor: string][
   [5,"Autoheal (autoheal.yaml)","autoheal-autohealyaml"],
   [5,"GitHub Actions Self-Hosted Runner (github-actions-runner.yaml)","github-actions-self-hosted-runner-github-actions-runneryaml"],
   [5,"GitLab Runner (Docker Executor) (gitlab-runner.yaml)","gitlab-runner-docker-executor-gitlab-runneryaml"],
+  [5,"Jenkins Docker Plugin (jenkins.yaml)","jenkins-docker-plugin-jenkinsyaml"],
   [5,"CIS Docker Benchmark (cis-docker-benchmark.yaml)","cis-docker-benchmark-cis-docker-benchmarkyaml"],
   [5,"Read-Only (readonly.yaml)","read-only-readonlyyaml"],
   [5,"Podman Read-Only (podman-readonly.yaml)","podman-read-only-podman-readonlyyaml"],
