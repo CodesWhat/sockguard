@@ -28,6 +28,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Link codeswhat.com from the site and docs footers and the README, and add a Get started button to the landing hero that jumps to the install section.
 - Close the v3.1 mutation target with the November 6 measurement: 97.9821% test efficacy across all 43 packages at the source tree merged as `7dbc523f`, above the unchanged 97.8% target, with timeouts separate from kills.
 
+### Removed
+
+- The Homebrew cask is deprecated and no longer published. Release archives still include the macOS binaries, but the `codeswhat/tap/sockguard` cask gets no new versions; run Sockguard from the Docker image.
+
 ### Security
 
 - Docker's experimental checkpoint routes are now in the catalogs. `POST /containers/{name}/checkpoints` and `DELETE /containers/{name}/checkpoints/{checkpoint}` need `insecure_allow_body_blind_writes`, and `GET /containers/{name}/checkpoints` needs `insecure_allow_read_exfiltration`. With the daemon's experimental routes on, the delete joins a caller-chosen `dir` and checkpoint name and removes the result, so `DELETE /containers/x/checkpoints/etc?dir=/` removed `/etc` on the daemon host, and an `ALLOW_DELETE=1` rule admitted it without any acknowledgment. Built-in defaults and every shipped preset except Portainer (which already sets both opt-outs) still deny these routes.

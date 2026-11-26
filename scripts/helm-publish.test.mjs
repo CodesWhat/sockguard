@@ -38,16 +38,13 @@ describe("publish-chart job gating", () => {
   const workflow = read(".github/workflows/release-from-tag.yml");
   const job = workflowJob(workflow, "publish-chart");
 
-  it("runs only where latest and the Homebrew cask do: stable tags from the default branch", () => {
+  it("runs only where latest does: stable tags from the default branch", () => {
     // verify-ci's `latest` is false for prereleases and maintenance lines.
     assert.match(
       job,
       /^ {4}if: \$\{\{ needs\.verify-ci\.outputs\.latest == 'true' && !contains\(github\.ref_name, '-'\) \}\}$/m,
     );
     assert.match(job, /^ {4}needs: \[verify-ci, release\]$/m);
-
-    const homebrew = workflowJob(workflow, "verify-homebrew");
-    assert.match(homebrew, /^ {4}if: \$\{\{ needs\.verify-ci\.outputs\.latest == 'true' \}\}$/m);
 
     const verifyCi = workflowJob(workflow, "verify-ci");
     assert.match(
@@ -176,7 +173,7 @@ describe("chart isolation from the image release", () => {
   const workflow = read(".github/workflows/release-from-tag.yml");
   const needsOf = (name) => workflowJob(workflow, name).match(/^ {4}needs: (.+)$/m)?.[1] ?? "";
 
-  it("no image, tarball, Homebrew or pin job depends on publish-chart", () => {
+  it("no image, tarball or pin job depends on publish-chart", () => {
     for (const name of jobNames(workflow).filter(
       (n) => n !== "verify-chart" && n !== "publish-chart",
     )) {
@@ -195,8 +192,8 @@ describe("chart isolation from the image release", () => {
     assert.doesNotMatch(verify, /--chart|VERIFY_CHART/);
   });
 
-  it("keeps pin-chart-digest behind QA-6 and Homebrew only", () => {
-    assert.equal(needsOf("pin-chart-digest"), "[release, verify-published, verify-homebrew]");
+  it("keeps pin-chart-digest behind QA-6 only", () => {
+    assert.equal(needsOf("pin-chart-digest"), "[release, verify-published]");
   });
 
   it("verifies the chart in its own job that only runs after a successful publish", () => {

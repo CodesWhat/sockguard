@@ -27,7 +27,6 @@ export const DOCS_SEARCH_ITEMS: [page: number, heading: string, anchor: string][
   [1,"Installation","installation"],
   [1,"Docker Compose (recommended)","docker-compose-recommended"],
   [1,"Docker Run","docker-run"],
-  [1,"Homebrew","homebrew"],
   [1,"Helm","helm"],
   [1,"Binary","binary"],
   [1,"Published v3 release candidate","published-v3-release-candidate"],

@@ -30,7 +30,6 @@ const FIXED_SCRIPTS = new Map([
       "command -v syft",
       // biome-ignore lint/suspicious/noTemplateCurlyInString: literal bash from go-release-check.sh, matched as text; no `skip` binding exists here so biome's fix would throw
       'release --snapshot --clean --skip="${skip}"',
-      "cask ",
     ],
   ],
   ["go-fuzz.sh", ["FUZZER", "PKG", "fuzztime=60s"]],
