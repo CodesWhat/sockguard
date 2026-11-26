@@ -42,6 +42,8 @@ services:
     depends_on:
       - sockguard
     ports:
-      - "8080:8080"
+      # Loopback only: Dozzle has no auth by default, and anyone who reaches the
+      # UI can read every container's logs. Widen this only behind auth.
+      - "127.0.0.1:8080:8080"
     environment:
       - DOCKER_HOST=tcp://sockguard:2375

@@ -2,7 +2,7 @@
 
 **Who this is for:** Teams running [Dozzle](https://dozzle.dev) for its default read-only view (container list, live logs, stats, events) and wanting to eliminate the raw Docker socket mount.
 
-**What's exposed:** Sockguard listens on plaintext TCP `:2375` on the private Docker compose network. Dozzle connects via `DOCKER_HOST=tcp://sockguard:2375`. The port is **not** published to the host. The Dozzle UI is on port 8080.
+**What's exposed:** Sockguard listens on plaintext TCP `:2375` on the private Docker compose network. Dozzle connects via `DOCKER_HOST=tcp://sockguard:2375`. The port is **not** published to the host. The Dozzle UI is published on `127.0.0.1:8080` only, since Dozzle has no authentication by default. Put it behind Dozzle's auth or a reverse proxy with auth before exposing it beyond the host.
 
 ## Why TCP instead of unix socket
 
