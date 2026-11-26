@@ -375,7 +375,7 @@ jobs:
     steps:
       # PKG-1: block mode. Hosts come from this job's harden-runner audit log
       # for the v2.1.0 and v2.1.0-rc.2 tag runs.
-      #   github.com: Checkout, GoReleaser's push to CodesWhat/homebrew-tap, and
+      #   github.com: Checkout and
       #     the release downloads for Setup Go, syft, cosign and goreleaser
       #   api.github.com: GoReleaser's release API calls, the gh calls in Publish
       #     and verify release notes, and Attest binary archive provenance
@@ -465,17 +465,6 @@ jobs:
           # off (zizmor cache-poisoning).
           cache: false
 
-      - name: Require Homebrew tap token
-        if: ${{ needs.verify-ci.outputs.latest == 'true' }}
-        env:
-          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
-        run: |
-          set -euo pipefail
-          test -n "${HOMEBREW_TAP_TOKEN}" || {
-            echo "::error::HOMEBREW_TAP_TOKEN is required to publish stable releases to CodesWhat/homebrew-tap."
-            exit 1
-          }
-
       - name: Download release notes
         id: download_release_notes
         continue-on-error: true
@@ -554,7 +543,6 @@ jobs:
           workdir: app
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          HOMEBREW_TAP_TOKEN: ${{ needs.verify-ci.outputs.latest == 'true' && secrets.HOMEBREW_TAP_TOKEN || '' }}
           RELEASE_LATEST: ${{ needs.verify-ci.outputs.latest }}
 
       - name: Publish and verify release notes
@@ -1096,49 +1084,6 @@ jobs:
           subject-digest: ${{ steps.digest.outputs.value }}
           push-to-registry: true
 
-  verify-homebrew:
-    name: "Release: Verify Homebrew"
-    needs: [verify-ci, release]
-    if: ${{ needs.verify-ci.outputs.latest == 'true' }}
-    runs-on: macos-15
-    timeout-minutes: 15
-    permissions:
-      contents: read
-    env:
-      HOMEBREW_NO_ANALYTICS: "1"
-      HOMEBREW_NO_AUTO_UPDATE: "1"
-      # GitHub-hosted macOS runners default to --no-quarantine. Clear it so
-      # this exercises the same Gatekeeper path as a normal user install.
-      HOMEBREW_CASK_OPTS: ""
-
-    steps:
-      - name: Harden Runner
-        uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2  # v2.22.2
-        with:
-          egress-policy: block
-          allowed-endpoints: >
-            api.github.com:443
-            formulae.brew.sh:443
-            github.com:443
-            raw.githubusercontent.com:443
-            release-assets.githubusercontent.com:443
-
-      - name: Verify Homebrew cask install
-        env:
-          RELEASE_VERSION: ${{ github.ref_name }}
-        run: |
-          set -euo pipefail
-          brew tap CodesWhat/tap https://github.com/CodesWhat/homebrew-tap.git
-          brew install --cask codeswhat/tap/sockguard
-          if xattr -p com.apple.quarantine "$(command -v sockguard)" >/dev/null 2>&1; then
-            echo "::error::Homebrew-installed sockguard retained its quarantine attribute."
-            exit 1
-          fi
-          sockguard version -o json | jq -e \
-            --arg version "${RELEASE_VERSION#v}" \
-            '.version == $version'
-          brew uninstall --cask sockguard
-
   verify-published:
     # QA-6 end-to-end signature verification: run the *exact* documented
     # cosign verify / cosign verify-blob commands from
@@ -1453,8 +1398,8 @@ jobs:
     # waits on the jobs that assert the artifacts are the ones this pipeline
     # built.
     name: "Release: Pin Chart Image Digest"
-    needs: [release, verify-published, verify-homebrew]
-    if: ${{ always() && !contains(github.ref_name, '-') && needs.release.result == 'success' && needs.verify-published.result == 'success' && (needs.verify-homebrew.result == 'success' || needs.verify-homebrew.result == 'skipped') }}
+    needs: [release, verify-published]
+    if: ${{ always() && !contains(github.ref_name, '-') && needs.release.result == 'success' && needs.verify-published.result == 'success' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
