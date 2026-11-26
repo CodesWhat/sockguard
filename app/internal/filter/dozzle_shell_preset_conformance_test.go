@@ -110,19 +110,24 @@ func TestDozzleShellPresetConformance(t *testing.T) {
 }
 
 // TestDozzleShellPresetRootUserPolicy checks the user policy on exec create.
-// Dozzle's own Shell tab runs as the container's default user, but it sends an
-// empty User, which sockguard reads as root, so allow_root_user has to be true
-// and sockguard cannot pin the User. The preset therefore admits any exec User
-// (root included) with the pinned argv: treat the grant as a root-capable
-// shell. The argv pin is the only gate, and it holds for every User.
+// Dozzle's own Shell tab runs as the container's default user and sends an
+// empty User, which sockguard reads as root, so allow_root_user has to be
+// true. allowed_users: [""] then pins the User to unset: an explicit User,
+// root included, is refused, and the pinned argv gates every request.
 func TestDozzleShellPresetRootUserPolicy(t *testing.T) {
 	handler := buildDrydockPresetHandler(t, "dozzle-with-shell.yaml")
-	for _, user := range []string{"root", "0", "0:0", "app", "1000"} {
-		// The pinned argv is the gate. A different User does not widen it, and
-		// the preset permits root only because Dozzle never sets a User.
+	fireDrydockCase(t, handler, presetCase{
+		"exec-create-no-user", http.MethodPost, "/containers/abc/exec",
+		dozzleExecCreateBody(t, nil), true,
+	})
+	fireDrydockCase(t, handler, presetCase{
+		"exec-create-empty-user", http.MethodPost, "/containers/abc/exec",
+		dozzleExecCreateBody(t, map[string]any{"User": ""}), true,
+	})
+	for _, user := range []string{"root", "0", "0:0", "app", "1000", ":5"} {
 		fireDrydockCase(t, handler, presetCase{
-			"exec-create-user-" + user, http.MethodPost, "/containers/abc/exec",
-			dozzleExecCreateBody(t, map[string]any{"User": user}), true,
+			"exec-create-user-" + user + "-denied", http.MethodPost, "/containers/abc/exec",
+			dozzleExecCreateBody(t, map[string]any{"User": user}), false,
 		})
 		fireDrydockCase(t, handler, presetCase{
 			"exec-create-user-" + user + "-other-cmd-denied", http.MethodPost, "/containers/abc/exec",
@@ -145,6 +150,7 @@ func TestDozzleShellPresetExecStartRecheck(t *testing.T) {
 		"dozzle":   {ContainerID: "abc", Command: dozzleShellCmd},
 		"other":    {ContainerID: "abc", Command: []string{"cat", "/etc/shadow"}},
 		"priv":     {ContainerID: "abc", Command: dozzleShellCmd, Privileged: true},
+		"rootuser": {ContainerID: "abc", Command: dozzleShellCmd, User: "0"},
 		"othercmd": {ContainerID: "abc", Command: []string{"sh", "-c", "id"}},
 	}
 	handler := drydockPresetHandlerFromConfig(t, cfg, func(p *filter.PolicyConfig) {
@@ -163,6 +169,7 @@ func TestDozzleShellPresetExecStartRecheck(t *testing.T) {
 		{"other-command-denied", "other", http.StatusForbidden},
 		{"other-shell-command-denied", "othercmd", http.StatusForbidden},
 		{"privileged-denied", "priv", http.StatusForbidden},
+		{"explicit-root-user-denied", "rootuser", http.StatusForbidden},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

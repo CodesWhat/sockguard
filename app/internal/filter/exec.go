@@ -49,6 +49,14 @@ type ExecInspectFunc func(context.Context, string) (ExecInspectResult, bool, err
 type ExecOptions struct {
 	AllowPrivileged bool
 	AllowRootUser   bool
+	// AllowedUsers, when non-empty, pins the exec User to these exact values.
+	// Each entry is trimmed; the request's User is compared byte for
+	// byte and case-sensitively, so a padded User never matches and "app" does not admit "app:wheel" and "1000" does not
+	// admit "01000". The empty string is a real entry meaning "User unset":
+	// Docker then runs the exec as the container's configured user. It is
+	// checked in addition to AllowRootUser, not instead of it. Default empty
+	// means no pin.
+	AllowedUsers []string
 	// AllowedCommands is an allowlist of exec argv templates. Each token is a
 	// sockguard glob (see internal/glob): "*" matches a run of non-slash
 	// characters, "**" matches any sequence. A command is allowed when its
@@ -107,6 +115,8 @@ type ExecOptions struct {
 type execPolicy struct {
 	allowPrivileged    bool
 	allowRootUser      bool
+	allowedUsers       []string
+	allowedUsersSet    bool
 	allowedCommands    []execCommandMatcher
 	allowedEnvVars     []string
 	deniedEnvVars      []string
@@ -181,6 +191,8 @@ func newExecPolicy(opts ExecOptions) execPolicy {
 	return execPolicy{
 		allowPrivileged:    opts.AllowPrivileged,
 		allowRootUser:      opts.AllowRootUser,
+		allowedUsers:       normalizeExecUsers(opts.AllowedUsers),
+		allowedUsersSet:    len(opts.AllowedUsers) > 0,
 		allowedCommands:    allowed,
 		allowedEnvVars:     normalizeExecEnvNames(opts.AllowedEnvVars),
 		deniedEnvVars:      normalizeExecEnvNames(opts.DeniedEnvVars),
@@ -190,6 +202,20 @@ func newExecPolicy(opts ExecOptions) execPolicy {
 		inspectStartLibpod: opts.InspectStartLibpod,
 		inspectTarget:      opts.InspectTarget,
 	}
+}
+
+// normalizeExecUsers trims and dedupes allowed_users entries. Unlike the env
+// name lists, the empty string is kept: it is the "User unset" entry.
+func normalizeExecUsers(values []string) []string {
+	normalized := make([]string, 0, len(values))
+	for _, value := range values {
+		trimmed := strings.TrimSpace(value)
+		if slices.Contains(normalized, trimmed) {
+			continue
+		}
+		normalized = append(normalized, trimmed)
+	}
+	return normalized
 }
 
 func normalizeExecEnvValues(values []string) map[string][]string {
@@ -339,6 +365,9 @@ func (p execPolicy) denyReason(result ExecInspectResult) string {
 	}
 	if !p.allowRootUser && isRootUser(result.User) {
 		return "exec denied: root exec user is not allowed"
+	}
+	if p.allowedUsersSet && !slices.Contains(p.allowedUsers, result.User) {
+		return "exec denied: exec user is not allowlisted"
 	}
 	if reason := p.envDenyReason(result.Env); reason != "" {
 		return reason

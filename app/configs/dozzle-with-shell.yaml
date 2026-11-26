@@ -25,9 +25,11 @@
 # allowlist pins the program that starts, not the session. Dozzle's own Shell
 # tab runs as the container's default user, but sockguard cannot pin the exec
 # User: allow_root_user must be true because Dozzle sends an empty User, which
-# sockguard treats as root, so a caller can also request an explicit User
-# including root with the pinned argv. Treat the grant as a root-capable shell
-# in every container Dozzle lists, and put Dozzle behind its own authentication
+# sockguard treats as root. allowed_users: [""] then pins the User to unset, so
+# an explicit User (root included) is refused and the shell always runs as the
+# container's configured user, which can still be root for images that default
+# to it. Treat the grant as a shell as that user in every container Dozzle
+# lists, and put Dozzle behind its own authentication
 # (DOZZLE_AUTH_PROVIDER, with the shell role limited to admins). Containers labeled com.sockguard.exec=deny, including the official
 # sockguard image, are always refused. Keep that label on the proxy and on any
 # container that must not be entered.
@@ -57,6 +59,7 @@ request_body:
   exec:
     allow_privileged: false
     allow_root_user: true
+    allowed_users: [""]
     allowed_commands:
       - ["sh", "-c", "command -v bash >/dev/null 2>&1 && exec bash || exec sh"]
 

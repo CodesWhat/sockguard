@@ -2295,6 +2295,18 @@ func validateExecConfig(prefix string, cfg ExecRequestBodyConfig) []string {
 		}
 		errs = append(errs, fmt.Sprintf("%s.exec.allowed_commands entries must contain at least one non-empty argv token, got entry %d", prefix, i+1))
 	}
+	seenUsers := make(map[string]struct{}, len(cfg.AllowedUsers))
+	for i, user := range cfg.AllowedUsers {
+		if user != strings.TrimSpace(user) {
+			errs = append(errs, fmt.Sprintf("%s.exec.allowed_users entry %d must not have leading or trailing whitespace", prefix, i+1))
+			continue
+		}
+		if _, dup := seenUsers[user]; dup {
+			errs = append(errs, fmt.Sprintf("%s.exec.allowed_users entry %d is a duplicate of an earlier entry", prefix, i+1))
+			continue
+		}
+		seenUsers[user] = struct{}{}
+	}
 	for _, name := range cfg.AllowedEnvVars {
 		if validExecEnvVarName(name) {
 			continue
