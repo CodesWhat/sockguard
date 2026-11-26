@@ -1,6 +1,6 @@
 ---
 title: Presets
-description: Ready-made sockguard configs for drydock, Arcane, Beszel, Uptime Kuma, drydock with self-update, drydock with compose, drydock with build, drydock with mediated build, Portwing, Portwing with exec, Portwing with compose, Portwing with build, Portwing with mediated build, Traefik, Portainer, Watchtower, Homepage, Homarr, Dozzle, Dozzle with actions, Dozzle with shell, Diun, Autoheal, GitHub Actions and GitLab runners, the CIS Docker Benchmark, read-only dashboards, and Podman read-only monitoring.
+description: Ready-made sockguard configs for drydock, Dockge, Arcane, Beszel, Uptime Kuma, drydock with self-update, drydock with compose, drydock with build, drydock with mediated build, Portwing, Portwing with exec, Portwing with compose, Portwing with build, Portwing with mediated build, Traefik, Portainer, Watchtower, Homepage, Homarr, Dozzle, Dozzle with actions, Dozzle with shell, Diun, Autoheal, GitHub Actions and GitLab runners, the CIS Docker Benchmark, read-only dashboards, and Podman read-only monitoring.
 ---
 
 Sockguard ships with ready-made config presets for common Docker consumers. All presets are bundled in the container image at `/etc/sockguard/`.
@@ -622,6 +622,46 @@ remove), the image updater and pulls, prunes, compose projects, volume and
 network create or remove, volume browsing and backups, and Swarm. Those
 buttons fail with a sockguard denial. Swarm mode and Podman are untested. A
 management variant is not shipped yet.
+
+## Dockge (`dockge.yaml`)
+
+Bounded access for [Dockge](https://github.com/louislam/dockge)'s default stack workflow.
+
+**Use for:** Dockge deploying, updating, starting, stopping and removing Compose stacks and tailing their logs.
+
+```yaml
+# Allows: ping, version, info, events
+# Allows: container list + inspect + logs + stats
+# Allows: container create, start, stop, restart, kill, rename, wait, remove
+# Allows: image list + inspect + history + pull
+# Allows: network list + inspect + create + connect + disconnect + remove
+# Allows: volume list + inspect + create
+# Denies: exec, attach, build, image and volume removal, every other route
+```
+
+Dockge has no Docker client of its own. It runs `docker compose ls`, `ps`,
+`up -d`, `down`, `stop`, `restart`, `pull` and `logs -f` with `DOCKER_HOST`
+inherited, so the allowed calls are the Compose plugin's. They were derived
+from Dockge 1.5.0 (`backend/stack.ts`) and Docker Compose v5.8.0
+(`pkg/compose`). The preset needs container create, so it bounds it:
+`ownership.owner: dockge` stamps every container, network and volume Dockge
+creates and scopes Dockge to resources carrying the label, container-create
+inspection stays on its defaults (no privileged containers, host namespaces,
+extra capabilities or devices), and bind mounts are limited to `/opt/stacks`
+(match it to `DOCKGE_STACKS_DIR`). Logs are the exfiltration route Dockge
+needs, so the preset sets `insecure_allow_read_exfiltration: true`. Compose
+parses network IPs and reuses mounts from inspect data, so mount and network
+redaction are off, and container env stays redacted.
+
+Supported: stack deploy, update, start, stop, restart, down and logs. Refused,
+so the matching actions fail: the stack shell and Dockge console (exec,
+attach), `build` and `up --build`, `down --rmi` and `down -v`, inline
+`configs:`/`secrets:` `content:`, and Compose `post_start` hooks. Stacks that
+were running before the proxy don't show up and can't be adopted; run
+`docker compose down` on them and redeploy from Dockge. `external: true`
+networks and volumes must have been created through the proxy. The residual
+risk is that anyone who can edit a stack in Dockge can run any image as root
+on the host, so keep Dockge behind real authentication.
 
 ## Diun (`diun.yaml`)
 
