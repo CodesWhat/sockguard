@@ -610,6 +610,19 @@ listen:
 
 Malformed selectors (invalid IPs, malformed URIs, non-hex SPKI pins, pins that are not 32 bytes) are rejected at startup. The TLS handshake fails closed with no upstream connection when a CA-issued client certificate does not match the configured allowlist.
 
+### Generating mTLS material
+
+`sockguard tls bootstrap --dir <dir> --server-name <dns-or-ip>... --client <name>...` writes the files `listen.tls` needs and prints the matching config on stdout (progress goes to stderr).
+
+| Flag | Meaning |
+| --- | --- |
+| `--dir` | Output directory. Created `0700`; an existing one looser than `0700` is refused. Files are `0600`. |
+| `--server-name` | DNS name or IP the server certificate must cover. Repeatable, at least one. |
+| `--client` | Client name, lowercase letters, digits, `.` and `-`. Becomes the certificate CommonName and only DNS SAN. Repeatable, at least one. |
+| `--force` | Reissue the server certificate and the listed clients with new keys. Never replaces the CA. |
+
+Output files: `ca.pem`, `ca-key.pem`, `server-cert.pem`, `server-key.pem`, and `client-<name>.pem` with `client-<name>-key.pem` per client. The printed snippet sets `listen.tls.cert_file`, `key_file` and `client_ca_file`, a `clients.client_certificate_profiles` entry with `common_names: [<name>]` per client, and a `clients.profiles` entry with `ownership.owner: <name>` for you to add rules to. Rerunning is safe: it reuses the CA and valid certificates and adds new clients. See [Bootstrapping mTLS material](/security#bootstrapping-mtls-material) for the identity binding.
+
 ## Per-Client ACLs And Profiles
 
 `clients.allowed_cidrs` is a coarse TCP-client gate evaluated before the global rule set. Requests whose source IP is outside every configured CIDR are denied with `403` and never reach the health handler or the rule evaluator. The allowlist is hot-reloadable and applies to the dedicated admin listener as well: a successful reload swaps the main and admin chains together, and a rejected reload changes neither.

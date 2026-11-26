@@ -103,6 +103,22 @@ audit trail of exactly who signed the running policy and over which bytes.
 
 Non-loopback TCP listeners require mutual TLS 1.3 by default via `listen.tls`. Plaintext remote TCP is rejected unless you set **both** `listen.insecure_allow_plain_tcp: true` and `listen.insecure_allow_unauthenticated_clients: true` — two deliberate acknowledgments (one without the other is rejected) for legacy compatibility on a private network. Unix socket listeners bypass this layer because they are filesystem-bounded. `listen.tls.client_ca_file` defines the issuing trust root, and the optional `listen.tls.common_names`, `dns_names`, `ip_addresses`, `uri_sans`, and `public_key_sha256_pins` fields can narrow that trust to specific verified client certificates instead of implicitly accepting every client cert issued by the configured CA.
 
+#### Bootstrapping mTLS material
+
+`sockguard tls bootstrap` creates everything Layer 1 needs from the standard library alone: an ECDSA P-256 CA (10 years), a server certificate (1 year) for the names you give it, and one client certificate (1 year) per `--client`.
+
+```bash
+sockguard tls bootstrap --dir /etc/sockguard/pki \
+  --server-name sockguard.internal --server-name 10.0.5.2 \
+  --client portainer --client ci
+```
+
+**How a certificate maps to a profile and an owner.** The client name you pass is written to the certificate's Subject CommonName and, as the only SAN, its DNS name. `clients.client_certificate_profiles` selects a profile with `common_names: [<name>]` (or `dns_names`), and that profile's `ownership.owner` scopes every resource the client can see or create. The helper prints that chain for each client, with the profile name and owner both set to the client name. The CommonName is trustworthy as an identity only because the CA in that directory issues nothing but what you asked it for, so keep `ca-key.pem` off the Sockguard host and out of backups that other people can read once you are done issuing. For a selector that survives reissue, use `public_key_sha256_pins` instead, at the cost of editing config whenever a key changes. These selectors are strong for owner selection, so no `insecure_allow_weak_owner_selection` is needed.
+
+**Files and permissions.** The directory is created `0700` and every file `0600`. An existing directory that group or others can access is refused rather than corrected, because keys may already have been readable in it. The server certificate is `serverAuth` only and client certificates are `clientAuth` only, so the server certificate cannot be presented as a client identity. Writes are all-or-nothing: files are staged and renamed together, and a failed run leaves the directory as it was.
+
+**Reruns.** A rerun reuses the CA and every existing certificate that still verifies against it, covers the requested names and has more than 30 days left, and issues certificates only for new `--client` names. Anything stale or mismatched is an error until you pass `--force`, which reissues the server certificate and the listed clients with new keys. The CA is never replaced by the helper: move `ca.pem` and `ca-key.pem` aside to rotate it, then rerun with `--force` and distribute the new client files.
+
 ### Layer 2: Client Admission
 
 `clients.allowed_cidrs` gates incoming TCP callers by source CIDR before any rule evaluation runs. When `clients.container_labels.enabled` is true, Sockguard resolves the calling container by source IP and enforces per-client `com.sockguard.allow.<method>` label allowlists in addition to the global rule set.
