@@ -100,6 +100,7 @@ jobs:
           - { name: FuzzPlugin,                    pkg: ./internal/filter/ }
           - { name: FuzzNetwork,                   pkg: ./internal/filter/ }
           - { name: FuzzDuplicateCaseVariantKeyScan, pkg: ./internal/filter/ }
+          - { name: FuzzRuleBodyMatch,             pkg: ./internal/filter/ }
           - { name: FuzzLoadYAML,                  pkg: ./internal/config/ }
           - { name: FuzzValidateUpstreamHijackInactivityTimeout, pkg: ./internal/config/ }
           - { name: FuzzProxyHeadersAndBody,       pkg: ./internal/proxy/ }
