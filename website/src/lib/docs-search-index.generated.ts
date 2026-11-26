@@ -179,6 +179,7 @@ export const DOCS_SEARCH_ITEMS: [page: number, heading: string, anchor: string][
   [8,"Install","install"],
   [8,"How the socket gets in","how-the-socket-gets-in"],
   [8,"Point a consumer at it","point-a-consumer-at-it"],
+  [8,"Example: Traefik as a Quadlet consumer","example-traefik-as-a-quadlet-consumer"],
   [8,"Adjust the policy","adjust-the-policy"],
   [8,"Smoke test","smoke-test"],
   [9,"",""],
