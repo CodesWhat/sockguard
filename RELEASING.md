@@ -61,6 +61,7 @@ Maintenance releases publish their versioned assets, Go module, chart digest and
    - `website/src/lib/site-config.ts` — current stable version shown by the site
    - `website/src/lib/site-content.ts` and `README.md` — roadmap/current-release copy
    - `chart/sockguard/Chart.yaml` and `chart/sockguard/values.yaml` — lockstep chart/application versions plus the two-stage image digest state (see [Helm chart](#helm-chart) below)
+   - `examples/compose/**` — the `codeswhat/sockguard:<version>` default in each compose file; `scripts/release-metadata.test.mjs` fails when one lags the site version
    - `docs/content/docs/roadmap.mdx` — served on the docs site; it went stale for a full release line because it wasn't on this list
    - `SECURITY.md` — the supported-versions table: the line being cut goes to the top marked supported, the previous minor line stays supported, everything older is unsupported. It went stale twice in three days (#421, #431) because nothing in this procedure named it.
    - `renovate.json` — `baseBranchPatterns` names the dev branch of the line being cut (`dev/vX.Y` for `vX.Y.0`, the maintenance branch for a maintenance cut). `release-cut.yml` asserts this before creating the tag, so a stale value fails the cut; the v2.2.0 dispatch failed exactly there because this step did not name the file.
