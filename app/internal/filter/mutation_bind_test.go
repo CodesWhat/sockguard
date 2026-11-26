@@ -306,3 +306,97 @@ func TestRemapBindSourceEngineKindString(t *testing.T) {
 		t.Fatalf("String() = %q", got)
 	}
 }
+
+const libpodOverlayBase = `{"image":"alpine:3.21","systemd":"false",`
+
+func TestBindRemapLibpodOverlayVolumes(t *testing.T) {
+	opts := bindRemapOptions(mutationSurfaceLibpodContainerCreate, []string{"/srv/runner/builds"})
+	body := libpodOverlayBase + `"overlay_volumes":[{"source":"/builds/lower","destination":"/o","options":["upperdir=/builds/up","workdir=/builds/work","private"]}],"volumes":[{"Name":"v","Dest":"/v","Options":["O","upperdir=/builds/vup","workdir=/builds/vwork"]}]}`
+	status, doc := serveBindRemap(t, opts, "/libpod/containers/create", body)
+	if status != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204", status)
+	}
+	ov := doc["overlay_volumes"].([]any)[0].(map[string]any)
+	if ov["source"] != "/srv/runner/builds/lower" {
+		t.Fatalf("overlay source = %v", ov["source"])
+	}
+	want := []any{"upperdir=/srv/runner/builds/up", "workdir=/srv/runner/builds/work", "private"}
+	for i, w := range want {
+		if ov["options"].([]any)[i] != w {
+			t.Fatalf("overlay options = %#v", ov["options"])
+		}
+	}
+	vol := doc["volumes"].([]any)[0].(map[string]any)
+	if vol["Options"].([]any)[1] != "upperdir=/srv/runner/builds/vup" || vol["Options"].([]any)[2] != "workdir=/srv/runner/builds/vwork" {
+		t.Fatalf("volume options = %#v", vol["Options"])
+	}
+}
+
+func TestBindRemapLibpodOverlayBypassesDenied(t *testing.T) {
+	opts := bindRemapOptions(mutationSurfaceLibpodContainerCreate, []string{"/srv/runner/builds"})
+	denied400 := map[string]string{
+		"source traversal":      `"overlay_volumes":[{"source":"/builds/../../etc","destination":"/o"}]`,
+		"upperdir traversal":    `"overlay_volumes":[{"source":"/builds/l","destination":"/o","options":["upperdir=/builds/../../etc"]}]`,
+		"workdir traversal":     `"overlay_volumes":[{"source":"/builds/l","destination":"/o","options":["workdir=/builds/x/../../../etc"]}]`,
+		"volume upper traverse": `"volumes":[{"Name":"v","Dest":"/v","Options":["O","upperdir=/builds/../etc"]}]`,
+		"control char":          "\"overlay_volumes\":[{\"source\":\"/builds/a\\u0001\",\"destination\":\"/o\"}]",
+		"non-string option":     `"overlay_volumes":[{"source":"/builds/l","destination":"/o","options":[1]}]`,
+		"non-string source":     `"overlay_volumes":[{"source":1,"destination":"/o"}]`,
+	}
+	for name, frag := range denied400 {
+		if status, doc := serveBindRemap(t, opts, "/libpod/containers/create", libpodOverlayBase+frag+"}"); status != http.StatusBadRequest || doc != nil {
+			t.Errorf("%s: status = %d, want 400", name, status)
+		}
+	}
+	// Not rewritten, so the allowlist (which holds only the host path) refuses
+	// them as written.
+	denied403 := map[string]string{
+		"prefix confusion source":  `"overlay_volumes":[{"source":"/builds2/x","destination":"/o"}]`,
+		"prefix confusion upper":   `"overlay_volumes":[{"source":"/builds/l","destination":"/o","options":["upperdir=/builds2/up"]}]`,
+		"unmapped upper":           `"overlay_volumes":[{"source":"/builds/l","destination":"/o","options":["upperdir=/etc"]}]`,
+		"unmapped work":            `"overlay_volumes":[{"source":"/builds/l","destination":"/o","options":["workdir=/var/lib"]}]`,
+		"prefix-named option":      `"overlay_volumes":[{"source":"/builds/l","destination":"/o","options":["upperdirX=/etc"]}]`,
+		"unmapped source":          `"overlay_volumes":[{"source":"/","destination":"/o"}]`,
+		"relative upper":           `"overlay_volumes":[{"source":"/builds/l","destination":"/o","options":["upperdir=up"]}]`,
+		"volume unmapped upper":    `"volumes":[{"Name":"v","Dest":"/v","Options":["O","upperdir=/etc"]}]`,
+		"comma smuggled in upper":  `"overlay_volumes":[{"source":"/builds/l","destination":"/o","options":["upperdir=/builds/a,lowerdir=/etc"]}]`,
+		"backslash in source":      `"overlay_volumes":[{"source":"/builds/a\\b","destination":"/o"}]`,
+		"rewritten but not listed": `"overlay_volumes":[{"source":"/builds/l","destination":"/o"}]`,
+	}
+	for name, frag := range denied403 {
+		o := opts
+		if name == "rewritten but not listed" {
+			o = bindRemapOptions(mutationSurfaceLibpodContainerCreate, []string{"/srv/other"})
+		}
+		if status, _ := serveBindRemap(t, o, "/libpod/containers/create", libpodOverlayBase+frag+"}"); status != http.StatusForbidden {
+			t.Errorf("%s: status = %d, want 403", name, status)
+		}
+	}
+}
+
+func TestBindRemapLibpodOverlayLeavesRootfsAndDriverOptions(t *testing.T) {
+	opts := bindRemapOptions(mutationSurfaceLibpodContainerCreate, []string{"/builds", "/srv/runner/builds"})
+	body := libpodOverlayBase + `"rootfs":"/builds/root","volumes":[{"Name":"v","Dest":"/v","Options":["volume-opt=device=/builds/d"]}]}`
+	status, doc := serveBindRemap(t, opts, "/libpod/containers/create", body)
+	if status != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204", status)
+	}
+	if doc["rootfs"] != "/builds/root" {
+		t.Fatalf("rootfs rewritten: %v", doc["rootfs"])
+	}
+	if got := doc["volumes"].([]any)[0].(map[string]any)["Options"].([]any)[0]; got != "volume-opt=device=/builds/d" {
+		t.Fatalf("driver option rewritten: %v", got)
+	}
+}
+
+func TestBindRemapContainerCreateSurfaceIgnoresOverlayVolumes(t *testing.T) {
+	opts := bindRemapOptions(mutationSurfaceContainerCreate, []string{"/builds"})
+	body := libpodOverlayBase + `"overlay_volumes":[{"source":"/builds/l","destination":"/o"}]}`
+	status, doc := serveBindRemap(t, opts, "/libpod/containers/create", body)
+	if status != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204", status)
+	}
+	if doc["overlay_volumes"].([]any)[0].(map[string]any)["source"] != "/builds/l" {
+		t.Fatalf("overlay source rewritten by container_create rule: %#v", doc["overlay_volumes"])
+	}
+}

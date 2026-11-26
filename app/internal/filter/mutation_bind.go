@@ -92,8 +92,10 @@ func remapBindSpec(spec, from, to string) (string, bool, error) {
 // applyRemapBindSource applies one remap_bind_source rule to a container
 // create body. container_create rewrites HostConfig.Binds entries and
 // HostConfig.Mounts entries of Type "bind"; libpod_container_create rewrites
-// the top-level "mounts" entries Podman treats as host binds. Volume
-// (named-volume) driver options, libpod overlay_volumes and rootfs are not
+// the top-level "mounts" entries Podman treats as host binds, every
+// "overlay_volumes" source, and the upperdir/workdir options of an
+// "overlay_volumes" entry or a "volumes" entry. Volume driver options
+// (device), libpod rootfs, init_path and Config.Volumes keys are not
 // rewritten, so a request naming a host path there is checked against
 // allowed_bind_mounts unchanged.
 func applyRemapBindSource(doc map[string]any, surface string, rule compiledMutationRule) (string, error) {
@@ -110,6 +112,11 @@ func applyRemapBindSource(doc map[string]any, surface string, rule compiledMutat
 		changed, err = remapDockerBinds(hostConfig, rule)
 	case mutationSurfaceLibpodContainerCreate:
 		changed, err = remapMountEntries(doc, "mounts", rule, libpodMountIsBind)
+		if err == nil {
+			var overlayChanged bool
+			overlayChanged, err = remapLibpodOverlay(doc, rule)
+			changed = changed || overlayChanged
+		}
 	default:
 		return mutationOutcomeNoop, nil
 	}
@@ -226,4 +233,96 @@ func setFoldedStringLeafKeepingCase(m map[string]any, name, newValue string) {
 		}
 	}
 	m[name] = newValue
+}
+
+// remapLibpodOverlay rewrites the host paths of a libpod overlay mount: the
+// source of every "overlay_volumes" entry (always a host directory, whatever
+// its other fields say) and the upper and work directory options of an
+// "overlay_volumes" entry or a named "volumes" entry. The options are matched
+// the way Podman reads them (isOverlayDirOption: case-sensitive prefix, value
+// after the first "="), so the rewrite and the policy check that follows see
+// the same set of directories. A directory that is not absolute is left for
+// the policy check to refuse.
+func remapLibpodOverlay(doc map[string]any, rule compiledMutationRule) (bool, error) {
+	changed := false
+	for key, value := range doc {
+		var isOverlayVolumes bool
+		switch {
+		case strings.EqualFold(key, "overlay_volumes"):
+			isOverlayVolumes = true
+		case strings.EqualFold(key, "volumes"):
+		default:
+			continue
+		}
+		if value == nil {
+			continue
+		}
+		entries, ok := value.([]any)
+		if !ok {
+			return false, fmt.Errorf("%s must be an array", key)
+		}
+		for _, entry := range entries {
+			mount, ok := entry.(map[string]any)
+			if !ok {
+				return false, fmt.Errorf("%s entry must be an object", key)
+			}
+			if isOverlayVolumes {
+				source, present, isString := foldedStringLeaf(mount, "source")
+				if present {
+					if !isString {
+						return false, fmt.Errorf("%s source must be a string", key)
+					}
+					next, matched, err := remapBindSourcePath(source, rule.bindFrom, rule.bindTo)
+					if err != nil {
+						return false, err
+					}
+					if matched && next != source {
+						setFoldedStringLeafKeepingCase(mount, "source", next)
+						changed = true
+					}
+				}
+			}
+			optionsChanged, err := remapOverlayDirOptions(mount, rule)
+			if err != nil {
+				return false, err
+			}
+			changed = changed || optionsChanged
+		}
+	}
+	return changed, nil
+}
+
+func remapOverlayDirOptions(mount map[string]any, rule compiledMutationRule) (bool, error) {
+	changed := false
+	for key, value := range mount {
+		if !strings.EqualFold(key, "options") || value == nil {
+			continue
+		}
+		options, ok := value.([]any)
+		if !ok {
+			return false, fmt.Errorf("overlay options must be an array")
+		}
+		for i, entry := range options {
+			option, ok := entry.(string)
+			if !ok {
+				return false, fmt.Errorf("overlay option must be a string")
+			}
+			if !isOverlayDirOption(option) {
+				continue
+			}
+			name, dir, hasValue := strings.Cut(option, "=")
+			if !hasValue {
+				continue
+			}
+			next, matched, err := remapBindSourcePath(dir, rule.bindFrom, rule.bindTo)
+			if err != nil {
+				return false, err
+			}
+			if matched && next != dir {
+				options[i] = name + "=" + next
+				changed = true
+			}
+		}
+	}
+	return changed, nil
 }
