@@ -180,7 +180,7 @@ export const DOCS_SEARCH_ITEMS: [page: number, heading: string, anchor: string][
   [9,"What is never exported","what-is-never-exported"],
   [9,"Sampling","sampling"],
   [9,"Failure and drop behavior","failure-and-drop-behavior"],
-  [9,"Not instrumented","not-instrumented"],
+  [9,"Admin listener spans","admin-listener-spans"],
   [9,"Production checklist","production-checklist"],
   [10,"",""],
   [10,"Enabling the admin API","enabling-the-admin-api"],
