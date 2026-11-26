@@ -217,7 +217,15 @@ jobs:
 
       - name: Install podman
         run: |
-          sudo apt-get update
+          # The runner image's packages.microsoft.com source intermittently
+          # 403s and makes `apt-get update` exit 100. Podman comes from the
+          # Ubuntu archive, so drop that source and retry the update.
+          sudo rm -f /etc/apt/sources.list.d/microsoft-prod.list /etc/apt/sources.list.d/microsoft-prod.sources
+          for attempt in 1 2 3; do
+            sudo apt-get update && break
+            [ "$attempt" = 3 ] && exit 1
+            sleep 10
+          done
           sudo apt-get install -y podman
           podman version
 
@@ -396,7 +404,15 @@ jobs:
 
       - name: Install podman
         run: |
-          sudo apt-get update
+          # The runner image's packages.microsoft.com source intermittently
+          # 403s and makes `apt-get update` exit 100. Podman comes from the
+          # Ubuntu archive, so drop that source and retry the update.
+          sudo rm -f /etc/apt/sources.list.d/microsoft-prod.list /etc/apt/sources.list.d/microsoft-prod.sources
+          for attempt in 1 2 3; do
+            sudo apt-get update && break
+            [ "$attempt" = 3 ] && exit 1
+            sleep 10
+          done
           sudo apt-get install -y podman uidmap
           podman version
 
