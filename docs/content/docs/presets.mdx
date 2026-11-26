@@ -1,6 +1,6 @@
 ---
 title: Presets
-description: Ready-made sockguard configs for drydock, drydock with self-update, drydock with compose, drydock with build, drydock with mediated build, Portwing, Portwing with exec, Portwing with compose, Portwing with build, Portwing with mediated build, Traefik, Portainer, Watchtower, Homepage, Homarr, Diun, Autoheal, GitHub Actions and GitLab runners, the CIS Docker Benchmark, read-only dashboards, and Podman read-only monitoring.
+description: Ready-made sockguard configs for drydock, drydock with self-update, drydock with compose, drydock with build, drydock with mediated build, Portwing, Portwing with exec, Portwing with compose, Portwing with build, Portwing with mediated build, Traefik, Portainer, Watchtower, Homepage, Homarr, Beszel, Diun, Autoheal, GitHub Actions and GitLab runners, the CIS Docker Benchmark, read-only dashboards, and Podman read-only monitoring.
 ---
 
 Sockguard ships with ready-made config presets for common Docker consumers. All presets are bundled in the container image at `/etc/sockguard/`.
@@ -470,6 +470,29 @@ it allows; container archive, export and attach routes and image tarball routes
 stay denied. Its dockerode call is `container.remove()` with no options, so the
 preset allows only bare container removal; `force`, anonymous-volume deletion,
 and legacy link deletion stay denied.
+
+## Beszel (`beszel.yaml`)
+
+Least-privilege access for the [Beszel](https://beszel.dev) agent's default container monitoring.
+
+**Use for:** the Beszel agent with container list, stats, health and image update checks, and nothing else.
+
+```yaml
+# Allows: GET /_ping, /version, /info
+# Allows: GET container list + inspect + stats
+# Allows: GET /images/**/json (image update checks)
+# Denies: every other Docker API route
+```
+
+Derived from Beszel v0.21.2 (`agent/docker.go`, `agent/docker_registry.go`). The
+agent sends no API version prefix and needs Docker 25.0.0 or newer for one-shot
+stats. The hub's container log view calls `GET /containers/{id}/logs`, which is
+not supported by this preset because logs are a read-exfiltration route; the
+hub shows an error for it. To enable it, add an allow rule for
+`GET /containers/*/logs` above the final deny and set
+`insecure_allow_read_exfiltration: true`. Set `DOCKER_IMAGE_CHECK=false` on the
+agent and drop the image rule if you don't use update checks. Podman and Swarm
+are untested.
 
 ## Diun (`diun.yaml`)
 

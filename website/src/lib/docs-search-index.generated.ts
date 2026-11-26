@@ -122,6 +122,7 @@ export const DOCS_SEARCH_ITEMS: [page: number, heading: string, anchor: string][
   [5,"Watchtower (watchtower.yaml)","watchtower-watchtoweryaml"],
   [5,"Homepage (homepage.yaml)","homepage-homepageyaml"],
   [5,"Homarr (homarr.yaml)","homarr-homarryaml"],
+  [5,"Beszel (beszel.yaml)","beszel-beszelyaml"],
   [5,"Diun (diun.yaml)","diun-diunyaml"],
   [5,"Autoheal (autoheal.yaml)","autoheal-autohealyaml"],
   [5,"GitHub Actions Self-Hosted Runner (github-actions-runner.yaml)","github-actions-self-hosted-runner-github-actions-runneryaml"],
