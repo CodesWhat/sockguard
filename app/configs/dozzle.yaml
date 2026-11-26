@@ -27,11 +27,17 @@ health:
 # read-exfiltration route.
 insecure_allow_read_exfiltration: true
 
-# Response redaction stays on (the defaults). Dozzle's list view reads names,
-# ids, images, state, labels and ports, none of which are redacted. Container
-# env stays redacted because Dozzle never reads it. Mount paths and network
-# addresses also stay redacted, so those two details show placeholder or empty
-# values in Dozzle's container panel instead of real host paths and IPs.
+# Response redaction stays on (the defaults) except network topology. Dozzle's
+# list view reads names, ids, images, state, labels and ports, none of which are
+# redacted, and container env stays redacted because Dozzle never reads it.
+# Dozzle also parses every container's network addresses with netip.ParseAddr
+# while listing containers, and the redaction placeholder is not an address, so
+# with the default on Dozzle logs "Could not connect to any Docker Engine" and
+# exits (found against the real v11.5.0 image). Network topology is off for
+# that reason. Mount paths stay redacted, so Dozzle's container panel shows
+# placeholder values for host paths.
+response:
+  redact_network_topology: false
 
 rules:
   # Dozzle pings the daemon on connect to negotiate the API version.

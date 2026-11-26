@@ -28,7 +28,7 @@ Container actions and the shell (`DOZZLE_ENABLE_ACTIONS`, `DOZZLE_ENABLE_SHELL`)
 
 ## Behavior notes
 
-- Mount paths and network addresses stay redacted (the sockguard defaults), so Dozzle's container details show placeholders or empty values for them. Container env is redacted too, and Dozzle doesn't read it.
+- Network topology redaction is off, because Dozzle parses container network addresses while listing and exits on the redaction placeholder. Mount paths stay redacted (the sockguard default), so Dozzle's container details show placeholders for host paths. Container env is redacted too, and Dozzle doesn't read it.
 - Dozzle's volume and disk-size readings come from `GET /system/df`, which this preset denies. Dozzle logs the failure and carries on without those figures.
 - Derived from Dozzle v11.5.0 (`internal/container/docker/client.go`). Check the preset against the Dozzle source again when you bump the pinned image.
 

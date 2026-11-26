@@ -486,9 +486,11 @@ Least-privilege access for [Dozzle](https://dozzle.dev)'s default read-only view
 Derived from Dozzle v11.5.0 (`internal/container/docker/client.go`). Dozzle's
 purpose is reading logs, so this preset sets `insecure_allow_read_exfiltration: true`.
 Logs are the only exfiltration route it allows; archive, export, attach and top
-stay denied. Response redaction stays at its defaults, so Dozzle's container
-details show placeholders or empty values for mount paths and network
-addresses. Container actions (`DOZZLE_ENABLE_ACTIONS`) and the shell
+stay denied. Network topology redaction is off (`redact_network_topology: false`):
+Dozzle parses every container's network addresses while listing, and the
+redaction placeholder makes it exit with "Could not connect to any Docker
+Engine". Mount paths and env stay redacted, so the container details show
+placeholders for host paths. Container actions (`DOZZLE_ENABLE_ACTIONS`) and the shell
 (`DOZZLE_ENABLE_SHELL`) are not supported and sockguard refuses the calls they
 make. Dozzle's volume and disk-size readout (`GET /system/df`) is denied and
 Dozzle carries on without it. Swarm mode and agent mode are untested.
