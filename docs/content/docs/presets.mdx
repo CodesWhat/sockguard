@@ -1,6 +1,6 @@
 ---
 title: Presets
-description: Ready-made sockguard configs for drydock, Dockge, Arcane, Beszel, Uptime Kuma, drydock with self-update, drydock with compose, drydock with build, drydock with mediated build, Portwing, Portwing with exec, Portwing with compose, Portwing with build, Portwing with mediated build, Traefik, Portainer, Watchtower, Homepage, Homarr, Dozzle, Dozzle with actions, Dozzle with shell, Diun, Autoheal, GitHub Actions and GitLab runners, the CIS Docker Benchmark, read-only dashboards, and Podman read-only monitoring.
+description: Ready-made sockguard configs for drydock, Komodo, Dockge, Arcane, Beszel, Uptime Kuma, drydock with self-update, drydock with compose, drydock with build, drydock with mediated build, Portwing, Portwing with exec, Portwing with compose, Portwing with build, Portwing with mediated build, Traefik, Portainer, Watchtower, Homepage, Homarr, Dozzle, Dozzle with actions, Dozzle with shell, Diun, Autoheal, GitHub Actions and GitLab runners, the CIS Docker Benchmark, read-only dashboards, and Podman read-only monitoring.
 ---
 
 Sockguard ships with ready-made config presets for common Docker consumers. All presets are bundled in the container image at `/etc/sockguard/`.
@@ -662,6 +662,35 @@ were running before the proxy don't show up and can't be adopted; run
 networks and volumes must have been created through the proxy. The residual
 risk is that anyone who can edit a stack in Dockge can run any image as root
 on the host, so keep Dockge behind real authentication.
+
+## Komodo (`komodo.yaml`)
+
+Least-privilege access for the [Komodo](https://komo.do) Periphery agent's monitoring surface.
+
+**Use for:** Periphery reporting containers, images, networks, volumes, stats and logs to Komodo Core, and nothing else.
+
+```yaml
+# Allows: GET /_ping, /version
+# Allows: GET container list + inspect + stats + logs
+# Allows: GET image list + inspect + history, network and volume list + inspect
+# Denies: every other Docker API route
+```
+
+Derived from Komodo v2.3.4 (`bin/periphery/src`). Periphery reads its inventory
+through the bollard client and runs `docker stats` and `docker logs` through the
+CLI. Both honor `DOCKER_HOST`, so point Periphery at sockguard's TCP listener.
+Container logs are an exfiltration route, so this preset sets
+`insecure_allow_read_exfiltration: true`. Archive, export, attach and top stay
+denied. Response redaction stays at its defaults, so Komodo's container details
+show placeholders or empty values for env, mount paths and network addresses.
+
+Supported: monitoring. Not supported, and refused with a deny: deployments,
+Stacks (`docker compose`), Builds, container start, stop, restart, pause, remove
+and rename, image pull and remove, network and volume create and remove, every
+prune action, Swarm mode, and terminals and container exec. Set
+`PERIPHERY_DISABLE_TERMINALS` and `PERIPHERY_DISABLE_CONTAINER_EXEC` to `true`.
+A deploy-capable Periphery needs container create with a caller-defined config,
+compose and image builds, which this preset does not bound.
 
 ## Diun (`diun.yaml`)
 
