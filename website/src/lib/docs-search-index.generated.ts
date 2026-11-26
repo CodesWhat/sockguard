@@ -140,6 +140,7 @@ export const DOCS_SEARCH_ITEMS: [page: number, heading: string, anchor: string][
   [6,"Uptime Kuma (uptime-kuma.yaml)","uptime-kuma-uptime-kumayaml"],
   [6,"Beszel (beszel.yaml)","beszel-beszelyaml"],
   [6,"Arcane (arcane.yaml)","arcane-arcaneyaml"],
+  [6,"Arcane with management (arcane-with-management.yaml)","arcane-with-management-arcane-with-managementyaml"],
   [6,"Dockge (dockge.yaml)","dockge-dockgeyaml"],
   [6,"Komodo (komodo.yaml)","komodo-komodoyaml"],
   [6,"Diun (diun.yaml)","diun-diunyaml"],
