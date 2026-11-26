@@ -1,6 +1,6 @@
 ---
 title: Presets
-description: Ready-made sockguard configs for drydock, drydock with self-update, drydock with compose, drydock with build, drydock with mediated build, Portwing, Portwing with exec, Portwing with compose, Portwing with build, Portwing with mediated build, Traefik, Portainer, Watchtower, Homepage, Homarr, Diun, Autoheal, GitHub Actions and GitLab runners, the CIS Docker Benchmark, read-only dashboards, Podman read-only monitoring, Dozzle, Dozzle with actions, Dozzle with shell, Uptime Kuma, Beszel, Arcane, Dockge, Komodo, Jenkins, and Woodpecker CI.
+description: Ready-made sockguard configs for drydock, drydock with self-update, drydock with compose, drydock with build, drydock with mediated build, Portwing, Portwing with exec, Portwing with compose, Portwing with build, Portwing with mediated build, Traefik, Portainer, Watchtower, Homepage, Homarr, Diun, Autoheal, GitHub Actions and GitLab runners, the CIS Docker Benchmark, read-only dashboards, Podman read-only monitoring, Dozzle, Dozzle with actions, Dozzle with shell, Uptime Kuma, Beszel, Arcane, Arcane with management, Dockge, Komodo, Jenkins, and Woodpecker CI.
 ---
 
 Sockguard ships with ready-made config presets for common Docker consumers. All presets are bundled in the container image at `/etc/sockguard/`.
@@ -621,8 +621,47 @@ Arcane's detail pages show placeholders or empty values for them.
 Unsupported, and refused: container actions (start, stop, restart, redeploy,
 remove), the image updater and pulls, prunes, compose projects, volume and
 network create or remove, volume browsing and backups, and Swarm. Those
-buttons fail with a sockguard denial. Swarm mode and Podman are untested. A
-management variant is not shipped yet.
+buttons fail with a sockguard denial. Swarm mode and Podman are untested. For
+those, use [Arcane with management](#arcane-with-management-arcane-with-managementyaml).
+
+## Arcane with management (`arcane-with-management.yaml`)
+
+Bounded write access for [Arcane](https://github.com/getarcaneapp/arcane): everything `arcane.yaml` allows, plus container actions, image pulls, the updater and compose projects.
+
+**Use for:** Arcane starting, stopping, restarting and removing containers, pulling images, running the image updater, and deploying compose projects.
+
+```yaml
+# Allows: everything in arcane.yaml
+# Allows: container create, start, stop, restart, rename, remove
+# Allows: image pull
+# Allows: network create, connect, disconnect, remove; volume create
+# Denies: exec, attach, kill, pause, commit, archive, image remove, tag,
+#         prune, load and build, volume remove, Swarm, every other route
+```
+
+Derived from Arcane v3.1.1 (`backend/internal/container/service.go`,
+`backend/internal/image/service.go`, `backend/internal/updater/`,
+`backend/pkg/projects/`). Container create is bounded by
+`request_body.container_create`: privileged mode, host network, PID, IPC,
+user and cgroup namespaces, `container:<id>` and `ns:<path>` namespace joins,
+devices, capability additions, sysctls, unconfined seccomp and AppArmor, and
+published ports are refused. Bind mounts are refused outside
+`allowed_bind_mounts`, which ships with the placeholder `/opt/arcane/projects`;
+replace it with the host paths your projects mount. The updater and redeploys
+recreate a container with its original mounts, so a container that binds a
+path outside the list can't be updated until you add it.
+
+`ownership.owner: arcane` stamps every container, network and volume Arcane
+creates and limits Arcane to resources carrying that label. Containers that
+already exist don't carry it, so Arcane's lists and actions skip them until you
+create them through Arcane or label them with `com.sockguard.owner=arcane`.
+That's the price of isolation: Arcane can't touch Arcane's own container or
+anything it didn't make. Because published ports are refused, a compose project
+that publishes a host port fails to deploy; put a reverse proxy on a shared
+network. Image pulls accept any registry. Arcane can still run any image with
+any command, so restrict who can reach the proxy socket and who can log in to
+Arcane. Terminal and exec, kill and pause, image removal, volume removal and
+prunes are unsupported and refused. Swarm and Podman are untested.
 
 ## Dockge (`dockge.yaml`)
 
