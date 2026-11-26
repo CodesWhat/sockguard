@@ -73,7 +73,7 @@ jobs:
       SOCKGUARD_TEST_PODMAN_SOCKET: /tmp/sockguard-podman-major/podman.sock
     steps:
       - name: Harden Runner
-        uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2  # v2.22.2
+        uses: step-security/harden-runner@1d88384fd173af6ecb012dfd0264a306b711241a  # v2.22.4
         with:
           egress-policy: audit
 
@@ -192,7 +192,7 @@ jobs:
       # whichever Ubuntu archive mirror the runner region picks — not a
       # fixed, documented endpoint set. Revisit in stage 2.
       - name: Harden Runner
-        uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2  # v2.22.2
+        uses: step-security/harden-runner@1d88384fd173af6ecb012dfd0264a306b711241a  # v2.22.4
         with:
           egress-policy: audit
 
@@ -363,7 +363,7 @@ jobs:
       # Stays audit for stage 1: same apt-get/mirror reasoning as the
       # rootful leg above. Revisit in stage 2.
       - name: Harden Runner
-        uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2  # v2.22.2
+        uses: step-security/harden-runner@1d88384fd173af6ecb012dfd0264a306b711241a  # v2.22.4
         with:
           egress-policy: audit
 
