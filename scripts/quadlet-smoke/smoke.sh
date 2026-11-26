@@ -58,6 +58,18 @@ for q in /usr/lib/podman/quadlet /usr/libexec/podman/quadlet; do
   fi
 done
 
+# The Traefik consumer example isn't installed by this test (it would pull
+# images), but its units must still parse alongside the kit's.
+for q in /usr/lib/podman/quadlet /usr/libexec/podman/quadlet; do
+  if [ -x "$q" ]; then
+    trial="$(mktemp -d)"
+    cp "$kit"/*.container "$kit"/*.volume "$kit"/traefik/*.container "$kit"/traefik/*.network "$trial/"
+    QUADLET_UNIT_DIRS="$trial" "$q" -dryrun -user >/dev/null || { rm -rf "$trial"; fail "quadlet rejected the traefik example units"; }
+    rm -rf "$trial"
+    break
+  fi
+done
+
 systemctl --user daemon-reload
 systemctl --user start podman.socket
 systemctl --user start sockguard.service || fail "sockguard.service did not start"
