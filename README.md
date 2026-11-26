@@ -76,6 +76,7 @@ This is a separate project from [Buildkite's Sockguard](https://github.com/build
 | Getting Started | [Getting Started](https://getsockguard.com/docs/getting-started) |
 | Configuration | [Configuration](https://getsockguard.com/docs/configuration) |
 | Multi-Host | [Multi-Host](https://getsockguard.com/docs/multi-host) |
+| Swarm Manager Nodes | [Swarm Manager Nodes](https://getsockguard.com/docs/swarm) |
 | Presets | [Presets](https://getsockguard.com/docs/presets) |
 | Podman | [Podman](https://getsockguard.com/docs/podman) |
 | Migration | [Migration](https://getsockguard.com/docs/migration) |

@@ -6,6 +6,7 @@
     "configuration",
     "frontend-runner",
     "multi-host",
+    "swarm",
     "presets",
     "podman",
     "rootless-quadlet",

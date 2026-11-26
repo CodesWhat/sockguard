@@ -36,6 +36,7 @@ export default function sitemap(): MetadataRoute.Sitemap {
       "configuration",
       "frontend-runner",
       "multi-host",
+      "swarm",
       "presets",
       "podman",
       "rootless-quadlet",
