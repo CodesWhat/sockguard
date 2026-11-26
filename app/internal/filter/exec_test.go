@@ -1747,7 +1747,8 @@ func TestExecDenyReasonAllowedUsers(t *testing.T) {
 	}{
 		{"no pin admits any user", nil, true, "0", false},
 		{"unset pin admits empty", []string{""}, true, "", false},
-		{"unset pin admits whitespace-only", []string{""}, true, "  ", false},
+		{"unset pin denies whitespace-only", []string{""}, true, "  ", true},
+		{"named pin denies padded request", []string{"app"}, true, " app", true},
 		{"unset pin denies root", []string{""}, true, "root", true},
 		{"unset pin denies uid 0", []string{""}, true, "0", true},
 		{"unset pin denies 0:0", []string{""}, true, "0:0", true},

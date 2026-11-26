@@ -50,9 +50,8 @@ type ExecOptions struct {
 	AllowPrivileged bool
 	AllowRootUser   bool
 	// AllowedUsers, when non-empty, pins the exec User to these exact values.
-	// Each entry and the request's User are compared after trimming
-	// surrounding whitespace; the rest is an exact, case-sensitive string
-	// comparison, so "app" does not admit "app:wheel" and "1000" does not
+	// Each entry is trimmed; the request's User is compared byte for
+	// byte and case-sensitively, so a padded User never matches and "app" does not admit "app:wheel" and "1000" does not
 	// admit "01000". The empty string is a real entry meaning "User unset":
 	// Docker then runs the exec as the container's configured user. It is
 	// checked in addition to AllowRootUser, not instead of it. Default empty
@@ -367,7 +366,7 @@ func (p execPolicy) denyReason(result ExecInspectResult) string {
 	if !p.allowRootUser && isRootUser(result.User) {
 		return "exec denied: root exec user is not allowed"
 	}
-	if p.allowedUsersSet && !slices.Contains(p.allowedUsers, strings.TrimSpace(result.User)) {
+	if p.allowedUsersSet && !slices.Contains(p.allowedUsers, result.User) {
 		return "exec denied: exec user is not allowlisted"
 	}
 	if reason := p.envDenyReason(result.Env); reason != "" {
