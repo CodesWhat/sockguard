@@ -34,6 +34,7 @@ export const DOCS_SEARCH_ITEMS: [page: number, heading: string, anchor: string][
   [1,"Published v3 release candidate","published-v3-release-candidate"],
   [1,"Connecting Your Apps","connecting-your-apps"],
   [1,"CLI Commands","cli-commands"],
+  [1,"Suggesting rules from warn and audit traffic","suggesting-rules-from-warn-and-audit-traffic"],
   [1,"Next Steps","next-steps"],
   [2,"",""],
   [2,"YAML Config (recommended)","yaml-config-recommended"],

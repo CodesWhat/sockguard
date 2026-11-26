@@ -130,6 +130,9 @@ sockguard validate --strict -c /etc/sockguard/sockguard.yaml
 sockguard match -c /etc/sockguard/sockguard.yaml \
   -X GET --path /v1.45/containers/json
 
+# Suggest allow rules from warn or audit access-log lines (stdout only)
+sockguard policy suggest --from /var/log/sockguard/access.jsonl
+
 # Runtime self-check: is the upstream daemon answering, is this
 # sockguard's own health endpoint up, does the TLS material load
 sockguard verify -c /etc/sockguard/sockguard.yaml
@@ -188,6 +191,39 @@ verification timeout. The signed candidate carries
 combined with this mode; migrate those grants to YAML before signing. See
 [Signed Policy Bundles](/configuration#signed-policy-bundles) for the complete
 layout.
+
+### Suggesting rules from warn and audit traffic
+
+Run a profile in `warn` or `audit` rollout, collect the JSON access log, then
+let sockguard draft the rules that would have let that traffic through:
+
+```bash
+sockguard policy suggest --from /var/log/sockguard/access.jsonl > suggested-rules.yaml
+```
+
+Use `--from -` to read stdin. The command reads only `request_would_deny`
+lines, groups them by method and normalized path, and prints a YAML `rules:`
+snippet to stdout. It never writes a config file and nothing it prints is
+active until you copy it in, so treat every rule as a suggestion that needs
+review. Each rule carries a comment saying so, and write methods are flagged.
+
+What it will and won't include:
+
+- Only the method and the normalized path are read. Query strings, headers,
+  bodies, client addresses and request IDs never reach the output.
+- Segments that are 12 to 64 lowercase hex characters (container, exec and
+  network IDs) become `*`. Names stay literal, since a name can't be told from
+  a path word.
+- A path containing glob characters, `..`, encoded bytes or anything outside
+  letters, digits and `-_.~:` is skipped and counted, never emitted.
+- Input is bounded: lines over 64 KiB are skipped, reading stops at 1,000,000
+  lines, and at most 500 distinct rules are printed.
+- The snippet is compiled with the same rule compiler `serve` uses before it
+  is printed. A snippet that fails to compile is an error, not output.
+
+The suggested rules are plain `allow` rules with no body or query constraints.
+Tighten them (`match.query`, request-body policy, ownership) before relying on
+them, and place them before your final deny. A summary line goes to stderr.
 
 ## Next Steps
 
