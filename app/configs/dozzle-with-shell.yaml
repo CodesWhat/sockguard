@@ -1,0 +1,108 @@
+# Sockguard, Dozzle with Shell Preset
+#
+# Extends the dozzle preset with the container shell behind
+# DOZZLE_ENABLE_SHELL: the Shell tab, an interactive terminal in a container.
+# Allows: everything in dozzle.yaml plus
+#         POST /containers/{id}/exec  (exec create, argv pinned below)
+#         POST /exec/{id}/start       (exec start, hijacked stream)
+#         POST /exec/{id}/resize      (terminal resize)
+# Denies: any exec whose command is not the one Dozzle sends, privileged exec,
+# container start/stop/restart/remove, the Attach tab (POST
+# /containers/{id}/attach, which feeds stdin to the container's main process
+# and is not covered by the exec allowlist), image pulls and everything else
+# the base preset denies. The Attach tab fails with a refusal.
+# Swarm mode and agent mode are untested with this preset.
+#
+# The pinned command is the one Dozzle v11.5.0 sends for every shell session
+# (internal/web/terminal.go):
+#   ["sh", "-c", "command -v bash >/dev/null 2>&1 && exec bash || exec sh"]
+# Sockguard matches the whole argv, so exec create with any other command is
+# refused, and exec start re-checks the stored command before it runs.
+#
+# This does not limit what a person types once the shell is open. The
+# allowlist pins the program that starts, not the session. Whoever can open
+# Dozzle's Shell tab has a shell as the container's default user in every
+# container Dozzle lists, so put Dozzle behind its own authentication
+# (DOZZLE_AUTH_PROVIDER, with the shell role limited to admins). allow_root_user
+# is true because Dozzle sets no exec User and sockguard treats an empty User
+# as root. Containers labeled com.sockguard.exec=deny, including the official
+# sockguard image, are always refused. Keep that label on the proxy and on any
+# container that must not be entered.
+#
+# Derived from Dozzle v11.5.0, internal/container/docker/client.go
+# (ContainerExec) and internal/web/terminal.go.
+
+upstream:
+  socket: /var/run/docker.sock
+
+log:
+  level: info
+  format: json
+  access_log: true
+
+health:
+  enabled: true
+  path: /health
+
+# Dozzle's whole purpose is reading container logs, which are an explicit
+# read-exfiltration route.
+insecure_allow_read_exfiltration: true
+
+# Exec body inspection. Dozzle creates every shell with the same argv and sets
+# no User, Privileged or Env.
+request_body:
+  exec:
+    allow_privileged: false
+    allow_root_user: true
+    allowed_commands:
+      - ["sh", "-c", "command -v bash >/dev/null 2>&1 && exec bash || exec sh"]
+
+# Response redaction stays on (the defaults). Dozzle's list view reads names,
+# ids, images, state, labels and ports, none of which are redacted. Container
+# env stays redacted because Dozzle never reads it. Mount paths and network
+# addresses also stay redacted, so those two details show placeholder or empty
+# values in Dozzle's container panel instead of real host paths and IPs.
+
+rules:
+  # Dozzle pings the daemon on connect to negotiate the API version.
+  - match: { method: GET, path: "/_ping" }
+    action: allow
+  - match: { method: HEAD, path: "/_ping" }
+    action: allow
+
+  # Engine identity: Info (host name, id, root dir, swarm state) and
+  # ServerVersion (Podman detection).
+  - match: { method: GET, path: "/version" }
+    action: allow
+  - match: { method: GET, path: "/info" }
+    action: allow
+
+  # Container start/die/health events drive the live container list and the
+  # per-container stats streams.
+  - match: { method: GET, path: "/events" }
+    action: allow
+
+  # Container reads
+  - match: { method: GET, path: "/containers/json" }
+    action: allow
+  - match: { method: GET, path: "/containers/*/json" }
+    action: allow
+  - match: { method: GET, path: "/containers/*/stats" }
+    action: allow
+  - match: { method: GET, path: "/containers/*/logs" }
+    action: allow
+
+  # Shell (DOZZLE_ENABLE_SHELL): ExecCreate, ExecAttach (the hijacked start)
+  # and ExecResize. Dozzle never calls exec inspect. The argv pin in
+  # request_body.exec applies to create and to the start re-check.
+  - match: { method: POST, path: "/containers/*/exec" }
+    action: allow
+  - match: { method: POST, path: "/exec/*/start" }
+    action: allow
+  - match: { method: POST, path: "/exec/*/resize" }
+    action: allow
+
+  # Deny everything else
+  - match: { method: "*", path: "/**" }
+    action: deny
+    reason: "not allowed by dozzle-with-shell preset"
