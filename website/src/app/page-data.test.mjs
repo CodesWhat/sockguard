@@ -49,7 +49,7 @@ test("website features live in extracted data modules", () => {
 });
 
 test("website comparison rows live in extracted data modules", () => {
-  assert.equal(comparisonRows.length, 22);
+  assert.equal(comparisonRows.length, 23);
 
   const requestBodyRow = comparisonRows.find((row) => row.feature === "Request body inspection");
   assert.ok(requestBodyRow);
