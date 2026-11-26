@@ -40,3 +40,4 @@ MIT: https://opensource.org/license/mit
 - vs wollomatic socket-proxy: https://www.getsockguard.com/compare/wollomatic
 - vs 11notes docker-socket-proxy: https://www.getsockguard.com/compare/11notes
 - vs CetusGuard: https://www.getsockguard.com/compare/cetusguard
+- vs YorvoGate: https://www.getsockguard.com/compare/yorvogate

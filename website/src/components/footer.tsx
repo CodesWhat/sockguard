@@ -41,6 +41,7 @@ const compareLinks: FooterLink[] = [
   { label: "wollomatic vs Sockguard", href: "/compare/wollomatic" },
   { label: "11notes vs Sockguard", href: "/compare/11notes" },
   { label: "CetusGuard vs Sockguard", href: "/compare/cetusguard" },
+  { label: "YorvoGate vs Sockguard", href: "/compare/yorvogate" },
 ];
 
 const docsLinks: FooterLink[] = [

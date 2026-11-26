@@ -8,7 +8,7 @@ export const PROOF_SNAPSHOT = {
   pulls: "25K",
 } as const;
 
-// "5 alternatives compared": Tecnativa, LinuxServer, wollomatic, 11notes, CetusGuard.
-export const ALTERNATIVES_COMPARED = 5;
+// "6 alternatives compared": Tecnativa, LinuxServer, wollomatic, 11notes, CetusGuard, YorvoGate.
+export const ALTERNATIVES_COMPARED = 6;
 // The CI statement-coverage floor, also stated in the FAQ.
 export const COVERAGE_FLOOR = "96%+";
