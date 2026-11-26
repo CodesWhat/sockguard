@@ -10,7 +10,8 @@ import (
 // are server/model/monitor.js (the "docker" monitor type, one request per
 // check) and server/docker.js (DockerHost.testDockerHost, run by the Docker
 // Host "Test" button). Both use plain axios requests, with no ping, version
-// negotiation or other call. Calls and the HTTP routes they map to:
+// negotiation or other call. The preset still allows the harmless ping, as
+// every shipped preset does. Calls and the HTTP routes they map to:
 //
 //	Monitor check            GET /containers/{name}/json
 //	Docker Host test         GET /containers/json?all=true
@@ -28,13 +29,15 @@ func TestUptimeKumaPresetConformance(t *testing.T) {
 		{"container-inspect", http.MethodGet, "/containers/abc/json", "", true},
 		{"container-inspect-name", http.MethodGet, "/containers/my-app_1/json", "", true},
 
+		// Ping is allowed so health probes and the ping-warning check stay quiet.
+		{"ping", http.MethodGet, "/_ping", "", true},
+		{"ping-head", http.MethodHead, "/_ping", "", true},
+
 		// Docker API version prefixes normalize before matching.
 		{"v-prefixed-containers-list", http.MethodGet, "/v1.45/containers/json?all=true", "", true},
 		{"v-prefixed-container-inspect", http.MethodGet, "/v1.45/containers/abc/json", "", true},
 
 		// Reads outside Uptime Kuma's call surface.
-		{"ping-denied", http.MethodGet, "/_ping", "", false},
-		{"ping-head-denied", http.MethodHead, "/_ping", "", false},
 		{"version-denied", http.MethodGet, "/version", "", false},
 		{"info-denied", http.MethodGet, "/info", "", false},
 		{"events-denied", http.MethodGet, "/events", "", false},

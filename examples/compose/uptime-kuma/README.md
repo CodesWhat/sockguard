@@ -16,7 +16,8 @@ Uptime Kuma can talk to a unix socket, but that means mounting a shared socket v
 | No raw socket in Uptime Kuma container | Yes, TCP to sockguard only |
 | Port 2375 exposed to host | No, compose-internal network only |
 | Container list (`GET /containers/json`), inspect (`GET /containers/{id}/json`) | Allowed |
-| Ping, version, info, events, logs, stats | Denied, Uptime Kuma doesn't call them |
+| Ping (`GET`/`HEAD /_ping`) | Allowed, harmless, Uptime Kuma doesn't call it |
+| Version, info, events, logs, stats | Denied, Uptime Kuma doesn't call them |
 | Every write, plus image, network, volume and Swarm routes | Denied |
 
 ## Supported and not supported
@@ -27,7 +28,7 @@ Supported: the Docker Container monitor (running, paused, restarting and healthc
 
 - Container env, mount paths and network addresses stay redacted (the sockguard defaults). Uptime Kuma reads only `State`, so monitors are unaffected.
 - Derived from Uptime Kuma 2.5.12 (`server/model/monitor.js`, `server/docker.js`). Check the preset against the Uptime Kuma source again when you bump the pinned image. 1.x and the 3.0 betas were not checked.
-- Uptime Kuma sends no `/_ping` or `/version` call, so those are denied. That's fine for its plain HTTP requests.
+- Uptime Kuma sends no `/_ping` or `/version` call. The preset allows `/_ping` like every shipped preset does and denies `/version`. That's fine for its plain HTTP requests.
 
 ## Usage
 

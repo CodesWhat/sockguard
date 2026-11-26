@@ -560,14 +560,15 @@ Least-privilege access for [Uptime Kuma](https://github.com/louislam/uptime-kuma
 **Use for:** Uptime Kuma monitoring container state and healthchecks, and nothing else.
 
 ```yaml
-# Allows: GET container list, GET container inspect
-# Denies: every other Docker API route, including ping, version, events and logs
+# Allows: GET container list, GET container inspect, GET/HEAD /_ping
+# Denies: every other Docker API route, including version, events and logs
 ```
 
 Derived from Uptime Kuma 2.5.12 (`server/model/monitor.js` and `server/docker.js`).
 The monitor sends one `GET /containers/{name}/json` per check and the Docker
 Host "Test" button sends `GET /containers/json?all=true`. Uptime Kuma sends no
-ping or version call, so the preset allows neither. It reads only the inspect
+ping or version call. The preset allows the harmless `/_ping` anyway, like every
+shipped preset, and denies `/version`. It reads only the inspect
 `State` block, so the default response redaction (env, mount paths, network
 addresses) doesn't affect it, and no `insecure_*` flag is set. Uptime Kuma has
 no container actions, log view or exec feature; the Docker Container monitor
