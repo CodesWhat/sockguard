@@ -1157,7 +1157,7 @@ Sockguard serializes owner-scoped create-by-name requests with in-process locks 
 
 ## Admission Mutations
 
-`mutations.rules[]` declaratively injects fixed labels or remaps an image reference on a matched request body **before** the corresponding `container_create`/`service` body inspection above runs, image-trust verification, and owner-label stamping — so the mutated bytes get the exact same downstream policy scrutiny a client-authored body would. It is a fail-closed, deliberately narrow DSL: exactly two operations (`inject_labels`, `remap_image`), no JSON-patch, no arbitrary field paths, no templating.
+`mutations.rules[]` declaratively injects fixed labels or remaps an image reference on a matched request body **before** the corresponding `container_create`/`service` body inspection above runs, image-trust verification, and owner-label stamping — so the mutated bytes get the exact same downstream policy scrutiny a client-authored body would. It is a fail-closed, deliberately narrow DSL: exactly three operations (`inject_labels`, `remap_image`, `remap_bind_source`), no JSON-patch, no arbitrary field paths, no templating.
 
 Unlike `request_body.*` and `rules`, `mutations` is **not** part of `clients.profiles` — there is a single, global mutation authority applied identically regardless of which client profile matched the request. This is a deliberate v1 scope decision, not an oversight: per-profile mutation overrides introduce a merge-order question (which profile's rule wins when both match?) that the feature does not need to answer yet.
 
@@ -1186,6 +1186,12 @@ mutations:
         match: exact                     # unqualified refs need one exact rule each
         from: "alpine:3.21"
         to: "registry.internal.example.com/alpine:3.21"
+
+    - id: runner-workspace
+      surfaces: [container_create, libpod_container_create]
+      remap_bind_source:
+        from: "/builds"                  # path the runner container sees
+        to: "/srv/runner/builds"         # path the daemon host sees
 ```
 
 `remap_image` matches the literal image string a client sent, byte for byte — it never expands Docker's own unqualified-reference conventions (no implicit `docker.io/library/` prefix, no case folding). The `pin-internal-registry` rule above only catches requests that already spell out `docker.io/...`; a request for `alpine:3.21` or `nginx:1.27` does not start with that prefix and passes through unmodified. To also pin unqualified references, add one `match: exact` rule per expected bare image, as shown in the second rule above.
@@ -1194,12 +1200,26 @@ mutations:
 | --- | --- | --- |
 | `id` | `string` | Required, unique, `^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`. Identifies the rule in logs and audit records. |
 | `mode` | `string` | `enforce` (default), `warn`, or `audit` — see [Rollout Modes](#rollout-modes) below; the same semantics apply per rule. `warn`/`audit` rules are evaluated against an independent cloned copy of the request body and never affect what is actually forwarded. |
-| `surfaces` | `[]string` | One or more of `container_create`, `service_create`, `service_update`. No duplicates. |
+| `surfaces` | `[]string` | One or more of `container_create`, `libpod_container_create`, `service_create`, `service_update`. No duplicates. `libpod_container_create` (`POST /libpod/containers/create`) accepts only `remap_bind_source`. |
 | `inject_labels.labels` | `map[string]string` | Unconditionally sets/replaces these keys in the target label map(s). Valid only on `container_create` (`Config.Labels`) and `service_create` (both `Labels` and `TaskTemplate.ContainerSpec.Labels`) — `service_update` has no label field to mutate. Up to 32 labels per rule, 256 across all rules; keys ≤128 bytes, values ≤4096 bytes, no control characters. Keys and values must both be non-empty (whitespace-only values are rejected too). |
 | `remap_image.match` | `string` | `exact` (the whole image reference must equal `from`) or `prefix` (`from` must prefix the reference; the remainder is preserved after `to`). Matches the literal request-body string — no `docker.io/library` alias expansion or case folding. Valid on all three surfaces. |
+| `remap_bind_source.from` / `.to` | `string` | Container-visible path prefix and the host path prefix that replaces it. Both must be absolute, clean (no trailing slash, `//`, `.` or `..`), not `/`, and free of `:`, `,`, control characters and NUL. Valid only on `container_create` and `libpod_container_create`. |
 | `remap_image.from` / `.to` | `string` | ≤4096 bytes, no control characters. For `match: exact`, both must parse as valid image references. |
 
-Exactly one of `inject_labels`/`remap_image` is required per rule — never both, never neither. A rule that unconditionally injects the ownership label key (when `ownership.owner` is configured) is rejected at config load, since that key must stay under sockguard's exclusive control. Two rules that could both match the same label key or overlapping image `from` pattern on the same surface are also rejected at config load — which rule would win is otherwise silently order-dependent.
+Exactly one of `inject_labels`/`remap_image`/`remap_bind_source` is required per rule. A rule that unconditionally injects the ownership label key (when `ownership.owner` is configured) is rejected at config load, since that key must stay under sockguard's exclusive control. Two rules that could both match the same label key or overlapping image `from` pattern on the same surface are also rejected at config load — which rule would win is otherwise silently order-dependent.
+
+### Bind-source rewrite for Docker-out-of-Docker runners
+
+A CI runner that talks to the host daemon through Sockguard names bind sources by the path it sees (`/builds`), but the daemon resolves them on the host (`/srv/runner/builds`). `remap_bind_source` rewrites the matching prefix so the runner can keep using its own paths. It rewrites `HostConfig.Binds` entries and `HostConfig.Mounts` entries of `Type: bind` on `container_create`, and the `mounts` entries Podman treats as host binds (`type: bind`, or `bind`/`rbind` in `options`) on `libpod_container_create`. Target and options in a `Binds` entry are preserved.
+
+The rewrite runs before the container-create inspector, so the rewritten host path goes through `allowed_bind_mounts` and every other check exactly as a client-written path would. Allowlist the **host** path (`/srv/runner/builds`); allowlisting only the container-visible path does not admit the rewritten request. The rewrite never grants anything the allowlist would refuse.
+
+- **Boundaries.** A source matches on path components: `from: /builds` matches `/builds` and `/builds/job1`, never `/builds2`. The source is cleaned first (`//`, `/./`, trailing `/`), and the rewritten result is `to` plus the remainder.
+- **Traversal.** A source that matches the rule (before or after cleaning) and carries a `..` component, or a control character, is denied with `mutation_apply_failed` instead of being rewritten, so `/builds/../../etc` cannot step out of the mapped tree.
+- **Untouched sources.** Named volumes, anonymous volumes, relative paths and any source that does not match are left as sent and judged by the downstream inspector, so owner-label volume scoping is unchanged.
+- **Config checks.** Two rules whose `from` paths overlap are rejected, as is any rule whose `to` overlaps any rule's `from`, so a source is rewritten at most once and never depends on rule order.
+- **Not covered.** The match is lexical. Sockguard does not resolve symlinks, so the host directory a rule maps to must not contain links pointing outside it. Volume driver options (`device`), libpod `overlay_volumes`, `rootfs` and `Config.Volumes` keys are not rewritten and are checked against `allowed_bind_mounts` as written.
+- **Rollout.** `mode: audit` or `warn` records `would_apply` without changing the body.
 
 The `mutations` block uses a stricter config decode than the rest of this schema: unknown keys and YAML type-coercion (e.g. an unquoted `id: 0` silently becoming the string `"0"`) are both load-time errors here, not silently accepted.
 

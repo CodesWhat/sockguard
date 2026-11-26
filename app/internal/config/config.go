@@ -2126,7 +2126,7 @@ type MutationsConfig struct {
 }
 
 // MutationRuleConfig is one declarative admission-mutation rule. Exactly one
-// of InjectLabels/RemapImage must be set; validate.go enforces this and the
+// of InjectLabels/RemapImage/RemapBindSource must be set; validate.go enforces this and the
 // remaining bounds (rule/label counts, key/value sizes, surface/action
 // compatibility, overlap rejection, owner-label-key reservation).
 type MutationRuleConfig struct {
@@ -2145,6 +2145,22 @@ type MutationRuleConfig struct {
 	// RemapImage configures a single string-field image replace mutation.
 	// Mutually exclusive with InjectLabels.
 	RemapImage *ImageRemapMutationConfig `mapstructure:"remap_image"`
+	// RemapBindSource configures a host-path prefix rewrite of bind-mount
+	// sources, for Docker-out-of-Docker runners. Mutually exclusive with
+	// InjectLabels and RemapImage.
+	RemapBindSource *BindSourceRemapMutationConfig `mapstructure:"remap_bind_source"`
+}
+
+// BindSourceRemapMutationConfig rewrites a bind-mount source from the path a
+// Docker-out-of-Docker client sees (From) to the path the daemon's host sees
+// (To). Both must be absolute, already-clean paths with no ":", ",", control
+// characters or NUL. A source matches only on a path-component boundary
+// (From "/builds" matches "/builds" and "/builds/x", never "/builds2"), and
+// a ".." component in a matching source is refused. Valid on the
+// container_create and libpod_container_create surfaces.
+type BindSourceRemapMutationConfig struct {
+	From string `mapstructure:"from"`
+	To   string `mapstructure:"to"`
 }
 
 // InjectLabelsMutationConfig unconditionally sets/replaces the configured

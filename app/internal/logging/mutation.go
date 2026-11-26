@@ -16,7 +16,7 @@ import "sync"
 type MutationRuleOutcome struct {
 	// ID is the rule's configured id.
 	ID string
-	// Type is "inject_labels" or "remap_image".
+	// Type is "inject_labels", "remap_image" or "remap_bind_source".
 	Type string
 	// Mode is "enforce", "warn", or "audit".
 	Mode string

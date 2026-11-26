@@ -54,6 +54,7 @@ export const DOCS_SEARCH_ITEMS: [page: number, heading: string, anchor: string][
   [2,"Owner Label Isolation","owner-label-isolation"],
   [2,"Per-profile ownership","per-profile-ownership"],
   [2,"Admission Mutations","admission-mutations"],
+  [2,"Bind-source rewrite for Docker-out-of-Docker runners","bind-source-rewrite-for-docker-out-of-docker-runners"],
   [2,"Rollout Modes","rollout-modes"],
   [2,"Policy Discovery Workflow","policy-discovery-workflow"],
   [2,"Hot Reload","hot-reload"],

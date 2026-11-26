@@ -455,6 +455,7 @@ func compileRuntimePolicy(rules []*CompiledRule, cfg PolicyConfig, mutationEng *
 		// second, in the same request, against whatever bytes mutation left
 		// in r.Body. Neither entry needs to know the other exists.
 		{http.MethodPost, matchesContainerCreateInspection, inspectSeverityCritical, newContainerCreateMutationPolicy(mutationEng).inspect, "failed to apply container create admission mutations", "unable to apply container create admission mutations"},
+		{http.MethodPost, matchesLibpodContainerCreateInspection, inspectSeverityCritical, newLibpodContainerCreateMutationPolicy(mutationEng).inspect, "failed to apply libpod container create admission mutations", "unable to apply libpod container create admission mutations"},
 		{http.MethodPost, matchesContainerCreateInspection, inspectSeverityCritical, newContainerCreatePolicy(cfg.ContainerCreate).inspect, "failed to inspect container create request body", "unable to inspect container create request body"},
 		// libpod container-create is path-exclusive with the Docker-compat
 		// entry above (isLibpodContainerCreatePath vs
