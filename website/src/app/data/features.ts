@@ -71,7 +71,7 @@ export const features: Feature[] = [
     icon: "file-code",
     title: "YAML Configuration",
     description:
-      "We use declarative YAML rules with glob patterns, first-match-wins evaluation, and 22 bundled workload presets (drydock, drydock with build, drydock with mediated build, drydock with self-update, drydock with compose, Traefik, Portainer, Watchtower, Homepage, Homarr, Diun, Autoheal, read-only, Podman read-only, CIS Docker Benchmark, GitHub Actions self-hosted runner, GitLab Runner, Portwing, Portwing with exec, Portwing with build, Portwing with mediated build, Portwing with compose) plus the default config.",
+      "We use declarative YAML rules with glob patterns, first-match-wins evaluation, and 23 bundled workload presets (drydock, drydock with build, drydock with mediated build, drydock with self-update, drydock with compose, Traefik, Portainer, Watchtower, Homepage, Homarr, Uptime Kuma, Diun, Autoheal, read-only, Podman read-only, CIS Docker Benchmark, GitHub Actions self-hosted runner, GitLab Runner, Portwing, Portwing with exec, Portwing with build, Portwing with mediated build, Portwing with compose) plus the default config.",
     category: "control",
   },
   {

@@ -1,0 +1,44 @@
+# Sockguard config for Uptime Kuma, mirrors the shipped uptime-kuma preset.
+# Copy of app/configs/uptime-kuma.yaml; embedded here so the compose stack
+# is self-contained. Update both files together if you change rules.
+#
+# Least-privilege access for Uptime Kuma's Docker Container monitor type.
+# Allows: container list (the "Test" button on a Docker Host) and container
+# inspect (the per-monitor health check).
+# Denies: everything else. Uptime Kuma never pings, reads logs, streams
+# events, or writes to the daemon, so none of that is reachable.
+#
+# Derived from Uptime Kuma 2.5.12 (latest stable release tag):
+# server/model/monitor.js (the "docker" monitor: GET /containers/{name}/json)
+# and server/docker.js (DockerHost.testDockerHost: GET /containers/json?all=true).
+
+upstream:
+  socket: /var/run/docker.sock
+
+log:
+  level: info
+  format: json
+  access_log: true
+
+health:
+  enabled: true
+  path: /health
+
+# Response redaction stays on (the defaults). Uptime Kuma reads only State
+# (Running, Paused, Restarting, Status, Health.Status) from inspect and checks
+# that the first list entry carries ImageID. Container env, mount paths and
+# network addresses stay redacted and Uptime Kuma never looks at them.
+
+rules:
+  # Docker Host "Test" button: GET /containers/json?all=true
+  - match: { method: GET, path: "/containers/json" }
+    action: allow
+
+  # Per-monitor check: GET /containers/{name}/json
+  - match: { method: GET, path: "/containers/*/json" }
+    action: allow
+
+  # Deny everything else
+  - match: { method: "*", path: "/**" }
+    action: deny
+    reason: "not allowed by uptime-kuma preset"

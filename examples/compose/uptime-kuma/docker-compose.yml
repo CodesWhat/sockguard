@@ -1,0 +1,51 @@
+# examples/compose/uptime-kuma/docker-compose.yml
+#
+# Sockguard + Uptime Kuma, TCP mode (plain, private Docker network only).
+# Uptime Kuma's Docker Host setting takes a socket path or a TCP URL, so
+# sockguard listens on plaintext TCP :2375 restricted to the compose-internal
+# network. A non-loopback plaintext listener needs two insecure
+# acknowledgments, SOCKGUARD_LISTEN_INSECURE_ALLOW_PLAIN_TCP and
+# SOCKGUARD_LISTEN_INSECURE_ALLOW_UNAUTHENTICATED_CLIENTS, set here only
+# because the listener is bound to the Docker compose bridge. Never publish
+# port 2375 to the host or the Internet.
+#
+# The Docker Container monitor needs container list and container inspect.
+# The uptime-kuma preset allows exactly those and nothing else.
+#
+# After first login, add a Docker Host under Settings > Docker Hosts with
+# connection type TCP / HTTP and daemon URL tcp://sockguard:2375, then add
+# Docker Container monitors that name the containers to watch.
+
+services:
+  sockguard:
+    image: codeswhat/sockguard:latest
+    restart: unless-stopped
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    group_add:
+      - "${DOCKER_SOCK_GID:?set to the GID of /var/run/docker.sock}"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./sockguard.yaml:/etc/sockguard/sockguard.yaml:ro
+    environment:
+      - SOCKGUARD_LISTEN_ADDRESS=:2375
+      - SOCKGUARD_LISTEN_INSECURE_ALLOW_PLAIN_TCP=true
+      - SOCKGUARD_LISTEN_INSECURE_ALLOW_UNAUTHENTICATED_CLIENTS=true
+  # Do NOT expose port 2375 to the host, Uptime Kuma reaches sockguard
+  # over the private compose network by service name.
+
+  uptime-kuma:
+    image: louislam/uptime-kuma:2.5.12
+    restart: unless-stopped
+    depends_on:
+      - sockguard
+    ports:
+      - "3001:3001"
+    volumes:
+      - uptime-kuma-data:/app/data
+
+volumes:
+  uptime-kuma-data:
