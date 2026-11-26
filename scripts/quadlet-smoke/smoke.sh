@@ -16,7 +16,11 @@ kit="$root/examples/quadlet"
 unit_dir="${XDG_CONFIG_HOME:-$HOME/.config}/containers/systemd"
 conf_dir="${XDG_CONFIG_HOME:-$HOME/.config}/sockguard"
 
-fail() { echo "FAIL: $*" >&2; dump; exit 1; }
+fail() {
+  echo "FAIL: $*" >&2
+  dump
+  exit 1
+}
 dump() {
   systemctl --user status sockguard.service --no-pager 2>&1 | tail -20 || true
   journalctl --user -u sockguard.service --no-pager -n 50 2>&1 || true
@@ -48,7 +52,10 @@ fi
 
 # Surface Quadlet syntax errors with their own message instead of a missing unit.
 for q in /usr/lib/podman/quadlet /usr/libexec/podman/quadlet; do
-  if [ -x "$q" ]; then "$q" -dryrun -user >/dev/null || fail "quadlet rejected the units"; break; fi
+  if [ -x "$q" ]; then
+    "$q" -dryrun -user >/dev/null || fail "quadlet rejected the units"
+    break
+  fi
 done
 
 systemctl --user daemon-reload

@@ -32,11 +32,26 @@ SELF_TEST=0
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    --sockguard-image) SOCKGUARD_IMAGE="${2:?--sockguard-image needs a value}"; shift 2 ;;
-    --dozzle-image) DOZZLE_IMAGE="${2:?--dozzle-image needs a value}"; shift 2 ;;
-    --out) OUT_DIR="${2:?--out needs a value}"; shift 2 ;;
-    --self-test) SELF_TEST=1; shift ;;
-    *) echo "run.sh: unknown argument: $1" >&2; exit 2 ;;
+    --sockguard-image)
+      SOCKGUARD_IMAGE="${2:?--sockguard-image needs a value}"
+      shift 2
+      ;;
+    --dozzle-image)
+      DOZZLE_IMAGE="${2:?--dozzle-image needs a value}"
+      shift 2
+      ;;
+    --out)
+      OUT_DIR="${2:?--out needs a value}"
+      shift 2
+      ;;
+    --self-test)
+      SELF_TEST=1
+      shift
+      ;;
+    *)
+      echo "run.sh: unknown argument: $1" >&2
+      exit 2
+      ;;
   esac
 done
 
@@ -65,19 +80,22 @@ if [ "$SELF_TEST" -eq 1 ]; then
   if [ "$(jq -r .status <<<"$empty")" = "FAIL" ]; then
     echo "PASS: drift fails closed on an empty access log"
   else
-    echo "FAIL: drift passed on an empty access log" >&2; rc=1
+    echo "FAIL: drift passed on an empty access log" >&2
+    rc=1
   fi
   good='{"msg":"request","method":"GET","normalized_path":"/containers/json","decision":"allow","status":200}'
   if [ "$(jq -r .status <<<"$("${CLI[@]}" drift "$KNOWN_ROUTES" <<<"$good")")" = "PASS" ]; then
     echo "PASS: drift passes a reviewed route"
   else
-    echo "FAIL: drift rejected a reviewed route" >&2; rc=1
+    echo "FAIL: drift rejected a reviewed route" >&2
+    rc=1
   fi
   bad='{"msg":"request","method":"POST","normalized_path":"/containers/create","decision":"allow","status":200}'
   if [ "$(jq -r .status <<<"$("${CLI[@]}" drift "$KNOWN_ROUTES" <<<"$bad")")" = "FAIL" ]; then
     echo "PASS: drift fails on an unreviewed route"
   else
-    echo "FAIL: drift passed an unreviewed route" >&2; rc=1
+    echo "FAIL: drift passed an unreviewed route" >&2
+    rc=1
   fi
   exit "$rc"
 fi
@@ -164,10 +182,10 @@ fi
 export DOCKER_SOCK_GID
 
 # Seed the preset into a named volume (works against a remote engine).
-if ! { docker volume create "$CONFIG_VOLUME" \
-    && docker create --name "${PROJECT}-seed" -v "${CONFIG_VOLUME}:/c" --entrypoint true "$PROBE_IMAGE" \
-    && docker cp "$CONFIG_PATH" "${PROJECT}-seed:/c/sockguard.yaml" \
-    && docker rm "${PROJECT}-seed"; } >"${LOG_DIR}/seed.log" 2>&1; then
+if ! { docker volume create "$CONFIG_VOLUME" &&
+  docker create --name "${PROJECT}-seed" -v "${CONFIG_VOLUME}:/c" --entrypoint true "$PROBE_IMAGE" &&
+  docker cp "$CONFIG_PATH" "${PROJECT}-seed:/c/sockguard.yaml" &&
+  docker rm "${PROJECT}-seed"; } >"${LOG_DIR}/seed.log" 2>&1; then
   record_result "seed sockguard config" FAIL "$(tail -3 "${LOG_DIR}/seed.log" | tr '\n' ' ')"
   exit 1
 fi
@@ -202,7 +220,10 @@ if [ -n "$CONTAINER_JSON" ]; then
   for _ in $(seq 1 10); do
     body="$(probe curl -sS --max-time 15 -X POST http://dozzle:8080/api/containers/logs \
       --data-urlencode "container=${ref}" -d stdout=1 -d stderr=1 2>/dev/null || true)"
-    if grep -qF "$SENTINEL" <<<"$body"; then logs_ok=1; break; fi
+    if grep -qF "$SENTINEL" <<<"$body"; then
+      logs_ok=1
+      break
+    fi
     sleep 2
   done
   if [ "$logs_ok" -eq 1 ]; then
@@ -237,7 +258,7 @@ for spec in "POST /containers/create" "GET /images/json" "GET /volumes" "POST /c
   method="${spec%% *}"
   path="${spec#* }"
   code="$(probe curl -sS --max-time 10 -o /dev/null -w '%{http_code}' -X "$method" \
- "http://sockguard:2375${path}" 2>/dev/null || true)"
+    "http://sockguard:2375${path}" 2>/dev/null || true)"
   if [ "$code" != "403" ]; then
     forbidden_ok=0
     forbidden_detail="${forbidden_detail}${spec} returned '${code}' (want 403); "
