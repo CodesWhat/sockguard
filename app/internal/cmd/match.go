@@ -27,12 +27,13 @@ var (
 	matchOutput   string
 	matchProfile  string
 	matchSourceIP string
+	matchBodyFile string
 )
 
 var matchCmd = &cobra.Command{
 	Use:   "match",
 	Short: "Evaluate one request against the configured rules",
-	Long:  "Load the effective configuration, normalize the request path, and report which rule would decide the request. A query string on --path (for example /containers/abc/kill?signal=USR1) is evaluated against rules that carry match.query constraints.",
+	Long:  "Load the effective configuration, normalize the request path, and report which rule would decide the request. A query string on --path (for example /containers/abc/kill?signal=USR1) is evaluated against rules that carry match.query constraints. --body-file (or - for stdin) also runs the request-body inspectors on a sample body, offline, and reports their verdict.",
 	RunE:  runMatch,
 }
 
@@ -56,6 +57,7 @@ type matchResult struct {
 	PassThrough bool   `json:"pass_through,omitempty"`
 	// Ownership and Response are read from configuration for the selected
 	// scope. NotInspected lists what this offline run did not look at.
+	Body         *matchBody           `json:"body,omitempty"`
 	Ownership    *matchOwnership      `json:"ownership,omitempty"`
 	Response     *matchResponsePolicy `json:"response,omitempty"`
 	NotInspected []string             `json:"not_inspected"`
@@ -83,6 +85,7 @@ func init() {
 	matchCmd.Flags().StringVar(&matchPath, "path", "", "request path to evaluate")
 	matchCmd.Flags().StringVar(&matchProfile, "profile", "", "evaluate against this clients.profiles entry instead of the root rules")
 	matchCmd.Flags().StringVar(&matchSourceIP, "source-ip", "", "select the profile the proxy would pick for this client IP (source_ip_profiles, then default_profile)")
+	matchCmd.Flags().StringVar(&matchBodyFile, "body-file", "", "also run the request-body inspectors on this file (- reads stdin), offline")
 	matchCmd.Flags().StringVarP(&matchOutput, "output", "o", matchOutputText, "output format: text or json")
 	_ = matchCmd.MarkFlagRequired("method")
 	_ = matchCmd.MarkFlagRequired("path")
@@ -152,6 +155,7 @@ func runMatch(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("profile selection: %w", err)
 	}
 	rules, ruleConfigs := compiled, cfg.Rules
+	policyConfig := cfg.RequestBody.ToFilterOptions()
 	rolloutMode := config.RolloutEnforce
 	if profile != nil {
 		profilePolicies, err := compileClientProfiles(cfg)
@@ -159,6 +163,7 @@ func runMatch(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf("config validation: %w", err)
 		}
 		rules, ruleConfigs = profilePolicies[profile.Name].Rules, profile.Rules
+		policyConfig = profilePolicies[profile.Name].PolicyConfig
 		rolloutMode, _ = config.ParseRolloutMode(profile.Mode)
 	}
 	decision, matchedRuleIndex, reason := filter.Evaluate(rules, req)
@@ -176,6 +181,19 @@ func runMatch(cmd *cobra.Command, args []string) error {
 		}
 	}
 
+	var body *matchBody
+	if matchBodyFile != "" {
+		body, err = inspectMatchBody(cmd, matchBodyFile, req, offlinePolicyConfig(cfg, policyConfig), cfg.Mutations.ToFilterOptions(), decision)
+		if err != nil {
+			return err
+		}
+		if body.Decision == matchBodyDeny {
+			decision = filter.ActionDeny
+			reason = body.Reason
+			hardDeny = hardDeny || body.Hard
+		}
+	}
+
 	result := matchResult{
 		Config:         cfgFile,
 		Method:         method,
@@ -188,7 +206,8 @@ func runMatch(cmd *cobra.Command, args []string) error {
 		Selection:      &selection,
 		Ownership:      explainMatchOwnership(cfg, profile),
 		Response:       explainMatchResponse(cfg, profile),
-		NotInspected:   matchNotInspected(cfg, selection),
+		Body:           body,
+		NotInspected:   matchNotInspected(cfg, selection, body),
 	}
 	if profile != nil {
 		result.RolloutMode = string(rolloutMode)

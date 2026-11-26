@@ -190,11 +190,13 @@ func explainMatchResponse(cfg *config.Config, profile *config.ClientProfileConfi
 // output cannot be read as a claim about live state. The profile-selection
 // entry is added only when the config assigns profiles by something other than
 // source IP and the run chose a profile by IP.
-func matchNotInspected(cfg *config.Config, selection matchSelection) []string {
-	notes := []string{
-		"request body (body inspectors such as container create, exec and build run only on a real request)",
-		"live resources (ownership labels, visibility lists and response redaction are reported from configuration, not applied to any resource)",
+func matchNotInspected(cfg *config.Config, selection matchSelection, body *matchBody) []string {
+	var notes []string
+	if body == nil {
+		notes = append(notes, "request body (pass --body-file to run the body inspectors such as container create, exec and build on a sample body)")
 	}
+	notes = append(notes,
+		"live resources (ownership labels, visibility lists and response redaction are reported from configuration, not applied to any resource)")
 	if selection.Strategy == matchSelectionSourceIP || selection.Strategy == matchSelectionDefaultProfile || selection.Strategy == matchSelectionNone && selection.SourceIP != "" {
 		if len(cfg.Clients.ClientCertificateProfiles) > 0 || len(cfg.Clients.UnixPeerProfiles) > 0 {
 			notes = append(notes, "client certificate and unix peer profile assignments (a connection that matches one selects its profile before source IP)")
@@ -236,6 +238,7 @@ func writeMatchExplanation(w io.Writer, p *ui.Printer, label func(string) string
 			fmt.Fprintf(w, "%s %s\n", label(""), p.Dim(r.Visibility))
 		}
 	}
+	writeMatchBody(w, label, result.Body)
 	for _, note := range result.NotInspected {
 		fmt.Fprintf(w, "%s %s\n", label("Not inspected:"), note)
 	}
