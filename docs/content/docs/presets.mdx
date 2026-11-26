@@ -1,6 +1,6 @@
 ---
 title: Presets
-description: Ready-made sockguard configs for drydock, drydock with self-update, drydock with compose, drydock with build, drydock with mediated build, Portwing, Portwing with exec, Portwing with compose, Portwing with build, Portwing with mediated build, Traefik, Portainer, Watchtower, Homepage, Homarr, Diun, Autoheal, GitHub Actions and GitLab runners, the CIS Docker Benchmark, read-only dashboards, and Podman read-only monitoring.
+description: Ready-made sockguard configs for drydock, drydock with self-update, drydock with compose, drydock with build, drydock with mediated build, Portwing, Portwing with exec, Portwing with compose, Portwing with build, Portwing with mediated build, Traefik, Portainer, Watchtower, Homepage, Homarr, Diun, Autoheal, GitHub Actions, GitLab and Woodpecker CI runners, the CIS Docker Benchmark, read-only dashboards, and Podman read-only monitoring.
 ---
 
 Sockguard ships with ready-made config presets for common Docker consumers. All presets are bundled in the container image at `/etc/sockguard/`.
@@ -572,6 +572,33 @@ that require a privileged build container will fail through the proxy
 until the operator either removes the flag or moves the affected
 project to a different runner. This is the secure default; widening it
 is an audit-trail-bearing edit.
+
+## Woodpecker CI (`woodpecker.yaml`)
+
+Bounded access for a [Woodpecker](https://woodpecker-ci.org) agent running the docker backend (`WOODPECKER_BACKEND=docker`, the default).
+
+**Use for:** Woodpecker pipelines whose steps and services are plain containers on a per-workflow named volume and bridge network.
+
+```yaml
+# Allows: GET /_ping, /version, /info
+# Allows: container create/start/wait/inspect/logs/stop/kill/remove
+# Allows: image pull, network create/connect/remove, volume create/remove
+# Denies: exec, attach, stats, events, build, every read of images, volumes and networks
+# Bounds: create policy (no privileged, host namespaces, devices, bind mounts, capabilities, sysctls)
+#         and ownership.owner: woodpecker
+```
+
+Derived from Woodpecker v3.21.0 (`pipeline/backend/docker/docker.go` and `convert.go`). The agent injects step commands as the container entrypoint, so it never calls exec. It streams step output from the container logs endpoint, so the preset sets `insecure_allow_read_exfiltration: true`. Every container, network and volume the agent creates is stamped with an owner label, and later calls on them must resolve to the same owner. Woodpecker only labels containers with `wp_uuid` and `wp_step`, so the owner label is what scopes the agent.
+
+Unsupported, and refused by the proxy:
+
+- Privileged steps, including admin-trusted plugins that set `privileged: true` (docker-in-docker, buildx).
+- Host bind mounts from a trusted repo's `volumes:` and from `WOODPECKER_BACKEND_DOCKER_VOLUMES`, until you add narrow `allowed_bind_mounts` entries.
+- `WOODPECKER_BACKEND_DOCKER_NETWORK`, because the agent does not own a pre-existing network.
+- `extra_hosts`, devices, added capabilities, sysctls and published ports.
+- The kubernetes and local backends (they do not use the Docker socket), and Windows engines and Podman (untested).
+
+Residual risk: steps still run arbitrary images and commands from every pipeline the agent accepts, as root unless a step sets `user`, with outbound network access. Sockguard stops them reaching the host or another owner's resources, it does not make an untrusted pipeline safe. Restrict the proxy socket to the agent process.
 
 ## CIS Docker Benchmark (`cis-docker-benchmark.yaml`)
 

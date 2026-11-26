@@ -1,0 +1,48 @@
+# examples/compose/woodpecker/docker-compose.yml
+#
+# Sockguard + Woodpecker agent (docker backend), unix-socket mode.
+# Sockguard writes a filtered unix socket into a shared named volume; the
+# agent reads that socket rather than mounting /var/run/docker.sock.
+#
+# The docker backend needs: container create/start/wait/inspect/logs/stop/
+# kill/remove, image pull, and a named volume plus a bridge network per
+# workflow. The woodpecker preset allows exactly those, binds every resource
+# the agent creates to an owner label, and refuses privileged steps, host
+# namespaces, devices and host bind mounts.
+#
+# Derived from Woodpecker v3.21.0. The server is not part of this stack:
+# point WOODPECKER_SERVER at yours.
+
+services:
+  sockguard:
+    image: codeswhat/sockguard:latest
+    restart: unless-stopped
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    group_add:
+      - "${DOCKER_SOCK_GID:?set to the GID of /var/run/docker.sock}"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./sockguard.yaml:/etc/sockguard/sockguard.yaml:ro
+      - sockguard-socket:/var/run/sockguard
+    environment:
+      - SOCKGUARD_LISTEN_SOCKET=/var/run/sockguard/sockguard.sock
+
+  woodpecker-agent:
+    image: woodpeckerci/woodpecker-agent:v3.21.0
+    restart: unless-stopped
+    depends_on:
+      - sockguard
+    volumes:
+      - sockguard-socket:/var/run/sockguard:ro
+    environment:
+      - WOODPECKER_SERVER=${WOODPECKER_SERVER:?set to the host:port of the Woodpecker server gRPC endpoint}
+      - WOODPECKER_AGENT_SECRET=${WOODPECKER_AGENT_SECRET:?set to the server's agent secret}
+      - WOODPECKER_BACKEND=docker
+      - WOODPECKER_BACKEND_DOCKER_HOST=unix:///var/run/sockguard/sockguard.sock
+
+volumes:
+  sockguard-socket:
