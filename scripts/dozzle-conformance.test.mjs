@@ -25,7 +25,10 @@ const sse = [
 
 test("parseSse splits events and parses JSON data", () => {
   const events = parseSse(sse);
-  assert.deepEqual(events.map((e) => e.event), ["server-version", "containers-changed", "ping"]);
+  assert.deepEqual(
+    events.map((e) => e.event),
+    ["server-version", "containers-changed", "ping"],
+  );
   assert.equal(events[0].data.version, "v11.5.0");
 });
 
@@ -75,7 +78,10 @@ test("observedRoutes de-duplicates and sorts", () => {
 
 test("deniedRecords finds denials only", () => {
   const denied = deniedRecords(parseAccessLog(log));
-  assert.deepEqual(denied.map((r) => r.path), ["/containers/create"]);
+  assert.deepEqual(
+    denied.map((r) => r.path),
+    ["/containers/create"],
+  );
 });
 
 test("deniedRecords skips expected denials by path shape", () => {

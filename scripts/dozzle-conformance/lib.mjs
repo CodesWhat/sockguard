@@ -95,11 +95,38 @@ export function parseAccessLog(text) {
 // Fixed Docker API keywords kept literally when shaping a path. Everything
 // else is an ID or name and becomes "*", with runs collapsing to "**".
 const STATIC_SEGMENTS = new Set([
-  "_ping", "version", "info", "events",
-  "containers", "json", "logs", "stats", "top", "changes",
-  "start", "stop", "restart", "kill", "rename", "update", "wait", "create",
-  "images", "history", "networks", "volumes", "distribution", "services",
-  "exec", "resize", "build", "export", "archive", "attach", "system", "df",
+  "_ping",
+  "version",
+  "info",
+  "events",
+  "containers",
+  "json",
+  "logs",
+  "stats",
+  "top",
+  "changes",
+  "start",
+  "stop",
+  "restart",
+  "kill",
+  "rename",
+  "update",
+  "wait",
+  "create",
+  "images",
+  "history",
+  "networks",
+  "volumes",
+  "distribution",
+  "services",
+  "exec",
+  "resize",
+  "build",
+  "export",
+  "archive",
+  "attach",
+  "system",
+  "df",
 ]);
 
 export function shapePath(path) {
@@ -112,7 +139,7 @@ export function shapePath(path) {
       out.push(s);
     }
   }
-  return "/" + out.join("/");
+  return `/${out.join("/")}`;
 }
 
 // observedRoutes returns the sorted, de-duplicated {method, path} shapes.
@@ -132,12 +159,20 @@ export function observedRoutes(records) {
 // nothing happened.
 export function routeDrift(observed, known) {
   if (observed.length === 0) {
-    return { status: "FAIL", detail: "no access-log records captured, log capture or shape broke", unknown: [] };
+    return {
+      status: "FAIL",
+      detail: "no access-log records captured, log capture or shape broke",
+      unknown: [],
+    };
   }
   const knownSet = new Set(known.map((r) => `${r.method} ${r.path}`));
   const unknown = observed.filter((r) => !knownSet.has(`${r.method} ${r.path}`));
   if (unknown.length === 0) {
-    return { status: "PASS", detail: `all ${observed.length} observed route shapes are in known-routes.json`, unknown };
+    return {
+      status: "PASS",
+      detail: `all ${observed.length} observed route shapes are in known-routes.json`,
+      unknown,
+    };
   }
   return {
     status: "FAIL",

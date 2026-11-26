@@ -5,7 +5,14 @@
 //   cli.mjs routes                    stdin: sockguard log -> JSON array of route shapes
 //   cli.mjs drift <known-routes.json> stdin: sockguard log -> {status,detail,unknown}
 import { readFileSync } from "node:fs";
-import { deniedRecords, findContainer, observedRoutes, parseAccessLog, parseSse, routeDrift } from "./lib.mjs";
+import {
+  deniedRecords,
+  findContainer,
+  observedRoutes,
+  parseAccessLog,
+  parseSse,
+  routeDrift,
+} from "./lib.mjs";
 
 const [cmd, arg] = process.argv.slice(2);
 const input = readFileSync(0, "utf8");
@@ -20,7 +27,10 @@ switch (cmd) {
   case "denied":
     console.log(
       JSON.stringify(
-        deniedRecords(parseAccessLog(input), arg ? (JSON.parse(readFileSync(arg, "utf8")).expected_denials ?? []) : []),
+        deniedRecords(
+          parseAccessLog(input),
+          arg ? (JSON.parse(readFileSync(arg, "utf8")).expected_denials ?? []) : [],
+        ),
       ),
     );
     break;
