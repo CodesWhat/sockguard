@@ -1,0 +1,143 @@
+---
+title: Rootless Podman and Quadlet
+description: Run sockguard as a rootless systemd user service in front of your own Podman socket, using Quadlet units, with a read-only policy and a CI smoke test.
+---
+
+This is the rootless deployment kit for [Podman](/docs/podman). It runs
+sockguard as a Quadlet-managed container under your own user, in front of that
+user's `podman.socket`. Nothing needs root.
+
+The kit lives in `examples/quadlet/`:
+
+| File | Purpose |
+|---|---|
+| `sockguard.container` | The sockguard container unit |
+| `sockguard.volume` | Named volume (`sockguard-socket`) that carries the filtered socket |
+| `sockguard.yaml` | A read-only policy: ping, version and container list/inspect, Docker-compat and libpod |
+
+There's no `.socket` unit. Sockguard opens its own listener and doesn't take a
+socket handed over by systemd, so the unit starts it directly and the volume
+carries the socket to consumers.
+
+## Requirements
+
+- Podman 4.9 or newer with Quadlet (`/usr/lib/podman/quadlet`).
+- A working rootless setup: `newuidmap`/`newgidmap` and a range for your user in `/etc/subuid` and `/etc/subgid`.
+- A systemd user manager. On a server, run `loginctl enable-linger $USER` so it
+  survives logout.
+
+## Install
+
+```bash
+mkdir -p ~/.config/containers/systemd ~/.config/sockguard
+cp examples/quadlet/sockguard.container examples/quadlet/sockguard.volume ~/.config/containers/systemd/
+cp examples/quadlet/sockguard.yaml ~/.config/sockguard/
+
+systemctl --user daemon-reload
+systemctl --user enable --now podman.socket
+systemctl --user start sockguard.service
+```
+
+The unit file names `docker.io/codeswhat/sockguard:latest`. Pin an exact
+release tag before you rely on it.
+
+## How the socket gets in
+
+`sockguard.container` mounts `%t/podman/podman.sock` (`%t` is
+`$XDG_RUNTIME_DIR`) at `/run/podman/podman.sock`, which is the
+`upstream.socket` in `sockguard.yaml`.
+
+The image runs as UID 65532, but the socket belongs to you, which is root
+inside a rootless container. `UserNS=keep-id:uid=65532,gid=65532` maps your
+host user to 65532 inside the container, so the socket is readable without
+widening its mode. The container also runs read-only with all capabilities
+dropped and `no-new-privileges`. `SecurityLabelDisable=true` is there because
+SELinux can't relabel a bind-mounted socket.
+
+## Point a consumer at it
+
+Mount the volume into the consumer and set its engine endpoint to
+`unix:///var/run/sockguard/sockguard.sock`:
+
+```ini
+[Container]
+Image=docker.io/traefik/traefik:v3.4
+Volume=sockguard.volume:/var/run/sockguard:ro
+Exec=--providers.docker.endpoint=unix:///var/run/sockguard/sockguard.sock
+
+[Unit]
+Requires=sockguard.service
+After=sockguard.service
+```
+
+From the host, `podman volume inspect sockguard-socket --format '{{.Mountpoint}}'`
+gives the directory that holds `sockguard.sock`.
+
+## Example: Traefik as a Quadlet consumer
+
+`examples/quadlet/traefik/` adds Traefik as a second rootless container that
+reads the Podman socket through sockguard and never touches `podman.sock`:
+
+| File | Purpose |
+|---|---|
+| `sockguard.yaml` | The [Traefik preset](/docs/presets#traefik-traefikyaml) with `upstream.socket` pointed at the kit's Podman socket mount and the listener in the kit's socket volume |
+| `traefik.container` | Traefik, on port 8080, with the filtered socket mounted read-only |
+| `traefik.network` | A private `traefik` network shared with the services it routes to |
+| `whoami.container` | A throwaway labelled backend to check the wiring |
+
+Install them next to the kit's units, replacing the kit policy with the
+Traefik one:
+
+```bash
+cp examples/quadlet/traefik/{traefik.container,traefik.network,whoami.container} ~/.config/containers/systemd/
+cp examples/quadlet/traefik/sockguard.yaml ~/.config/sockguard/sockguard.yaml
+
+systemctl --user daemon-reload
+systemctl --user restart sockguard.service
+systemctl --user start traefik.service whoami.service
+curl -H 'Host: whoami.localhost' http://127.0.0.1:8080/
+```
+
+Traefik's Docker provider calls `ServerVersion`, `Events`, `ContainerList` and
+`ContainerInspect` ([`pkg/provider/docker/pdocker.go`](https://github.com/traefik/traefik/blob/v3.8.0/pkg/provider/docker/pdocker.go)
+and [`shared.go`](https://github.com/traefik/traefik/blob/v3.8.0/pkg/provider/docker/shared.go)
+at v3.8.0), which map to `/version`, `/events`, `/containers/json` and
+`/containers/{id}/json`. Those are the only container routes the preset allows,
+and Podman serves them on its Docker-compatible API. Network, service, task
+and node lookups are Swarm-only and don't apply to Podman.
+
+The provider endpoint defaults to `unix:///var/run/docker.sock`, so the unit
+sets `--providers.docker.endpoint` to the volume path. Traefik routes to a
+container's address on a network it shares, so `--providers.docker.network`
+names the `traefik` network and every routed service joins it. The preset sets
+`response.redact_network_topology: false` for the same reason: with addresses
+redacted Traefik has nothing to route to.
+
+The kit's smoke test only checks that these units parse with Quadlet. It
+doesn't start Traefik.
+
+## Adjust the policy
+
+The bundled policy is read-only on purpose. Swap in one of the
+[presets](/docs/presets) (`podman-readonly.yaml` is the closest) or write your
+own rules, then restart the unit. A rootless "privileged" container is still
+confined by your user namespace, but sockguard denies it by default either way.
+See [Rootful vs. Rootless](/docs/podman#rootful-vs-rootless).
+
+## Smoke test
+
+`scripts/quadlet-smoke/smoke.sh` installs the units for the current user,
+starts the service, then checks:
+
+- the service is active and the socket appears in the volume
+- `GET /_ping`, `/version`, `/containers/json`, `/health` and `/libpod/containers/json` return 200
+- `POST /containers/create`, `DELETE /containers/{id}`, `GET /images/json` and `POST /libpod/containers/create` return 403
+
+CI runs it from `.github/workflows/quality-quadlet-smoke.yml` on a hosted
+Ubuntu runner, with sockguard built from the checkout. Run it locally with:
+
+```bash
+bash scripts/quadlet-smoke/smoke.sh
+```
+
+It removes what it installed when it exits; set `KEEP=1` to leave it in place.

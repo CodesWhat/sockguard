@@ -76,6 +76,18 @@ var bodySensitiveWriteEndpoints = []bodySensitiveWriteEndpoint{
 	{method: http.MethodPost, path: "/plugins/sockguard-test/upgrade"},
 	{method: http.MethodPost, path: "/plugins/sockguard-test/set", identifierShape: catalogIdentifierPath},
 	{method: http.MethodPost, path: "/plugins/create"},
+	// Docker's experimental checkpoint routes (daemon started with
+	// --experimental). Neither has a request-body inspector. Create takes a
+	// caller-chosen CheckpointDir naming a host path, and delete is
+	// DELETE /containers/{name}/checkpoints/{checkpoint}?dir=<host path>,
+	// where the daemon joins dir and checkpoint and RemoveAlls the result, so
+	// ?dir=/ with checkpoint "etc" removes /etc on the daemon host. No existing
+	// checkpoint or working CRIU install is needed. Create's container name is
+	// registered as {name:.*}, so it is a slash-bearing identifier; delete
+	// registers a single-segment name. Admitting either takes
+	// insecure_allow_body_blind_writes.
+	{method: http.MethodPost, path: "/containers/sockguard-test/checkpoints", identifierShape: catalogIdentifierPath},
+	{method: http.MethodDelete, path: "/containers/sockguard-test/checkpoints/sockguard-test"},
 	// libpod native surface (#148 PR2). POST /libpod/containers/create always
 	// runs through an inspector with fail-closed defaults exactly like its
 	// Docker-compat counterpart /containers/create (deliberately NOT listed
@@ -215,6 +227,16 @@ var bodySensitiveWriteEndpoints = []bodySensitiveWriteEndpoint{
 	// already refuses the route, so this is the path with no ownership
 	// configured. It has no case in bodyInspectionConfiguredForEndpoint.
 	{method: http.MethodPost, path: "/libpod/quadlets"},
+	// Podman's auto-update runs the `podman auto-update` machinery over every
+	// running systemd-managed container carrying an auto-update label: it
+	// pulls the image reference stored on each, restarts the whole unit when
+	// the image changed, and returns the per-unit report. The route takes no
+	// image or registry from the caller, only authfile, dryRun, rollback and
+	// container filters, so there is no body for an inspector to read and a
+	// whole-host effect to acknowledge. It also appears in
+	// sensitiveExfilEndpoints for the unredacted workload report it returns.
+	// Owner isolation refuses it outright (filter.LibpodUnscopeableWrites).
+	{method: http.MethodPost, path: "/libpod/autoupdate"},
 	{method: http.MethodPost, path: "/libpod/manifests/create"},
 	{
 		method:          http.MethodPost,
@@ -240,7 +262,7 @@ type buildkitTunnelEndpoint struct {
 // buildkitTunnelEndpoints probes the opaque, unversioned BuildKit
 // session/gRPC transport: POST /session (frontend/session bridge) and
 // POST /grpc (the moby.buildkit.v1.Control gRPC service tunneled over an
-// HTTP/1.1 hijack), still used by current Buildx (0.36.0) despite Engine API
+// HTTP/1.1 hijack), still used by current Buildx (0.39.1) despite Engine API
 // 1.53 deprecating both. Neither carries a request body sockguard can bound
 // or inspect once opened, so admitting either requires the dedicated
 // insecure_accept_opaque_buildkit_tunnels acknowledgment rather than the
@@ -272,6 +294,10 @@ var sensitiveExfilEndpoints = []sensitiveExfilEndpoint{
 	// is a single segment, so they keep the default shape.
 	{method: http.MethodGet, path: "/containers/sockguard-test/top", identifierShape: catalogIdentifierPath},
 	{method: http.MethodGet, path: "/containers/sockguard-test/attach/ws"},
+	// GET /containers/{name}/checkpoints?dir=<host path> lists the entries of
+	// a caller-selected directory on the daemon host (experimental only), so it
+	// is a host-directory enumeration primitive.
+	{method: http.MethodGet, path: "/containers/sockguard-test/checkpoints", identifierShape: catalogIdentifierPath},
 	{method: http.MethodGet, path: "/services/sockguard-test/logs"},
 	{method: http.MethodGet, path: "/tasks/sockguard-test/logs"},
 	{method: http.MethodPost, path: "/containers/sockguard-test/attach"},
@@ -332,6 +358,21 @@ var sensitiveExfilEndpoints = []sensitiveExfilEndpoint{
 			{path: "/libpod/images/scp/sockguard-test/untag", identifierShape: catalogIdentifierPath},
 		},
 	},
+	// Moby installs its debug router on every API listener, with or without
+	// --debug. /debug/vars is expvar (the daemon's full command line, memory
+	// statistics and runtime counters), and /debug/pprof/* serves the pprof
+	// index, cmdline, CPU/heap/goroutine profiles and traces. The profile name
+	// is one arbitrary segment (/debug/pprof/{name}), so it takes the default
+	// shape. A trailing slash is normalized away before matching, which is why
+	// the index is spelled without one.
+	{method: http.MethodGet, path: "/debug/vars"},
+	{method: http.MethodGet, path: "/debug/pprof"},
+	{method: http.MethodGet, path: "/debug/pprof/sockguard-test"},
+	// POST /libpod/autoupdate returns a report naming every systemd unit,
+	// container, image and policy the auto-update pass touched, across the
+	// whole host and without response redaction. The same route is in
+	// bodySensitiveWriteEndpoints for its unit restarts.
+	{method: http.MethodPost, path: "/libpod/autoupdate"},
 	{method: http.MethodGet, path: "/libpod/generate/kube"},
 	// GET /libpod/kube/generate is Podman's alias of the route above, served
 	// by the same handler, so it carries the same exfiltration risk.
@@ -418,6 +459,7 @@ func compileConfiguredRules(rules []config.RuleConfig) ([]*filter.CompiledRule, 
 			Action:  filter.Action(rule.Action),
 			Reason:  rule.Reason,
 			Index:   i,
+			Query:   rule.Match.Query,
 		}
 
 		compiledRule, err := compileFilterRule(spec)
@@ -536,7 +578,7 @@ func validateReadExfiltrationRulesForPolicy(scope string, insecure bool, configu
 
 	if scope == "" {
 		return fmt.Errorf(
-			"rules allow raw archive/export, process-list, log/attach streaming, checkpoint export, container rootfs mount, or registry push endpoints "+
+			"rules allow raw archive/export, process-list, log/attach streaming, checkpoint export, container rootfs mount, daemon debug/profiling, or registry push endpoints "+
 				"(these can exfiltrate container files, container memory, images, plugins, process arguments, environment variables, secrets, and daemon-host filesystem paths); "+
 				"either tighten the allow rules to omit these paths or set "+
 				"insecure_allow_read_exfiltration: true to acknowledge the risk. "+
@@ -546,7 +588,7 @@ func validateReadExfiltrationRulesForPolicy(scope string, insecure bool, configu
 	}
 
 	return fmt.Errorf(
-		"client profile %q allows raw archive/export, process-list, log/attach streaming, checkpoint export, container rootfs mount, or registry push endpoints "+
+		"client profile %q allows raw archive/export, process-list, log/attach streaming, checkpoint export, container rootfs mount, daemon debug/profiling, or registry push endpoints "+
 			"(these can exfiltrate container files, container memory, images, plugins, process arguments, environment variables, secrets, and daemon-host filesystem paths); "+
 			"either tighten the profile's allow rules to omit these paths or set the "+
 			"top-level insecure_allow_read_exfiltration: true to acknowledge the risk "+
@@ -626,7 +668,7 @@ func allowedBuildkitTunnelEndpoints(compiled []*filter.CompiledRule) []string {
 	allowed := make([]string, 0, len(buildkitTunnelEndpoints))
 	for _, endpoint := range buildkitTunnelEndpoints {
 		req := &http.Request{Method: endpoint.method, URL: &url.URL{Path: endpoint.path}}
-		action, _, _ := filter.Evaluate(compiled, req)
+		action, _, _ := filter.EvaluateStatic(compiled, req)
 		if action != filter.ActionAllow {
 			continue
 		}
@@ -681,7 +723,9 @@ func allowedCatalogPaths(method, catalogPath string, identifierShape catalogIden
 
 func policyAllowsPath(method, path string, compiledRules []*filter.CompiledRule) bool {
 	req := &http.Request{Method: method, URL: &url.URL{Path: path}}
-	action, _, _ := filter.Evaluate(compiledRules, req)
+	// A path probe carries no query, so a query-constrained allow is read as
+	// reachable (EvaluateStatic) rather than as absent.
+	action, _, _ := filter.EvaluateStatic(compiledRules, req)
 	return action == filter.ActionAllow
 }
 

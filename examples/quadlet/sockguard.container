@@ -1,0 +1,39 @@
+# Rootless sockguard in front of the user's Podman socket.
+#
+# Install into ~/.config/containers/systemd/ together with sockguard.volume,
+# then:
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now podman.socket
+#   systemctl --user start sockguard.service
+# See docs/content/docs/rootless-quadlet.mdx for the full walkthrough.
+[Unit]
+Description=Sockguard socket proxy (rootless)
+Requires=podman.socket
+After=podman.socket
+
+[Container]
+ContainerName=sockguard
+# Pin to an exact release for production.
+Image=docker.io/codeswhat/sockguard:latest
+# The image runs as 65532. keep-id maps your host user to 65532 inside the
+# container, so the host-owned user socket (mode 0660) is readable.
+User=65532:65532
+UserNS=keep-id:uid=65532,gid=65532
+ReadOnly=true
+DropCapability=ALL
+NoNewPrivileges=true
+# A bind-mounted socket cannot be relabelled; skip SELinux separation for
+# this one container rather than loosening the host policy.
+SecurityLabelDisable=true
+# %t is $XDG_RUNTIME_DIR, so this is the user's podman.socket.
+Volume=%t/podman/podman.sock:/run/podman/podman.sock
+Volume=%h/.config/sockguard/sockguard.yaml:/etc/sockguard/sockguard.yaml:ro
+Volume=sockguard.volume:/var/run/sockguard
+Exec=serve
+
+[Service]
+Restart=on-failure
+TimeoutStartSec=120
+
+[Install]
+WantedBy=default.target

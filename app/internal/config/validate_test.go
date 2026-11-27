@@ -2009,6 +2009,41 @@ func TestValidateLimitsConfig_Rate(t *testing.T) {
 			cfg:        LimitsConfig{Rate: &RateLimitConfig{TokensPerSecond: 10, Burst: -1}},
 			wantSubstr: "burst must not be negative",
 		},
+		{
+			name: "valid: fractional rate with burst omitted",
+			cfg:  LimitsConfig{Rate: &RateLimitConfig{TokensPerSecond: 0.5}},
+		},
+		{
+			name: "valid: fractional rate with adequate burst",
+			cfg:  LimitsConfig{Rate: &RateLimitConfig{TokensPerSecond: 0.5, Burst: 1}},
+		},
+		{
+			name: "valid: fractional rate with burst of several tokens",
+			cfg:  LimitsConfig{Rate: &RateLimitConfig{TokensPerSecond: 0.25, Burst: 4}},
+		},
+		{
+			name:       "fractional rate with burst equal to the rate rejected",
+			cfg:        LimitsConfig{Rate: &RateLimitConfig{TokensPerSecond: 0.5, Burst: 0.5}},
+			wantSubstr: "burst must be >= 1",
+		},
+		{
+			name:       "fractional burst above the rate but below one rejected",
+			cfg:        LimitsConfig{Rate: &RateLimitConfig{TokensPerSecond: 0.25, Burst: 0.75}},
+			wantSubstr: "burst must be >= 1",
+		},
+		{
+			name: "valid: fractional rate omitted burst allows a one-token endpoint cost",
+			cfg: LimitsConfig{Rate: &RateLimitConfig{TokensPerSecond: 0.5, EndpointCosts: []EndpointCostConfig{
+				{Path: "/containers/json", Cost: 1},
+			}}},
+		},
+		{
+			name: "fractional rate omitted burst rejects a cost above the one-token floor",
+			cfg: LimitsConfig{Rate: &RateLimitConfig{TokensPerSecond: 0.5, EndpointCosts: []EndpointCostConfig{
+				{Path: "/build", Cost: 2},
+			}}},
+			wantSubstr: "must not exceed effective burst",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -2422,6 +2457,62 @@ func TestValidateLimitsConfig_PackedBurstLimit(t *testing.T) {
 			}
 			if !found {
 				t.Fatalf("expected error containing %q, got: %v", tt.wantSubstr, errs)
+			}
+		})
+	}
+}
+
+func TestValidateWatchdogExitAfter(t *testing.T) {
+	cases := []struct {
+		name      string
+		enabled   bool
+		exitAfter string
+		wantErr   string
+	}{
+		{"default off", false, "0s", ""},
+		{"empty ok", true, "", ""},
+		{"valid", true, "30s", ""},
+		{"invalid", true, "soon", `health.watchdog.exit_after must be a non-negative duration, got "soon"`},
+		{"negative", true, "-1s", `health.watchdog.exit_after must be a non-negative duration, got "-1s"`},
+		{"needs watchdog", false, "30s", "health.watchdog.exit_after requires health.watchdog.enabled"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := Defaults()
+			cfg.Health.Watchdog.Enabled = tc.enabled
+			cfg.Health.Watchdog.ExitAfter = tc.exitAfter
+			err := Validate(&cfg)
+			if tc.wantErr == "" {
+				if err != nil && strings.Contains(err.Error(), "exit_after") {
+					t.Fatalf("unexpected exit_after error: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("error = %v, want containing %q", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+func TestValidateExecAllowedUsers(t *testing.T) {
+	cfg := Defaults()
+	cfg.RequestBody.Exec.AllowedUsers = []string{"", "app", "1000:1000"}
+	if err := Validate(&cfg); err != nil {
+		t.Fatalf("Validate() error = %v, want nil (the empty string is a valid entry)", err)
+	}
+
+	for name, entries := range map[string][]string{
+		"padded":    {" app"},
+		"trailing":  {"app "},
+		"duplicate": {"app", "app"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			cfg := Defaults()
+			cfg.RequestBody.Exec.AllowedUsers = entries
+			err := Validate(&cfg)
+			if err == nil || !strings.Contains(err.Error(), "request_body.exec.allowed_users") {
+				t.Fatalf("Validate() = %v, want an allowed_users error", err)
 			}
 		})
 	}

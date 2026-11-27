@@ -4,10 +4,13 @@ import (
 	"archive/tar"
 	"bytes"
 	"compress/gzip"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
+	"strings"
 	"testing"
 )
 
@@ -27,18 +30,20 @@ func FuzzBuild(f *testing.F) {
 	f.Fuzz(func(t *testing.T, rawQuery, contentType string, body []byte) {
 		body = truncateParserFuzzBytes(body, maxParserFuzzBytes)
 
-		req := httptest.NewRequest(http.MethodPost, "/build", bytes.NewReader(body))
-		req.URL = &url.URL{Path: "/build", RawQuery: rawQuery}
-		if contentType != "" {
-			req.Header.Set("Content-Type", contentType)
-		}
-
-		_, _ = policy.inspect(nil, req, "/build")
-
-		if req.Body != nil {
-			_, _ = io.Copy(io.Discard, req.Body)
-			_ = req.Body.Close()
-		}
+		fuzzVerdictOracle(t, "build", body, func(b []byte) (string, error) {
+			req := httptest.NewRequest(http.MethodPost, "/build", bytes.NewReader(b))
+			req.URL = &url.URL{Path: "/build", RawQuery: rawQuery}
+			if contentType != "" {
+				req.Header.Set("Content-Type", contentType)
+			}
+			defer func() {
+				if req.Body != nil {
+					_, _ = io.Copy(io.Discard, req.Body)
+					_ = req.Body.Close()
+				}
+			}()
+			return policy.inspect(nil, req, "/build")
+		})
 	})
 }
 
@@ -106,31 +111,48 @@ func FuzzContainerCreate(f *testing.F) {
 	f.Fuzz(func(t *testing.T, body []byte) {
 		body = truncateParserFuzzBytes(body, maxContainerCreateBodyBytes+1024)
 
-		req := httptest.NewRequest(http.MethodPost, "/containers/create", bytes.NewReader(body))
-		_, _ = policy.inspect(nil, req, "/containers/create")
-
-		if req.Body != nil {
-			_, _ = io.Copy(io.Discard, req.Body)
-			_ = req.Body.Close()
-		}
-
-		req2 := httptest.NewRequest(http.MethodPost, "/containers/create", bytes.NewReader(body))
-		_, _ = strictPolicy.inspect(nil, req2, "/containers/create")
-
-		if req2.Body != nil {
-			_, _ = io.Copy(io.Discard, req2.Body)
-			_ = req2.Body.Close()
+		for name, p := range map[string]containerCreatePolicy{"permissive": policy, "strict": strictPolicy} {
+			reason, err := fuzzVerdictOracle(t, "container create "+name, body, func(b []byte) (string, error) {
+				req := httptest.NewRequest(http.MethodPost, "/containers/create", bytes.NewReader(b))
+				defer func() {
+					if req.Body != nil {
+						_, _ = io.Copy(io.Discard, req.Body)
+						_ = req.Body.Close()
+					}
+				}()
+				return p.inspect(nil, req, "/containers/create")
+			})
+			// Neither policy sets AllowPrivileged or AllowHostNetwork, so a
+			// body that decodes with either one on must have been refused.
+			var decoded struct {
+				HostConfig struct {
+					Privileged  bool
+					NetworkMode string
+				}
+			}
+			if json.Unmarshal(body, &decoded) == nil && !denied(reason, err) {
+				if decoded.HostConfig.Privileged {
+					t.Fatalf("container create %s: allowed a privileged body: %q", name, body)
+				}
+				if decoded.HostConfig.NetworkMode == "host" {
+					t.Fatalf("container create %s: allowed host network mode: %q", name, body)
+				}
+			}
 		}
 	})
 }
 
 func FuzzExec(f *testing.F) {
-	f.Add([]byte(`{"Cmd":["/usr/local/bin/pre-update","--check"]}`))
+	f.Add([]byte(`{"Cmd":["/usr/local/bin/pre-update","--check"],"User":"app"}`))
+	f.Add([]byte(`{"Cmd":["/bin/sh","-c","id"],"User":"app"}`))
 	f.Add([]byte(`{"Cmd":"/bin/sh -c id","Privileged":true}`))
 	f.Add([]byte(`{"Cmd":[]}`))
 	f.Add([]byte(`{"Cmd":null}`))
 	f.Add([]byte(`{"Cmd":{"bad":true}}`))
 	f.Add([]byte(`{"Cmd":["/bin/sh"],"Env":["LD_PRELOAD=/tmp/x.so"]}`))
+	f.Add([]byte(`{"Cmd":["/usr/local/bin/pre-update","--check"],"User":"app","Privileged":true}`))
+	f.Add([]byte(`{"Cmd":["/usr/local/bin/pre-update","--check"],"User":"app","Env":["LD_PRELOAD=/tmp/x.so"]}`))
+	f.Add([]byte(`{"Cmd":["/usr/local/bin/pre-update","--check"],"User":"app"}`))
 	f.Add([]byte(`{"Cmd":["/bin/sh"],"Env":[123]}`))
 	f.Add([]byte(`{"Cmd":["/bin/sh"],"Env":"FOO=bar"}`))
 	f.Add(bytes.Repeat([]byte("a"), maxExecBodyBytes+1))
@@ -143,12 +165,36 @@ func FuzzExec(f *testing.F) {
 	f.Fuzz(func(t *testing.T, body []byte) {
 		body = truncateParserFuzzBytes(body, maxParserFuzzBytes)
 
-		req := httptest.NewRequest(http.MethodPost, "/containers/abc123/exec", bytes.NewReader(body))
-		_, _ = policy.inspect(nil, req, "/containers/abc123/exec")
-
-		if req.Body != nil {
-			_, _ = io.Copy(io.Discard, req.Body)
-			_ = req.Body.Close()
+		reason, err := fuzzVerdictOracle(t, "exec", body, func(b []byte) (string, error) {
+			req := httptest.NewRequest(http.MethodPost, "/containers/abc123/exec", bytes.NewReader(b))
+			defer func() {
+				if req.Body != nil {
+					_, _ = io.Copy(io.Discard, req.Body)
+					_ = req.Body.Close()
+				}
+			}()
+			return policy.inspect(nil, req, "/containers/abc123/exec")
+		})
+		// An allowed non-empty body must be the one allowlisted command, not
+		// privileged, and free of the denied env var. Decoding into []string
+		// only covers the array form; other Cmd shapes are not asserted on.
+		var decoded struct {
+			Cmd        []string
+			Privileged bool
+			Env        []string
+		}
+		if len(body) > 0 && !denied(reason, err) && json.Unmarshal(body, &decoded) == nil {
+			if !slices.Equal(decoded.Cmd, []string{"/usr/local/bin/pre-update", "--check"}) {
+				t.Fatalf("exec: allowed command %q outside the allowlist: %q", decoded.Cmd, body)
+			}
+			if decoded.Privileged {
+				t.Fatalf("exec: allowed a privileged exec: %q", body)
+			}
+			for _, env := range decoded.Env {
+				if name, _, _ := strings.Cut(env, "="); name == "LD_PRELOAD" {
+					t.Fatalf("exec: allowed denied env var %q: %q", env, body)
+				}
+			}
 		}
 	})
 }
@@ -166,9 +212,58 @@ func FuzzImagePull(f *testing.F) {
 	})
 
 	f.Fuzz(func(t *testing.T, rawQuery string) {
-		req := httptest.NewRequest(http.MethodPost, "/images/create", nil)
-		req.URL = &url.URL{Path: "/images/create", RawQuery: rawQuery}
-		_, _ = policy.inspect(nil, req, "/images/create")
+		fuzzVerdictOracle(t, "image pull", nil, func([]byte) (string, error) {
+			req := httptest.NewRequest(http.MethodPost, "/images/create", nil)
+			req.URL = &url.URL{Path: "/images/create", RawQuery: rawQuery}
+			return policy.inspect(nil, req, "/images/create")
+		})
+	})
+}
+
+// FuzzImagePush drives the push inspector and destination parser with
+// arbitrary paths, queries, registry-auth headers and destination strings. It
+// asserts that nothing panics, that the inspector never errors, and that the
+// parser only accepts a lowercase host and never a value carrying a byte a
+// reference cannot hold, so a destination it cannot read is never allowed.
+func FuzzImagePush(f *testing.F) {
+	f.Add("/images/ghcr.io/acme/app/push", "tag=latest", "", "ghcr.io/acme/app:v1")
+	f.Add("/libpod/images/x/push", "destination=docker://ghcr.io/acme/app", "", "docker://ghcr.io/a")
+	f.Add("/libpod/images/x/push", "destination=oci:/tmp/x", "", "oci:/tmp/x")
+	f.Add("/libpod/manifests/l/registry/ghcr.io%2Facme%2Fapp", "", "", "[::1]:5000/a")
+	f.Add("/libpod/manifests/l/registry/ghcr.io%252Facme%252Fapp", "", "", "Evil/app")
+	f.Add("/libpod/manifests/l/push", "destination=%5B::1%5D:5000/a", "", "a@sha256:"+strings.Repeat("a", 64))
+	f.Add("/plugins/ghcr.io/acme/p/push", "", "eyJzZXJ2ZXJhZGRyZXNzIjoicXVheS5pbyJ9", "")
+	f.Add("/v1.45/images/Evil/app/push", "destination=a&destination=b", "!!", "a:b/c")
+
+	policy := newImagePushPolicy(ImagePushOptions{
+		AllowedRegistries: []string{"ghcr.io", "localhost:5000", "[::1]:5000"},
+		RegistryAliases:   map[string]string{"mirror.example": "ghcr.io"},
+	})
+
+	f.Fuzz(func(t *testing.T, path, rawQuery, auth, destination string) {
+		req := httptest.NewRequest(http.MethodPost, "/", nil)
+		req.URL = &url.URL{Path: path, RawQuery: rawQuery}
+		if auth != "" {
+			req.Header.Set("X-Registry-Auth", auth)
+		}
+		if _, err := policy.inspect(nil, req, NormalizePath(req.URL.Path)); err != nil {
+			t.Fatalf("inspect returned an error: %v", err)
+		}
+
+		for _, libpod := range []bool{false, true} {
+			dest := parsePushDestination(destination, libpod)
+			if dest.problem == pushDestinationOK {
+				if dest.host == "" || dest.host != strings.ToLower(dest.host) {
+					t.Fatalf("parsePushDestination(%q) accepted with host %q", destination, dest.host)
+				}
+				if strings.ContainsAny(destination, " \t\r\n%\\\x00") {
+					t.Fatalf("parsePushDestination(%q) accepted a value with a forbidden byte", destination)
+				}
+			}
+			if reason := policy.denyReasonForDestination(destination, libpod); reason == "" && dest.problem != pushDestinationOK {
+				t.Fatalf("denyReasonForDestination(%q) allowed a destination that did not parse", destination)
+			}
+		}
 	})
 }
 

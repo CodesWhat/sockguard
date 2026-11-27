@@ -5,9 +5,11 @@ import (
 	"net"
 	"net/netip"
 	"net/url"
+	"os"
 	"path"
 	"regexp"
 	"slices"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -93,6 +95,7 @@ func validateBasic(cfg *Config, mode validateMode) []string {
 	errs = append(errs, validateLogging(cfg)...)
 	errs = append(errs, validateResponse(cfg)...)
 	errs = append(errs, validateHealthMetrics(cfg)...)
+	errs = append(errs, validateOTLP(cfg, mode)...)
 	if cfg.Admin.Enabled {
 		errs = append(errs, validateAdmin(cfg, mode)...)
 	}
@@ -552,6 +555,7 @@ func validateResponse(cfg *Config) []string {
 	}
 	errs = append(errs, validateMaxBufferedBody(cfg.Response.MaxBufferedBody)...)
 	errs = append(errs, validateVisibleResourceLabels("response.visible_resource_labels", cfg.Response.VisibleResourceLabels, ownerReservedLabelKey(cfg))...)
+	errs = append(errs, validateVisibleNetworks("response.visible_networks", cfg.Response.VisibleNetworks)...)
 	return errs
 }
 
@@ -586,6 +590,15 @@ func validateHealthMetrics(cfg *Config) []string {
 			errs = append(errs, fmt.Sprintf("health.watchdog.interval must be a positive duration, got %q", cfg.Health.Watchdog.Interval))
 		}
 	}
+	if d := cfg.Health.Watchdog.ExitAfter; d != "" {
+		exitAfter, err := time.ParseDuration(d)
+		switch {
+		case err != nil || exitAfter < 0:
+			errs = append(errs, fmt.Sprintf("health.watchdog.exit_after must be a non-negative duration, got %q", d))
+		case exitAfter > 0 && !cfg.Health.Watchdog.Enabled:
+			errs = append(errs, "health.watchdog.exit_after requires health.watchdog.enabled")
+		}
+	}
 	if cfg.Health.Readiness.Enabled {
 		if !strings.HasPrefix(cfg.Health.Readiness.Path, "/") {
 			errs = append(errs, fmt.Sprintf("health.readiness.path must start with /, got %q", cfg.Health.Readiness.Path))
@@ -617,6 +630,26 @@ func validateHealthMetrics(cfg *Config) []string {
 
 func validateAdmin(cfg *Config, mode validateMode) []string {
 	var errs []string
+	if !strings.HasPrefix(cfg.Admin.PolicyDiffPath, "/") {
+		errs = append(errs, "admin.policy_diff_path must start with /")
+	} else {
+		endpoints := []struct {
+			name    string
+			path    string
+			enabled bool
+		}{
+			{"admin.path", cfg.Admin.Path, true},
+			{"admin.policy_version_path", cfg.Admin.PolicyVersionPath, true},
+			{"health.path", cfg.Health.Path, cfg.Health.Enabled},
+			{"metrics.path", cfg.Metrics.Path, cfg.Metrics.Enabled},
+			{"health.readiness.path", cfg.Health.Readiness.Path, cfg.Health.Readiness.Enabled},
+		}
+		for _, endpoint := range endpoints {
+			if endpoint.enabled && path.Clean(cfg.Admin.PolicyDiffPath) == path.Clean(endpoint.path) {
+				errs = append(errs, "admin.policy_diff_path must not equal "+endpoint.name)
+			}
+		}
+	}
 	if !strings.HasPrefix(cfg.Admin.Path, "/") {
 		errs = append(errs, fmt.Sprintf("admin.path must start with /, got %q", cfg.Admin.Path))
 	}
@@ -686,6 +719,7 @@ func validateRules(cfg *Config) []string {
 		} else if filter.HasVersionPrefix(r.Match.Path) {
 			errs = append(errs, versionPrefixRuleError(fmt.Sprintf("rule %d", i+1), r.Match.Path))
 		}
+		errs = append(errs, validateRuleQuery(fmt.Sprintf("rule %d: match.query", i+1), r.Match.Query)...)
 		switch r.Action {
 		case "allow", "deny":
 		default:
@@ -693,6 +727,60 @@ func validateRules(cfg *Config) []string {
 		}
 	}
 	return errs
+}
+
+// validateRuleQuery checks a rule's match.query map. field is the already
+// prefixed path of the map ("rule 2: match.query" or
+// "clients.profiles[0].rules[1].match.query"); per-key problems extend it with
+// the key, so the message names the exact entry. Keys are walked in sorted
+// order so the error list is stable.
+func validateRuleQuery(field string, query map[string][]string) []string {
+	if len(query) == 0 {
+		return nil
+	}
+	keys := make([]string, 0, len(query))
+	for key := range query {
+		keys = append(keys, key)
+	}
+	slices.Sort(keys)
+	var errs []string
+	folded := make(map[string]string, len(keys))
+	for _, key := range keys {
+		patterns := query[key]
+		entry := field + "." + key
+		lower := strings.ToLower(key)
+		if first, dup := folded[lower]; dup && key != "" {
+			errs = append(errs, fmt.Sprintf("%s keys %q and %q differ only in letter case, which is ambiguous", field, first, key))
+			continue
+		}
+		folded[lower] = key
+		switch {
+		case key == "":
+			errs = append(errs, field+" must not have an empty key")
+			continue
+		case hasControlRune(key):
+			errs = append(errs, fmt.Sprintf("%s key %q must not contain control characters", field, key))
+			continue
+		case len(patterns) == 0:
+			errs = append(errs, entry+" needs at least one pattern")
+			continue
+		}
+		for j, pattern := range patterns {
+			if hasControlRune(pattern) {
+				errs = append(errs, fmt.Sprintf("%s[%d] must not contain control characters, got %q", entry, j, pattern))
+			}
+		}
+	}
+	return errs
+}
+
+func hasControlRune(s string) bool {
+	for _, r := range s {
+		if r < 0x20 || r == 0x7f {
+			return true
+		}
+	}
+	return false
 }
 
 // validEscapedLibpodImageScpRule recognizes the one route family whose exact
@@ -960,8 +1048,8 @@ func validateRequestBody(cfg *Config) []string {
 	errs = append(errs, validateNetworkEndpointConfig(cfg)...)
 	errs = append(errs, validateBuildkitAckMutualExclusion(cfg)...)
 	errs = append(errs, validateClientsConfig(cfg)...)
-	if cfg.Ownership.Owner != "" && cfg.Ownership.LabelKey == "" {
-		errs = append(errs, requiredWhenError("ownership.label_key", "ownership.owner is set"))
+	if cfg.OwnershipActive() && cfg.Ownership.LabelKey == "" {
+		errs = append(errs, requiredWhenError("ownership.label_key", "ownership.owner or a client profile ownership.owner is set"))
 	}
 	return errs
 }
@@ -1076,9 +1164,10 @@ const (
 var mutationRuleIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
 
 var validMutationSurfaces = map[string]struct{}{
-	"container_create": {},
-	"service_create":   {},
-	"service_update":   {},
+	"container_create":        {},
+	"libpod_container_create": {},
+	"service_create":          {},
+	"service_update":          {},
 }
 
 // mutationImageOverlapEntry is one valid remap_image rule's overlap-check
@@ -1115,6 +1204,7 @@ func validateMutationsConfig(cfg *Config) []string {
 	totalLabels := 0
 	var imageEntries []mutationImageOverlapEntry
 	var labelClaims []mutationLabelClaim
+	var bindEntries []mutationBindOverlapEntry
 
 	for i, rule := range rules {
 		prefix := fmt.Sprintf("mutations.rules[%d]", i)
@@ -1133,11 +1223,25 @@ func validateMutationsConfig(cfg *Config) []string {
 
 		errs = append(errs, validateMutationSurfaces(prefix, rule.Surfaces)...)
 
+		blocks := 0
+		for _, set := range []bool{rule.InjectLabels != nil, rule.RemapImage != nil, rule.RemapBindSource != nil} {
+			if set {
+				blocks++
+			}
+		}
 		switch {
-		case rule.InjectLabels != nil && rule.RemapImage != nil:
-			errs = append(errs, fmt.Sprintf("%s: exactly one of inject_labels or remap_image is required, got both", prefix))
-		case rule.InjectLabels == nil && rule.RemapImage == nil:
-			errs = append(errs, fmt.Sprintf("%s: exactly one of inject_labels or remap_image is required, got neither", prefix))
+		case blocks == 2:
+			errs = append(errs, fmt.Sprintf("%s: exactly one of inject_labels, remap_image or remap_bind_source is required, got both", prefix))
+		case blocks > 2:
+			errs = append(errs, fmt.Sprintf("%s: exactly one of inject_labels, remap_image or remap_bind_source is required, got all three", prefix))
+		case blocks == 0:
+			errs = append(errs, fmt.Sprintf("%s: exactly one of inject_labels, remap_image or remap_bind_source is required, got neither", prefix))
+		case rule.RemapBindSource != nil:
+			bindErrs, entry := validateMutationRemapBindSource(prefix, rule)
+			errs = append(errs, bindErrs...)
+			if entry != nil {
+				bindEntries = append(bindEntries, *entry)
+			}
 		case rule.InjectLabels != nil:
 			labelErrs, claims := validateMutationInjectLabels(prefix, rule, cfg)
 			errs = append(errs, labelErrs...)
@@ -1158,6 +1262,7 @@ func validateMutationsConfig(cfg *Config) []string {
 
 	errs = append(errs, validateMutationLabelOverlaps(labelClaims)...)
 	errs = append(errs, validateMutationImageOverlaps(imageEntries)...)
+	errs = append(errs, validateMutationBindOverlaps(bindEntries)...)
 
 	return errs
 }
@@ -1170,7 +1275,7 @@ func validateMutationSurfaces(prefix string, surfaces []string) []string {
 	seen := make(map[string]struct{}, len(surfaces))
 	for _, surface := range surfaces {
 		if _, ok := validMutationSurfaces[surface]; !ok {
-			errs = append(errs, enumValueError(prefix+".surfaces", surface, "container_create", "service_create", "service_update"))
+			errs = append(errs, enumValueError(prefix+".surfaces", surface, "container_create", "libpod_container_create", "service_create", "service_update"))
 			continue
 		}
 		if _, dup := seen[surface]; dup {
@@ -1195,6 +1300,9 @@ func validateMutationInjectLabels(prefix string, rule MutationRuleConfig, cfg *C
 		if surface == "service_update" {
 			errs = append(errs, fmt.Sprintf("%s.inject_labels is not valid on surface %q: service_update has no label field to mutate", prefix, surface))
 		}
+		if surface == "libpod_container_create" {
+			errs = append(errs, fmt.Sprintf("%s.inject_labels is not valid on surface %q: only remap_bind_source applies to libpod container create", prefix, surface))
+		}
 	}
 
 	labels := rule.InjectLabels.Labels
@@ -1209,10 +1317,7 @@ func validateMutationInjectLabels(prefix string, rule MutationRuleConfig, cfg *C
 	// (validateRequestBody); read it as-is here rather than re-deriving the
 	// Defaults() fallback, so this check is exact even if that other
 	// validation error is also present in the same run.
-	reservedLabelKey := ""
-	if cfg.Ownership.Owner != "" {
-		reservedLabelKey = cfg.Ownership.LabelKey
-	}
+	reservedLabelKey := ownerReservedLabelKey(cfg)
 
 	keys := make([]string, 0, len(labels))
 	for key := range labels {
@@ -1295,6 +1400,12 @@ func validateMutationRemapImage(prefix string, rule MutationRuleConfig) ([]strin
 		errs = append(errs, enumValueError(prefix+".remap_image.match", remap.Match, "exact", "prefix"))
 	}
 
+	for _, surface := range rule.Surfaces {
+		if surface == "libpod_container_create" {
+			errs = append(errs, fmt.Sprintf("%s.remap_image is not valid on surface %q: only remap_bind_source applies to libpod container create", prefix, surface))
+		}
+	}
+
 	fromOK := validateMutationImageField(prefix+".remap_image.from", remap.From, &errs)
 	toOK := validateMutationImageField(prefix+".remap_image.to", remap.To, &errs)
 
@@ -1318,6 +1429,104 @@ func validateMutationRemapImage(prefix string, rule MutationRuleConfig) ([]strin
 		return errs, nil
 	}
 	return errs, &mutationImageOverlapEntry{prefix: prefix, surfaces: rule.Surfaces, match: match, from: remap.From}
+}
+
+// mutationBindOverlapEntry is one valid remap_bind_source rule's overlap-check
+// shape.
+type mutationBindOverlapEntry struct {
+	prefix string
+	from   string
+	to     string
+}
+
+// validateMutationRemapBindSource validates one rule's remap_bind_source
+// block. Both paths must be absolute and already clean so what the operator
+// wrote is exactly what is matched and written, and neither may contain the
+// characters that delimit a bind spec (":") or a Podman --mount field (","),
+// which would let a rewritten source smuggle mount options or a second
+// field. "/" is refused on either side: a root "from" would rewrite every
+// bind source, and a root "to" would hand the whole host to every match.
+// remap_bind_source applies only to the two container-create surfaces.
+func validateMutationRemapBindSource(prefix string, rule MutationRuleConfig) ([]string, *mutationBindOverlapEntry) {
+	var errs []string
+	for _, surface := range rule.Surfaces {
+		if surface != "container_create" && surface != "libpod_container_create" {
+			errs = append(errs, fmt.Sprintf("%s.remap_bind_source is not valid on surface %q: bind sources exist only on container_create and libpod_container_create", prefix, surface))
+		}
+	}
+	remap := rule.RemapBindSource
+	fromOK := validateMutationBindPath(prefix+".remap_bind_source.from", remap.From, &errs)
+	toOK := validateMutationBindPath(prefix+".remap_bind_source.to", remap.To, &errs)
+	if !fromOK || !toOK {
+		return errs, nil
+	}
+	return errs, &mutationBindOverlapEntry{prefix: prefix, from: remap.From, to: remap.To}
+}
+
+func validateMutationBindPath(field, value string, errs *[]string) bool {
+	if strings.TrimSpace(value) == "" {
+		*errs = append(*errs, requiredFieldError(field))
+		return false
+	}
+	ok := true
+	if len(value) > maxMutationImageFieldBytes {
+		*errs = append(*errs, fmt.Sprintf("%s exceeds %d bytes", field, maxMutationImageFieldBytes))
+		ok = false
+	}
+	if containsControlOrNUL(value) {
+		*errs = append(*errs, fmt.Sprintf("%s must not contain control characters or NUL", field))
+		ok = false
+	}
+	if strings.ContainsAny(value, ":,") {
+		*errs = append(*errs, fmt.Sprintf("%s must not contain ':' or ','", field))
+		ok = false
+	}
+	if !strings.HasPrefix(value, "/") {
+		*errs = append(*errs, fmt.Sprintf("%s must be an absolute path, got %q", field, value))
+		return false
+	}
+	if cleaned := path.Clean(value); cleaned != value {
+		*errs = append(*errs, fmt.Sprintf("%s must be a clean path (no trailing slash, '//', '.' or '..' components); use %q", field, cleaned))
+		ok = false
+	}
+	if value == "/" {
+		*errs = append(*errs, fmt.Sprintf("%s must not be the filesystem root", field))
+		ok = false
+	}
+	return ok
+}
+
+// mutationBindPathsOverlap reports whether two clean absolute paths are equal
+// or one contains the other on a path-component boundary.
+func mutationBindPathsOverlap(a, b string) bool {
+	return a == b || strings.HasPrefix(a, b+"/") || strings.HasPrefix(b, a+"/")
+}
+
+// validateMutationBindOverlaps rejects bind remaps whose result would depend
+// on rule order or could chain. Two "from" paths that overlap would both match
+// one source, and any rule's "to" overlapping any rule's "from" (its own
+// included) means a rewritten source could match a rule again. Rejecting both
+// keeps every rewrite a single, order-independent step.
+func validateMutationBindOverlaps(entries []mutationBindOverlapEntry) []string {
+	var errs []string
+	for i := range entries {
+		for j := range entries {
+			a, b := entries[i], entries[j]
+			if i < j && mutationBindPathsOverlap(a.from, b.from) {
+				errs = append(errs, fmt.Sprintf(
+					"%s.remap_bind_source.from and %s.remap_bind_source.from overlap: one source could match both rules, making the result order-dependent",
+					a.prefix, b.prefix,
+				))
+			}
+			if mutationBindPathsOverlap(a.to, b.from) {
+				errs = append(errs, fmt.Sprintf(
+					"%s.remap_bind_source.to overlaps %s.remap_bind_source.from: a rewritten source could be rewritten again",
+					a.prefix, b.prefix,
+				))
+			}
+		}
+	}
+	return errs
 }
 
 // validateMutationImageField checks the shared from/to shape rules (required,
@@ -1442,7 +1651,73 @@ func validateClientsConfig(cfg *Config) []string {
 	errs = append(errs, validateClientsSourceIPProfiles(cfg, profilesByName)...)
 	errs = append(errs, validateClientsCertificateProfiles(cfg, profilesByName)...)
 	errs = append(errs, validateClientsUnixPeerProfiles(cfg, profilesByName)...)
+	errs = append(errs, validateClientProfileOwnerships(cfg)...)
 	return errs
+}
+
+// validateClientProfileOwnerships checks each profile's ownership override:
+// the owner may not be explicitly empty, scope must be "" or "all", scope all
+// needs an effective owner to stamp creates with, and a profile whose owner
+// differs from the root (or that lifts scoping) may not be reachable through
+// a weak selector. Weak means anything a caller can influence or that every
+// unmatched client falls into: clients.source_ip_profiles (a source address
+// on a shared bridge) and clients.default_profile. client_certificate_profiles
+// and unix_peer_profiles are strong. clients.container_labels is not a
+// selector at all (it only attaches extra ACL rules), and a listener's
+// allowed_profiles is an admission gate applied after selection, so neither
+// is considered here. An effective owner inherited from the root counts for
+// the scope all requirement.
+func validateClientProfileOwnerships(cfg *Config) []string {
+	var errs []string
+	weak := weakProfileSelectors(cfg)
+	for i := range cfg.Clients.Profiles {
+		profile := &cfg.Clients.Profiles[i]
+		prefix := fmt.Sprintf("clients.profiles[%d].ownership", i)
+		own := profile.Ownership
+		if own.Owner != nil && strings.TrimSpace(*own.Owner) == "" {
+			errs = append(errs, fmt.Sprintf("%s.owner must not be empty when set; omit it to inherit ownership.owner", prefix))
+		}
+		scopeValid := true
+		switch own.Scope {
+		case "", OwnershipScopeAll:
+		default:
+			scopeValid = false
+			errs = append(errs, fmt.Sprintf("%s.scope must be empty or %q, got %q", prefix, OwnershipScopeAll, own.Scope))
+		}
+		eff := cfg.EffectiveOwnership(profile)
+		if scopeValid && eff.AllOwners && strings.TrimSpace(eff.Owner) == "" {
+			errs = append(errs, fmt.Sprintf("%s.scope %q requires an owner to stamp creates with; set %s.owner or ownership.owner", prefix, OwnershipScopeAll, prefix))
+		}
+		name := strings.TrimSpace(profile.Name)
+		selectors := weak[name]
+		if name == "" || len(selectors) == 0 {
+			continue
+		}
+		if scopeValid && eff.AllOwners {
+			errs = append(errs, fmt.Sprintf("%s.scope %q must not be reachable through a weak selector (%s); select it with clients.client_certificate_profiles or clients.unix_peer_profiles. insecure_allow_weak_owner_selection does not apply to scope all",
+				prefix, OwnershipScopeAll, strings.Join(selectors, ", ")))
+			continue
+		}
+		if eff.Owner != "" && eff.Owner != cfg.Ownership.Owner && !cfg.Ownership.InsecureAllowWeakOwnerSelection {
+			errs = append(errs, fmt.Sprintf("%s.owner %q differs from ownership.owner and the profile is reachable through a weak selector (%s); select it with clients.client_certificate_profiles or clients.unix_peer_profiles, or set ownership.insecure_allow_weak_owner_selection: true to accept the spoofing risk",
+				prefix, eff.Owner, strings.Join(selectors, ", ")))
+		}
+	}
+	return errs
+}
+
+// weakProfileSelectors maps a profile name to the weak selector paths that
+// can reach it.
+func weakProfileSelectors(cfg *Config) map[string][]string {
+	weak := map[string][]string{}
+	for i, assignment := range cfg.Clients.SourceIPProfiles {
+		name := strings.TrimSpace(assignment.Profile)
+		weak[name] = append(weak[name], fmt.Sprintf("clients.source_ip_profiles[%d]", i))
+	}
+	if name := strings.TrimSpace(cfg.Clients.DefaultProfile); name != "" {
+		weak[name] = append(weak[name], "clients.default_profile")
+	}
+	return weak
 }
 
 func validateClientsAllowedCIDRs(cfg *Config) []string {
@@ -1658,6 +1933,9 @@ func validateClientProfile(index int, profile ClientProfileConfig, profilesByNam
 
 	prefix := fmt.Sprintf("clients.profiles[%d]", index)
 	name := strings.TrimSpace(profile.Name)
+	if name != "" && name != profile.Name {
+		return []string{fmt.Sprintf("%s.name must not have leading or trailing whitespace", prefix)}
+	}
 	switch name {
 	case "":
 		errs = append(errs, requiredFieldError(prefix+".name"))
@@ -1682,6 +1960,7 @@ func validateClientProfile(index int, profile ClientProfileConfig, profilesByNam
 	}
 
 	errs = append(errs, validateVisibleResourceLabels(prefix+".response.visible_resource_labels", profile.Response.VisibleResourceLabels, reservedLabelKey)...)
+	errs = append(errs, validateVisibleNetworks(prefix+".response.visible_networks", profile.Response.VisibleNetworks)...)
 	errs = append(errs, validateRequestBodyConfig(prefix+".request_body", profile.RequestBody)...)
 	errs = append(errs, validateRuleConfigs(profile.Rules, prefix+".rules")...)
 	errs = append(errs, validateLimitsConfig(prefix+".limits", profile.Limits)...)
@@ -1711,8 +1990,14 @@ func validateLimitsConfig(prefix string, cfg LimitsConfig) []string {
 		case cfg.Rate.Burst < 0:
 			errs = append(errs, fmt.Sprintf("%s.burst must not be negative, got %v", ratePfx, cfg.Rate.Burst))
 		case effectiveBurst == 0:
-			// Default: burst equals tokens_per_second.
-			effectiveBurst = cfg.Rate.TokensPerSecond
+			// Default: burst equals tokens_per_second, floored at one token. A
+			// bucket smaller than one request's cost could never admit
+			// anything, so a fractional rate with burst omitted would deny
+			// every request forever.
+			effectiveBurst = max(1, cfg.Rate.TokensPerSecond)
+		case effectiveBurst < 1:
+			errs = append(errs, fmt.Sprintf("%s.burst must be >= 1 or 0 (default); a bucket smaller than one request's cost never admits a request, got %v",
+				ratePfx, cfg.Rate.Burst))
 		case effectiveBurst < cfg.Rate.TokensPerSecond:
 			errs = append(errs, fmt.Sprintf("%s.burst must be >= tokens_per_second (%v) or 0 (default), got %v",
 				ratePfx, cfg.Rate.TokensPerSecond, cfg.Rate.Burst))
@@ -1788,6 +2073,7 @@ func validateRequestBodyConfig(prefix string, cfg RequestBodyConfig) []string {
 	errs = append(errs, validateLibpodContainerCreateConfig(prefix, cfg.LibpodContainerCreate)...)
 	errs = append(errs, validateExecConfig(prefix, cfg.Exec)...)
 	errs = append(errs, validateImagePullConfig(prefix, cfg.ImagePull)...)
+	errs = append(errs, validateImagePushConfig(prefix, cfg.ImagePush)...)
 	errs = append(errs, validateServiceConfig(prefix, cfg.Service)...)
 	errs = append(errs, validateSwarmConfig(prefix, cfg.Swarm)...)
 	errs = append(errs, validatePluginConfig(prefix, cfg.Plugin)...)
@@ -1865,6 +2151,22 @@ func validateBuildkitOpaqueEntries(prefix, entries string, values []string) []st
 	return errs
 }
 
+// validateNetworkExposureEntries flags allowed_port_host_ips entries that
+// aren't a bare IP address (no brackets, padding, port or zone) and
+// allowed_networks entries that are empty or padded. Network names are
+// compared exactly, so padding can never match.
+func validateNetworkExposureEntries(prefix, block string, hostIPs, networks []string) []string {
+	var errs []string
+	for _, entry := range hostIPs {
+		addr, err := netip.ParseAddr(entry)
+		if err != nil || addr.Zone() != "" {
+			errs = append(errs, fmt.Sprintf("%s.%s.allowed_port_host_ips entries must be IP addresses, got %q", prefix, block, entry))
+		}
+	}
+	errs = append(errs, validateBuildkitOpaqueEntries(prefix, block+".allowed_networks", networks)...)
+	return errs
+}
+
 // validateLogDriverEntries flags empty or whitespace-padded entries in a
 // block's allowed_log_drivers and allowed_log_endpoint_options. Driver names
 // are compared exactly, so padding can never match.
@@ -1925,6 +2227,7 @@ func validateContainerCreateConfig(prefix string, cfg ContainerCreateRequestBody
 	errs = append(errs, validateHostPathEntries(prefix, "container_create.allowed_bind_mounts", cfg.AllowedBindMounts)...)
 	errs = append(errs, validateHostPathEntries(prefix, "container_create.allowed_devices", cfg.AllowedDevices)...)
 	errs = append(errs, validateLogDriverEntries(prefix, "container_create", cfg.AllowedLogDrivers, cfg.AllowedLogEndpointOptions)...)
+	errs = append(errs, validateNetworkExposureEntries(prefix, "container_create", cfg.AllowedPortHostIPs, cfg.AllowedNetworks)...)
 	for i, entry := range cfg.AllowedDeviceRequests {
 		if strings.TrimSpace(entry.Driver) == "" {
 			errs = append(errs, fmt.Sprintf("%s.container_create.allowed_device_requests[%d].driver is required", prefix, i))
@@ -1932,6 +2235,18 @@ func validateContainerCreateConfig(prefix string, cfg ContainerCreateRequestBody
 		for j, capSet := range entry.AllowedCapabilities {
 			if len(capSet) == 0 {
 				errs = append(errs, fmt.Sprintf("%s.container_create.allowed_device_requests[%d].allowed_capabilities[%d] must be a non-empty capability set", prefix, i, j))
+			}
+		}
+		errs = append(errs, validateExactDeviceIDs(fmt.Sprintf("%s.container_create.allowed_device_requests[%d].device_ids", prefix, i), entry.DeviceIDs)...)
+		if entry.Count != nil && *entry.Count < -1 {
+			errs = append(errs, fmt.Sprintf("%s.container_create.allowed_device_requests[%d].count must be -1 or a non-negative integer, got %d", prefix, i, *entry.Count))
+		}
+		if len(entry.DeviceIDs) > 0 && entry.Count != nil && *entry.Count != 0 {
+			errs = append(errs, fmt.Sprintf("%s.container_create.allowed_device_requests[%d] cannot set device_ids with a non-zero count: Docker rejects a request carrying both", prefix, i))
+		}
+		for key := range entry.Options {
+			if key == "" || key != strings.TrimSpace(key) {
+				errs = append(errs, fmt.Sprintf("%s.container_create.allowed_device_requests[%d].options keys must be non-empty without surrounding whitespace, got %q", prefix, i, key))
 			}
 		}
 		if entry.MaxCount != nil && *entry.MaxCount < -1 {
@@ -1959,7 +2274,14 @@ func validateLibpodContainerCreateConfig(prefix string, cfg LibpodContainerCreat
 	errs = append(errs, validateCreateImageAllowlist(prefix+".libpod_container_create.allowed_images", cfg.AllowedImages)...)
 	errs = append(errs, validateHostPathEntries(prefix, "libpod_container_create.allowed_bind_mounts", cfg.AllowedBindMounts)...)
 	errs = append(errs, validateHostPathEntries(prefix, "libpod_container_create.allowed_devices", cfg.AllowedDevices)...)
+	errs = append(errs, validateExactDeviceIDs(prefix+".libpod_container_create.allowed_gpus", cfg.AllowedGPUs)...)
+	for i, name := range cfg.AllowedCDIDevices {
+		if !filter.IsQualifiedCDIDevice(name) {
+			errs = append(errs, fmt.Sprintf("%s.libpod_container_create.allowed_cdi_devices[%d] must be a fully qualified CDI name (vendor/class=name), got %q", prefix, i, name))
+		}
+	}
 	errs = append(errs, validateLogDriverEntries(prefix, "libpod_container_create", cfg.AllowedLogDrivers, cfg.AllowedLogEndpointOptions)...)
+	errs = append(errs, validateNetworkExposureEntries(prefix, "libpod_container_create", cfg.AllowedPortHostIPs, cfg.AllowedNetworks)...)
 	for _, entry := range cfg.AllowedNamespaceSharingContainers {
 		if entry != "" && entry == strings.TrimSpace(entry) {
 			continue
@@ -1977,6 +2299,18 @@ func validateExecConfig(prefix string, cfg ExecRequestBodyConfig) []string {
 			continue
 		}
 		errs = append(errs, fmt.Sprintf("%s.exec.allowed_commands entries must contain at least one non-empty argv token, got entry %d", prefix, i+1))
+	}
+	seenUsers := make(map[string]struct{}, len(cfg.AllowedUsers))
+	for i, user := range cfg.AllowedUsers {
+		if user != strings.TrimSpace(user) {
+			errs = append(errs, fmt.Sprintf("%s.exec.allowed_users entry %d must not have leading or trailing whitespace", prefix, i+1))
+			continue
+		}
+		if _, dup := seenUsers[user]; dup {
+			errs = append(errs, fmt.Sprintf("%s.exec.allowed_users entry %d is a duplicate of an earlier entry", prefix, i+1))
+			continue
+		}
+		seenUsers[user] = struct{}{}
 	}
 	for _, name := range cfg.AllowedEnvVars {
 		if validExecEnvVarName(name) {
@@ -2003,12 +2337,65 @@ func validateImagePullConfig(prefix string, cfg ImagePullRequestBodyConfig) []st
 	return validateRegistryHostEntries(prefix, "image_pull.allowed_registries", cfg.AllowedRegistries)
 }
 
+// validateImagePushConfig checks request_body.image_push. Aliases are single
+// level: a target may not itself be an alias, which rules out chains and
+// cycles, and an alias with no allowlist is refused because it would do
+// nothing. The list form keeps dotted hosts out of Viper's key splitting.
+func validateImagePushConfig(prefix string, cfg ImagePushRequestBodyConfig) []string {
+	errs := validateRegistryHostEntries(prefix, "image_push.allowed_registries", cfg.AllowedRegistries)
+	if len(cfg.RegistryAliases) == 0 {
+		return errs
+	}
+	field := prefix + ".image_push.registry_aliases"
+	if len(cfg.AllowedRegistries) == 0 {
+		return append(errs, field+" requires image_push.allowed_registries (the policy is inactive without it, so an alias would do nothing)")
+	}
+
+	normalized := make(map[string]string, len(cfg.RegistryAliases))
+	for i, alias := range cfg.RegistryAliases {
+		from, to := alias.From, alias.To
+		entry := fmt.Sprintf("%s[%d]", field, i)
+		normFrom, okFrom := normalizeAllowedRegistryHost(from)
+		normTo, okTo := normalizeAllowedRegistryHost(to)
+		if !okFrom {
+			errs = append(errs, fmt.Sprintf("%s.from must be a bare registry host, got %q", entry, from))
+		}
+		if !okTo {
+			errs = append(errs, fmt.Sprintf("%s.to must be a bare registry host, got %q", entry, to))
+		}
+		if !okFrom || !okTo {
+			continue
+		}
+		if filter.IsBuiltinRegistryAlias(from) || filter.IsBuiltinRegistryAlias(normFrom) {
+			errs = append(errs, fmt.Sprintf("%s.from %q is a built-in Docker Hub alias and cannot be redefined", entry, from))
+			continue
+		}
+		if normFrom == normTo {
+			errs = append(errs, fmt.Sprintf("%s.from %q must differ from its target", entry, from))
+			continue
+		}
+		if existing, dup := normalized[normFrom]; dup {
+			errs = append(errs, fmt.Sprintf("%s.from %q is a duplicate (already maps to %q)", entry, from, existing))
+			continue
+		}
+		normalized[normFrom] = normTo
+	}
+	for from, to := range normalized {
+		if _, chained := normalized[to]; chained {
+			errs = append(errs, fmt.Sprintf("%s target %q (from %q) is itself an alias; chains are not followed", field, to, from))
+		}
+	}
+	slices.Sort(errs)
+	return errs
+}
+
 func validateServiceConfig(prefix string, cfg ServiceRequestBodyConfig) []string {
 	var errs []string
 	errs = append(errs, validateCreateImageAllowlist(prefix+".service.allowed_images", cfg.AllowedImages)...)
 	errs = append(errs, validateHostPathEntries(prefix, "service.allowed_bind_mounts", cfg.AllowedBindMounts)...)
 	errs = append(errs, validateRegistryHostEntries(prefix, "service.allowed_registries", cfg.AllowedRegistries)...)
 	errs = append(errs, validateLogDriverEntries(prefix, "service", cfg.AllowedLogDrivers, cfg.AllowedLogEndpointOptions)...)
+	errs = append(errs, validateNetworkExposureEntries(prefix, "service", cfg.AllowedPortHostIPs, cfg.AllowedNetworks)...)
 	return errs
 }
 
@@ -2059,6 +2446,7 @@ func validateRuleConfigs(rules []RuleConfig, prefix string) []string {
 		} else if filter.HasVersionPrefix(r.Match.Path) {
 			errs = append(errs, versionPrefixRuleError(rulePrefix, r.Match.Path))
 		}
+		errs = append(errs, validateRuleQuery(rulePrefix+".match.query", r.Match.Query)...)
 		switch r.Action {
 		case "allow", "deny":
 		default:
@@ -2242,7 +2630,7 @@ func validateLogOutputField(fieldPath, output string) error {
 // Defaults() fallback, matching validateMutationInjectLabels: an empty
 // LabelKey alongside a configured owner is its own error, reported separately.
 func ownerReservedLabelKey(cfg *Config) string {
-	if cfg.Ownership.Owner == "" {
+	if !cfg.OwnershipActive() {
 		return ""
 	}
 	return cfg.Ownership.LabelKey
@@ -2283,6 +2671,27 @@ func validateVisibleResourceLabels(prefix string, values []string, reservedLabel
 		}
 		if hasValue && strings.TrimSpace(selected) == "" {
 			errs = append(errs, fmt.Sprintf("%s entries with '=' must include a non-empty value, got %q", prefix, raw))
+		}
+	}
+	return errs
+}
+
+// validateVisibleNetworks checks one visible_networks list. Entries are exact
+// network names, so an entry that is blank, padded, or carries a glob
+// metacharacter or a comma is almost certainly a mistaken pattern that would
+// silently match nothing. Errors name the index only, never the value.
+func validateVisibleNetworks(field string, values []string) []string {
+	var errs []string
+	for i, value := range values {
+		switch {
+		case strings.TrimSpace(value) == "":
+			errs = append(errs, fmt.Sprintf("%s[%d] must be non-empty", field, i))
+		case value != strings.TrimSpace(value):
+			errs = append(errs, fmt.Sprintf("%s[%d] must not have leading or trailing whitespace", field, i))
+		case strings.ContainsAny(value, "*?["):
+			errs = append(errs, fmt.Sprintf("%s[%d] must be an exact network name without glob characters (*, ?, [)", field, i))
+		case strings.Contains(value, ","):
+			errs = append(errs, fmt.Sprintf("%s[%d] must not contain commas", field, i))
 		}
 	}
 	return errs
@@ -2329,6 +2738,104 @@ func validateCreateLaunchConfig(prefix string, commands, entrypoints [][]string,
 	for i, entry := range values {
 		if !validExecEnvValue(entry) {
 			errs = append(errs, fmt.Sprintf("%s.allowed_env_values entry %d must be NAME=VALUE", prefix, i+1))
+		}
+	}
+	return errs
+}
+
+// validateOTLP checks the otlp.* block. A disabled block is not validated
+// beyond its types. The ca_file readability check is skipped in structural
+// mode, which never touches the filesystem.
+func validateOTLP(cfg *Config, mode validateMode) []string {
+	o := cfg.OTLP
+	if !o.Enabled {
+		return nil
+	}
+	var errs []string
+	// Error messages never echo the endpoint or header values: both can carry
+	// secrets (userinfo, query keys).
+	if u, err := url.Parse(o.Endpoint); err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Hostname() == "" {
+		errs = append(errs, "otlp.endpoint must be an absolute http or https URL with a host")
+	} else if u.User != nil {
+		errs = append(errs, "otlp.endpoint must not contain userinfo; use otlp.headers")
+	}
+	if d, err := time.ParseDuration(o.Timeout); err != nil || d <= 0 {
+		errs = append(errs, fmt.Sprintf("otlp.timeout must be a positive duration, got %q", o.Timeout))
+	}
+	if d, err := time.ParseDuration(o.FlushInterval); err != nil || d <= 0 {
+		errs = append(errs, fmt.Sprintf("otlp.flush_interval must be a positive duration, got %q", o.FlushInterval))
+	}
+	if o.QueueSize < 1 || o.QueueSize > 65536 {
+		errs = append(errs, fmt.Sprintf("otlp.queue_size must be between 1 and 65536, got %d", o.QueueSize))
+	}
+	if o.BatchSize < 1 || o.BatchSize > o.QueueSize {
+		errs = append(errs, fmt.Sprintf("otlp.batch_size must be between 1 and otlp.queue_size, got %d", o.BatchSize))
+	}
+	if !(o.SampleRatio >= 0 && o.SampleRatio <= 1) {
+		errs = append(errs, fmt.Sprintf("otlp.sample_ratio must be between 0 and 1, got %v", o.SampleRatio))
+	}
+	hnames := make([]string, 0, len(o.Headers))
+	for hn := range o.Headers {
+		hnames = append(hnames, hn)
+	}
+	sort.Strings(hnames)
+	for _, hn := range hnames {
+		if !validOTLPHeaderName(hn) {
+			errs = append(errs, fmt.Sprintf("otlp.headers has an invalid header name %q", hn))
+			continue
+		}
+		if !validOTLPHeaderValue(o.Headers[hn]) {
+			errs = append(errs, fmt.Sprintf("otlp.headers[%q] has an invalid header value", hn))
+		}
+	}
+	if o.TLS.CAFile != "" && mode != validateStructural {
+		if f, err := os.Open(o.TLS.CAFile); err != nil {
+			errs = append(errs, "otlp.tls.ca_file must be a readable file")
+		} else {
+			_ = f.Close()
+		}
+	}
+	return errs
+}
+
+// validOTLPHeaderValue applies the net/http outgoing rule: no control
+// characters (CR, LF, NUL and the rest of 0x00-0x1f except tab) and no DEL.
+// An invalid value would fail every request as a transport error, so it is
+// rejected up front. The value itself is never echoed.
+func validOTLPHeaderValue(v string) bool {
+	for i := 0; i < len(v); i++ {
+		if c := v[i]; c != '\t' && (c < 0x20 || c == 0x7f) {
+			return false
+		}
+	}
+	return true
+}
+
+// validOTLPHeaderName reports whether name is an RFC 7230 token.
+func validOTLPHeaderName(name string) bool {
+	if name == "" {
+		return false
+	}
+	for i := 0; i < len(name); i++ {
+		c := name[i]
+		switch {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9':
+		case strings.IndexByte("!#$%&'*+-.^_`|~", c) >= 0:
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// validateExactDeviceIDs refuses empty or whitespace-padded entries in an
+// exact-match device list. Matching never trims, so a padded entry could never
+// match and would only hide a typo.
+func validateExactDeviceIDs(path string, ids []string) []string {
+	var errs []string
+	for i, id := range ids {
+		if id == "" || id != strings.TrimSpace(id) {
+			errs = append(errs, fmt.Sprintf("%s[%d] must be a non-empty value without surrounding whitespace, got %q", path, i, id))
 		}
 	}
 	return errs

@@ -11,7 +11,7 @@ import (
 
 // UnknownKeys reports every key in the YAML file at configPath that no field
 // of Config binds, as dotted paths (list elements as name[index], for example
-// "clients.profiles[0].response.redact_container_env"), sorted. A missing file
+// "clients.profiles[0].response.redact_env"), sorted. A missing file
 // or empty path reports nothing, matching Load.
 //
 // Only the file is inspected. Environment variables and built-in defaults are

@@ -1,0 +1,16 @@
+{
+  "$comment": "Route-drift tripwire manifest for scripts/dozzle-conformance/run.sh. Each entry is a (method, path shape) pair sockguard's access log (field normalized_path) may emit for the allowed Dozzle flows, derived from app/configs/dozzle.yaml's allow rules. `*` is one dynamic segment (container id). The deliberate forbidden probes the harness sends are NOT listed: the tripwire reads the log before they run. Dozzle also calls GET /system/df, which the preset denies on purpose (Dozzle carries on without the volume and disk-size figures); it is listed under expected_denials and is not counted as a denied flow. Any other route observed fails the job; review the preset, then update this file in a PR.",
+  "routes": [
+    { "method": "GET", "path": "/_ping" },
+    { "method": "HEAD", "path": "/_ping" },
+    { "method": "GET", "path": "/version" },
+    { "method": "GET", "path": "/info" },
+    { "method": "GET", "path": "/events" },
+    { "method": "GET", "path": "/containers/json" },
+    { "method": "GET", "path": "/containers/*/json" },
+    { "method": "GET", "path": "/containers/*/stats" },
+    { "method": "GET", "path": "/containers/*/logs" },
+    { "method": "GET", "path": "/system/df" }
+  ],
+  "expected_denials": [{ "method": "GET", "path": "/system/df" }]
+}

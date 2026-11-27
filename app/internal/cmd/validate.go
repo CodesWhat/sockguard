@@ -9,6 +9,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/codeswhat/sockguard/v3/app/internal/config"
+	"github.com/codeswhat/sockguard/v3/app/internal/filter"
 	"github.com/codeswhat/sockguard/v3/app/internal/ui"
 )
 
@@ -80,6 +81,8 @@ func runValidate(cmd *cobra.Command, args []string) error {
 	warnLogger := slog.New(slog.NewTextHandler(errOut, nil))
 	warnIfRulesMatchNoKnownRoute(cfg, warnLogger)
 	warnIfCreateAllowedWithResponseRedaction(cfg, warnLogger)
+	warnIfProfileDisablesRedaction(cfg, warnLogger)
+	warnIfQueryDenyRules(cfg, warnLogger)
 	warnIfPingNotAllowed(cfg, warnLogger)
 
 	printHeader(out, stdoutP, cfg, compatActive)
@@ -117,9 +120,18 @@ func printRules(out io.Writer, p *ui.Printer, cfg *config.Config, count int) {
 		if method == "" {
 			method = "*"
 		}
-		fmt.Fprintf(out, "    %s %s  %-6s %s\n", glyph, action, method, r.Match.Path)
+		fmt.Fprintf(out, "    %s %s  %-6s %s%s\n", glyph, action, method, r.Match.Path, ruleQuerySuffix(r.Match.Query))
 	}
 	fmt.Fprintln(out)
+}
+
+// ruleQuerySuffix renders a rule's match.query as " ?signal=USR1|SIGUSR1" for
+// the rule listings, or "" when the rule has none.
+func ruleQuerySuffix(query map[string][]string) string {
+	if q := filter.FormatQuery(query); q != "" {
+		return " ?" + q
+	}
+	return ""
 }
 
 func printClientProfiles(out io.Writer, p *ui.Printer, cfg *config.Config) {
@@ -145,7 +157,7 @@ func printClientProfiles(out io.Writer, p *ui.Printer, cfg *config.Config) {
 			if method == "" {
 				method = "*"
 			}
-			fmt.Fprintf(out, "      %s %s  %-6s %s\n", glyph, action, method, r.Match.Path)
+			fmt.Fprintf(out, "      %s %s  %-6s %s%s\n", glyph, action, method, r.Match.Path, ruleQuerySuffix(r.Match.Query))
 		}
 	}
 	fmt.Fprintln(out)

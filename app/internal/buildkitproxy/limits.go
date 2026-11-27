@@ -41,7 +41,11 @@ type Limits struct {
 	// Phase 2 forwards original bytes without decoding protobuf framing (see
 	// registry.go's package doc), so this is a coarse per-stream cap, not a
 	// per-length-prefixed-message one — later phases that actually decode
-	// Mediate methods can tighten this per field.
+	// Mediate methods can tighten this per field. The one exception is the
+	// Control/Status response, a server-streaming RPC that carries build logs
+	// for as long as a build runs: it is capped per length-prefixed message
+	// (relayGRPCFramesPerMessageCap), so a long build is not cut once its
+	// cumulative output crosses this value.
 	MaxMessageBytes int64
 
 	// DeniedStreamBudget is the number of Deny-classified or

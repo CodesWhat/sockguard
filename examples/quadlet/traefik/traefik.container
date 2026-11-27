@@ -1,0 +1,40 @@
+# Traefik as a rootless Quadlet container, reading the Podman socket through
+# sockguard's traefik preset instead of mounting podman.sock itself.
+#
+# Install next to the kit's sockguard.container and sockguard.volume in
+# ~/.config/containers/systemd/, together with traefik.network and
+# whoami.container, and use sockguard.yaml from this directory as
+# ~/.config/sockguard/sockguard.yaml. Then:
+#   systemctl --user daemon-reload
+#   systemctl --user start traefik.service
+# See docs/content/docs/rootless-quadlet.mdx.
+[Unit]
+Description=Traefik (rootless, via sockguard)
+Requires=sockguard.service
+After=sockguard.service
+
+[Container]
+ContainerName=traefik
+# Pin to an exact release for production.
+Image=docker.io/traefik/traefik:v3.8
+Network=traefik.network
+# Unprivileged host port: rootless users can't bind below
+# net.ipv4.ip_unprivileged_port_start (1024 by default).
+PublishPort=8080:80
+# The filtered socket, read-only. Traefik never sees podman.sock.
+Volume=sockguard.volume:/var/run/sockguard:ro
+Exec=--providers.docker=true \
+     --providers.docker.endpoint=unix:///var/run/sockguard/sockguard.sock \
+     --providers.docker.exposedbydefault=false \
+     --providers.docker.network=traefik \
+     --entrypoints.web.address=:80
+ReadOnly=true
+DropCapability=ALL
+NoNewPrivileges=true
+SecurityLabelDisable=true
+
+[Service]
+Restart=on-failure
+
+[Install]
+WantedBy=default.target

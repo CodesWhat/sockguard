@@ -4,7 +4,7 @@
 
 After v3 ships, 2.4.x receives security fixes until v3.1 ships. Keep its release changes on `maintenance/2.4.x`, with reviewed PRs and exact-SHA branch CI. The release cutter and publisher verify that the matching line is older than the first supported line in the default branch's `SECURITY.md` and is still marked supported there. A retired or mismatched line fails before publication. Protect the maintenance branch with the normal review and required-check rules before its first cut. Update its own release metadata and Renovate target for each patch, and supply an explicit `release_tag` to the cutter.
 
-Maintenance releases publish their versioned assets, Go module, chart digest and full and minor image tags. They advance the floating major image tag only when the default branch's `SECURITY.md` records no newer minor line in that major, including retired lines. This lets a 2.4 patch update `:2` after v3 ships without allowing a 2.4 patch to roll `:2` back from a recorded 2.5 line. Maintenance releases do not replace Docker `latest`, GitHub's latest release or the global Homebrew cask. Homebrew publication and its smoke test apply to current stable releases only; maintenance users pin the versioned binary or image. The chart pin still runs after successful maintenance artifact verification, with Homebrew intentionally skipped. It opens a chart-pin PR instead of pushing to the protected maintenance branch. The existing release credential creates that PR so normal CI is triggered; review and merge it with the usual approvals. A rerun reuses an identical pin branch and open PR, and refuses to overwrite a different tree. Prereleases never move latest channels.
+Maintenance releases publish their versioned assets, Go module, chart digest and full and minor image tags. They advance the floating major image tag only when the default branch's `SECURITY.md` records no newer minor line in that major, including retired lines. This lets a 2.4 patch update `:2` after v3 ships without allowing a 2.4 patch to roll `:2` back from a recorded 2.5 line. Maintenance releases do not replace Docker `latest` or GitHub's latest release; maintenance users pin the versioned binary or image. The chart pin still runs after successful maintenance artifact verification. It opens a chart-pin PR instead of pushing to the protected maintenance branch. The existing release credential creates that PR so normal CI is triggered; review and merge it with the usual approvals. A rerun reuses an identical pin branch and open PR, and refuses to overwrite a different tree. Prereleases never move latest channels.
 
 ## Before tagging
 
@@ -61,15 +61,14 @@ Maintenance releases publish their versioned assets, Go module, chart digest and
    - `website/src/lib/site-config.ts` — current stable version shown by the site
    - `website/src/lib/site-content.ts` and `README.md` — roadmap/current-release copy
    - `chart/sockguard/Chart.yaml` and `chart/sockguard/values.yaml` — lockstep chart/application versions plus the two-stage image digest state (see [Helm chart](#helm-chart) below)
+   - `examples/compose/**` — the `codeswhat/sockguard:<version>` default in each compose file; `scripts/release-metadata.test.mjs` fails when one lags the site version
    - `docs/content/docs/roadmap.mdx` — served on the docs site; it went stale for a full release line because it wasn't on this list
    - `SECURITY.md` — the supported-versions table: the line being cut goes to the top marked supported, the previous minor line stays supported, everything older is unsupported. It went stale twice in three days (#421, #431) because nothing in this procedure named it.
    - `renovate.json` — `baseBranchPatterns` names the dev branch of the line being cut (`dev/vX.Y` for `vX.Y.0`, the maintenance branch for a maintenance cut). `release-cut.yml` asserts this before creating the tag, so a stale value fails the cut; the v2.2.0 dispatch failed exactly there because this step did not name the file.
 
    `scripts/release-metadata.test.mjs` enforces that the website version, website roadmap, docs roadmap, Helm chart/application versions, README latest-stable banner, and CHANGELOG release heading all agree with each other. It never reads the tag itself, so it stays green even if all of those files are stale relative to what's actually being tagged. `scripts/verify-tag-release-metadata.mjs` closes that gap by comparing the tag against `go.mod`, `website/src/lib/site-config.ts`, `chart/sockguard/Chart.yaml`, `chart/sockguard/values.yaml`, `SECURITY.md`, and the CHANGELOG heading directly, and runs as a gate in both `release-cut.yml` (before the tag is pushed) and `release-from-tag.yml` (right after the tag-format assertion, before any artifact builds) — so skipping this step now hard-fails the cut instead of shipping a mislabeled release the way v1.7.1 did (#304). For a stable tag it requires exact agreement across all five surfaces, including an empty prepublication Helm image pin and a `SECURITY.md` supported-versions table whose first row is the tag's own `X.Y.x` line marked `:white_check_mark:`; both stable and prerelease tags must match the Go module major (no suffix for v0/v1, `/vN` for v2 and later). For a prerelease tag (`vX.Y.Z-rc.N`) it requires the CHANGELOG heading, since the website, chart, and SECURITY.md correctly still show the current stable version while an rc soaks.
 
-7. **Lefthook pre-push** — runs automatically on `git push`. Sequence: clean-tree → goreleaser snapshot → go-lint → go-test → go-fuzz smoke → lockfile-dedupe → knip → biome → ts-test → build → zizmor. The push is blocked if any step fails. Branch CI independently runs the same GoReleaser snapshot and asserts that it rendered `dist/homebrew/Casks/sockguard.rb`.
-
-8. **Release credentials** — confirm the repository Actions secret `HOMEBREW_TAP_TOKEN` is available and has contents-write access to `CodesWhat/homebrew-tap`. GoReleaser uses it only for current stable tags from `main`; prereleases and older maintenance releases skip the cask upload.
+7. **Lefthook pre-push** — runs automatically on `git push`. Sequence: clean-tree → goreleaser snapshot → go-lint → go-test → go-fuzz smoke → lockfile-dedupe → knip → biome → ts-test → build → zizmor. The push is blocked if any step fails. Branch CI independently runs the same GoReleaser snapshot.
 
 ---
 
@@ -109,14 +108,13 @@ The tag-triggered publisher independently resolves the branch that owns the rele
 
 1. **verify-ci** — confirms the tag is the exact HEAD of its protected stable, development, or maintenance branch and that `ci-verify.yml` passed on the tag SHA; fails the release otherwise
 2. **changelog** — extracts the CHANGELOG entry for the tag into release notes
-3. **goreleaser** — builds Linux and Darwin `amd64` + `arm64` binaries, archives, checksums, and a CycloneDX SBOM per archive (via syft); cosign-signs `checksums.txt` and each archive into a sigstore bundle (`.sigstore.json`); attaches them to the GitHub release; reads the published body back and compares it to the extracted CHANGELOG entry; and updates `Casks/sockguard.rb` in `CodesWhat/homebrew-tap` for current stable tags
+3. **goreleaser** — builds Linux and Darwin `amd64` + `arm64` binaries, archives, checksums, and a CycloneDX SBOM per archive (via syft); cosign-signs `checksums.txt` and each archive into a sigstore bundle (`.sigstore.json`); attaches them to the GitHub release; reads the published body back and compares it to the extracted CHANGELOG entry
 4. **release** — builds and pushes the multi-arch Docker image, then:
    - Signs the image with cosign (keyless, via GitHub OIDC)
    - Verifies the cosign signature in the same job
    - Signs the release tarball with cosign (blob signing) into a sigstore bundle (`.sigstore.json`); see `docs/content/docs/verification.mdx`
    - Attests SLSA Build L2 provenance and persists the GHCR image's linked artifact metadata (public repo only; activates automatically when the repo is public)
-5. **verify-homebrew** — on current stable tags, clears the hosted runner's implicit `--no-quarantine` setting, installs the cask from `CodesWhat/homebrew-tap` on macOS, proves the installed version matches the tag and has no quarantine attribute, then uninstalls it
-6. **verify-published** — QA-6 end-to-end gate: pulls each published image tag (ghcr, docker.io, quay.io) and the release tarball + signature assets, then runs the *exact* `cosign verify` / `cosign verify-blob` commands published in `docs/content/docs/verification.mdx`. Catches drift between the operator-facing docs and the actual pipeline.
+5. **verify-published** — QA-6 end-to-end gate: pulls each published image tag (ghcr, docker.io, quay.io) and the release tarball + signature assets, then runs the *exact* `cosign verify` / `cosign verify-blob` commands published in `docs/content/docs/verification.mdx`. Catches drift between the operator-facing docs and the actual pipeline.
 
 **Verify the release:**
 
@@ -125,7 +123,6 @@ The tag-triggered publisher independently resolves the branch that owns the rele
 - GHCR image exists: `ghcr.io/codeswhat/sockguard:<version>`
 - Docker Hub mirror updated: `docker.io/codeswhat/sockguard:<version>`
 - Quay.io mirror updated: `quay.io/codeswhat/sockguard:<version>`
-- Homebrew cask updated for current stable releases: `brew install --cask codeswhat/tap/sockguard`
 - Cosign verify — see `docs/content/docs/verification.mdx` for the canonical invocation
 
 ### Stable patch plus active release-candidate line
@@ -158,9 +155,9 @@ The test accepts only an empty prepublication image tag or `<appVersion>@sha256:
 
 ### Publishing the chart
 
-The `publish-chart` job pushes the chart to `oci://ghcr.io/codeswhat/charts/sockguard` for a stable tag cut from the default branch. It uses the same gate as the global `latest` tag and the Homebrew cask (`verify-ci`'s `latest` output), so prereleases and `maintenance/X.Y.x` tags publish nothing and an older patch can never move the chart channel.
+The `publish-chart` job pushes the chart to `oci://ghcr.io/codeswhat/charts/sockguard` for a stable tag cut from the default branch. It uses the same gate as the global `latest` tag (`verify-ci`'s `latest` output), so prereleases and `maintenance/X.Y.x` tags publish nothing and an older patch can never move the chart channel.
 
-Chart publishing is isolated from the image release. No other job needs `publish-chart`: `verify-published` (QA-6), `verify-homebrew` and `pin-chart-digest` run whether or not the chart publishes, so a chart failure never skips or reddens the image and tarball checks, Homebrew or the pin. The chart's own checks are the `publish-chart` and `verify-chart` jobs.
+Chart publishing is isolated from the image release. No other job needs `publish-chart`: `verify-published` (QA-6) and `pin-chart-digest` run whether or not the chart publishes, so a chart failure never skips or reddens the image and tarball checks or the pin. The chart's own checks are the `publish-chart` and `verify-chart` jobs.
 
 1. It waits for the `release` job, then re-resolves the image's multi-arch manifest-list digest from GHCR and refuses any digest the release job did not publish.
 2. The tagged tree still has the prepublication empty `image.tag`, because `pin-chart-digest` writes the pin to the development branch only after verification. `publish-chart` applies the same `scripts/pin-chart-image-digest.mjs` pin to its own throwaway checkout (nothing is committed), runs `helm lint` and `helm package`, then `scripts/assert-chart-release.mjs` reads Chart.yaml and values back out of the package and requires chart `version` == `appVersion` == the tag, and `image.tag` == `<version>@<digest>`.

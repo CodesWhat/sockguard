@@ -100,6 +100,7 @@ type Config struct {
 	Ownership                     OwnershipConfig    `mapstructure:"ownership"`
 	Health                        HealthConfig       `mapstructure:"health"`
 	Metrics                       MetricsConfig      `mapstructure:"metrics"`
+	OTLP                          OTLPConfig         `mapstructure:"otlp"`
 	Admin                         AdminConfig        `mapstructure:"admin"`
 	Reload                        ReloadConfig       `mapstructure:"reload"`
 	PolicyBundle                  PolicyBundleConfig `mapstructure:"policy_bundle"`
@@ -154,7 +155,7 @@ type Config struct {
 	// InsecureAcceptOpaqueBuildkitTunnels acknowledges opening POST /session,
 	// POST /grpc, or a direct BuildKit Control-service method path. Both
 	// endpoints are unversioned opaque hijacked streams: dockerd's embedded
-	// BuildKit frontend/session bridge, still used by current Buildx (0.36.0)
+	// BuildKit frontend/session bridge, still used by current Buildx (0.39.1)
 	// even though Engine API 1.53 deprecated them. Unlike the bounded exec
 	// escape hatch InsecureAllowBodyBlindWrites covers, these streams carry
 	// secrets, SSH agent forwarding, and arbitrary file sync with no request
@@ -480,6 +481,12 @@ type ResponseConfig struct {
 	// does not match at least one pattern are hidden. Empty means no image-based
 	// filtering.
 	ImagePatterns []string `mapstructure:"image_patterns"`
+	// VisibleNetworks is a list of exact, case-sensitive network names. A
+	// container is visible only if it is attached to at least one of them, and
+	// GET /networks and GET /networks/{id} show only the listed networks, with
+	// each Containers map narrowed to visible containers. It is ANDed with the
+	// other container axes. Empty means no network-based filtering.
+	VisibleNetworks []string `mapstructure:"visible_networks"`
 	// RedactHostTopology redacts GET /info fields that fingerprint the host's
 	// container runtime plumbing: Containerd, FirewallBackend,
 	// DiscoveredDevices, and NRI. Separate from RedactNetworkTopology (which
@@ -488,7 +495,7 @@ type ResponseConfig struct {
 	RedactHostTopology bool `mapstructure:"redact_host_topology"`
 	// AllowAttestationStatements permits GET /images/{name}/attestations
 	// responses that include the full in-toto statement content
-	// (?statement=true). Engine API 1.53 added this endpoint; broad allow
+	// (?statement=true). Engine API 1.55 added this endpoint; broad allow
 	// rules such as "/images/**" (portainer.yaml) admit it at the rule-engine
 	// layer without knowing it exists, so this response-layer gate closes
 	// that gap independent of the rule set. Default false.
@@ -533,6 +540,7 @@ type RequestBodyConfig struct {
 	// doc, decision C3).
 	Exec             ExecRequestBodyConfig             `mapstructure:"exec"`
 	ImagePull        ImagePullRequestBodyConfig        `mapstructure:"image_pull"`
+	ImagePush        ImagePushRequestBodyConfig        `mapstructure:"image_push"`
 	Build            BuildRequestBodyConfig            `mapstructure:"build"`
 	ContainerUpdate  ContainerUpdateRequestBodyConfig  `mapstructure:"container_update"`
 	ContainerRemove  ContainerRemoveRequestBodyConfig  `mapstructure:"container_remove"`
@@ -746,6 +754,21 @@ type ContainerCreateRequestBodyConfig struct {
 	// lists them. allow_log_path stays a separate gate.
 	AllowedLogDrivers         []string `mapstructure:"allowed_log_drivers"`
 	AllowedLogEndpointOptions []string `mapstructure:"allowed_log_endpoint_options"`
+
+	// DenyPublishedPorts refuses a create that publishes a port: HostConfig.PortBindings with at least one binding, or HostConfig.PublishAllPorts.
+	// Default false.
+	DenyPublishedPorts bool `mapstructure:"deny_published_ports"`
+	// AllowedPortHostIPs, when set, requires every published port's host IP to
+	// be listed. An empty host IP binds every interface and counts as 0.0.0.0, so it passes only when 0.0.0.0 is listed. IPv4-mapped IPv6 addresses compare equal to their IPv4 form.
+	// Default empty: any host IP.
+	AllowedPortHostIPs []string `mapstructure:"allowed_port_host_ips"`
+	// AllowedNetworks, when set, requires every network the container joins to
+	// resolve, through the daemon, to a listed network name. A network named
+	// by ID or ID prefix is checked by the name it resolves to. "none" always
+	// passes, "host" stays under allow_host_network, and a mode that joins an
+	// existing namespace (container:<id>, ns:<path>, slirp4netns, pasta) is
+	// refused. POST /networks/{id}/connect is held to this list too. Default empty: any network.
+	AllowedNetworks []string `mapstructure:"allowed_networks"`
 }
 
 // LibpodContainerCreateRequestBodyConfig configures body inspection for
@@ -836,6 +859,21 @@ type LibpodContainerCreateRequestBodyConfig struct {
 	AllowedLogDrivers         []string `mapstructure:"allowed_log_drivers"`
 	AllowedLogEndpointOptions []string `mapstructure:"allowed_log_endpoint_options"`
 
+	// DenyPublishedPorts refuses a create that publishes a port: portmappings, or publish_image_ports: true.
+	// Default false.
+	DenyPublishedPorts bool `mapstructure:"deny_published_ports"`
+	// AllowedPortHostIPs, when set, requires every published port's host IP to
+	// be listed. An empty host IP binds every interface and counts as 0.0.0.0, so it passes only when 0.0.0.0 is listed. IPv4-mapped IPv6 addresses compare equal to their IPv4 form.
+	// Default empty: any host IP.
+	AllowedPortHostIPs []string `mapstructure:"allowed_port_host_ips"`
+	// AllowedNetworks, when set, requires every network the container joins to
+	// resolve, through the daemon, to a listed network name. A network named
+	// by ID or ID prefix is checked by the name it resolves to. "none" always
+	// passes, "host" stays under allow_host_network, and a mode that joins an
+	// existing namespace (container:<id>, ns:<path>, slirp4netns, pasta) is
+	// refused. POST /libpod/networks/{name}/connect is held to this list too. Default empty: any network.
+	AllowedNetworks []string `mapstructure:"allowed_networks"`
+
 	// AllowTmpfsPrivilegedOptions permits a mounts[] entry of type tmpfs
 	// whose options re-enable exec, dev or suid (last option wins). Same
 	// name as container_create.allow_tmpfs_privileged_options, and neither
@@ -852,6 +890,13 @@ type LibpodContainerCreateRequestBodyConfig struct {
 	AllowedDeviceCgroupRules  []string `mapstructure:"allowed_device_cgroup_rules"`
 	AllowDeviceRequests       bool     `mapstructure:"allow_device_requests"`
 	DenyUnconfinedSystemPaths bool     `mapstructure:"deny_unconfined_system_paths"`
+
+	// AllowedGPUs lists the exact gpus entries a libpod create may carry, and
+	// AllowedCDIDevices the exact fully qualified CDI names (vendor/class=name)
+	// it may carry in devices. Both are byte-for-byte matches, default empty
+	// (deny), and are skipped by allow_device_requests and allow_all_devices.
+	AllowedGPUs       []string `mapstructure:"allowed_gpus"`
+	AllowedCDIDevices []string `mapstructure:"allowed_cdi_devices"`
 
 	// AllowUnifiedCgroupSettings permits a non-empty "unified" map, raw
 	// cgroup v2 knobs Podman writes straight into the container's cgroup.
@@ -924,6 +969,16 @@ type AllowedDeviceRequest struct {
 	Driver              string     `mapstructure:"driver"`
 	AllowedCapabilities [][]string `mapstructure:"allowed_capabilities"`
 	MaxCount            *int       `mapstructure:"max_count"`
+	// DeviceIDs, when set, pins the request to these exact device IDs (for
+	// example CDI names like nvidia.com/gpu=0). Matching is byte for byte; a
+	// request with no IDs or a non-zero Count is denied against this entry.
+	DeviceIDs []string `mapstructure:"device_ids"`
+	// Count, when set, requires the request Count to equal it exactly.
+	Count *int `mapstructure:"count"`
+	// Options, when non-empty, lists the only DeviceRequest Options entries
+	// the request may carry. Keys and values match byte for byte; any other
+	// entry is denied. A request with no Options still matches.
+	Options map[string]string `mapstructure:"options"`
 }
 
 // ExecRequestBodyConfig configures body inspection for exec creation/start.
@@ -931,6 +986,12 @@ type ExecRequestBodyConfig struct {
 	AllowPrivileged bool       `mapstructure:"allow_privileged"`
 	AllowRootUser   bool       `mapstructure:"allow_root_user"`
 	AllowedCommands [][]string `mapstructure:"allowed_commands"`
+	// AllowedUsers, when non-empty, pins the exec User to these exact values
+	// (whitespace-trimmed, case-sensitive, no group stripping). The empty
+	// string is a valid entry meaning "User unset". It applies on top of
+	// allow_root_user, which still decides whether a root or empty User
+	// passes. Default empty means no pin.
+	AllowedUsers []string `mapstructure:"allowed_users"`
 	// AllowedEnvVars, when non-empty, restricts the exec-create Env array to
 	// these variable names — matched by name only (the substring before the
 	// first "="), exact string comparison, case-sensitive; the value is
@@ -959,6 +1020,24 @@ type ImagePullRequestBodyConfig struct {
 	AllowAllRegistries bool     `mapstructure:"allow_all_registries"`
 	AllowOfficial      bool     `mapstructure:"allow_official"`
 	AllowedRegistries  []string `mapstructure:"allowed_registries"`
+}
+
+// ImagePushRequestBodyConfig configures the registry allowlist for image,
+// plugin and manifest pushes. It is active only when AllowedRegistries is
+// non-empty; absent or empty leaves pushes as they were.
+type ImagePushRequestBodyConfig struct {
+	AllowedRegistries []string `mapstructure:"allowed_registries"`
+	// RegistryAliases maps a host a client may name to the host the daemon
+	// reaches for it. The target is what AllowedRegistries is checked against.
+	// It is a list of pairs rather than a map: Viper splits map keys on "."
+	// and registry hosts are full of dots, so a host-keyed map does not load.
+	RegistryAliases []ImagePushRegistryAlias `mapstructure:"registry_aliases"`
+}
+
+// ImagePushRegistryAlias is one registry_aliases entry.
+type ImagePushRegistryAlias struct {
+	From string `mapstructure:"from"`
+	To   string `mapstructure:"to"`
 }
 
 // BuildRequestBodyConfig configures inspection for POST /build.
@@ -1211,6 +1290,21 @@ type ServiceRequestBodyConfig struct {
 	// lists them. allow_log_path stays a separate gate.
 	AllowedLogDrivers         []string `mapstructure:"allowed_log_drivers"`
 	AllowedLogEndpointOptions []string `mapstructure:"allowed_log_endpoint_options"`
+
+	// DenyPublishedPorts refuses a create that publishes a port: any EndpointSpec.Ports entry, ingress or host mode.
+	// Default false.
+	DenyPublishedPorts bool `mapstructure:"deny_published_ports"`
+	// AllowedPortHostIPs, when set, requires every published port's host IP to
+	// be listed. A service has no host IP field and a published port binds every interface on every node, so with this set any published port is refused unless 0.0.0.0 is listed.
+	// Default empty: any host IP.
+	AllowedPortHostIPs []string `mapstructure:"allowed_port_host_ips"`
+	// AllowedNetworks, when set, requires every network the service joins to
+	// resolve, through the daemon, to a listed network name. A network named
+	// by ID or ID prefix is checked by the name it resolves to. "none" always
+	// passes, "host" stays under allow_host_network, and a mode that joins an
+	// existing namespace (container:<id>, ns:<path>, slirp4netns, pasta) is
+	// refused. On update, the spec a rollback would re-apply is checked as well. Default empty: any network.
+	AllowedNetworks []string `mapstructure:"allowed_networks"`
 }
 
 // SwarmRequestBodyConfig configures inspection for swarm writes.
@@ -1540,6 +1634,9 @@ type ClientProfileConfig struct {
 	RequestBody RequestBodyConfig           `mapstructure:"request_body"`
 	Rules       []RuleConfig                `mapstructure:"rules"`
 	Limits      LimitsConfig                `mapstructure:"limits"`
+	// Ownership overrides the root ownership block for requests this profile
+	// selects. Unset fields inherit the root values.
+	Ownership ClientProfileOwnershipConfig `mapstructure:"ownership"`
 
 	// Profile request-body blocks live inside a slice, so Viper does not apply
 	// Config's reflected leaf defaults or root-level endpoint_config provenance
@@ -1568,9 +1665,9 @@ type LimitsConfig struct {
 //
 // TokensPerSecond is the continuous refill rate. Burst is the bucket capacity
 // (maximum tokens that may accumulate). If Burst is zero it defaults to
-// TokensPerSecond (smooth rate with no burst allowance). If Burst is less than
-// TokensPerSecond after the zero-default replacement it is invalid — startup
-// fails with a clear error.
+// max(1, TokensPerSecond) (smooth rate with no burst allowance, and never less
+// than one request's cost). An explicit Burst below 1 or below TokensPerSecond
+// is invalid — startup fails with a clear error.
 //
 // EndpointCosts optionally weights specific endpoints higher than the default
 // 1 token per request. Use it to apply tighter budgets to expensive Docker
@@ -1623,6 +1720,96 @@ type ClientProfileResponseConfig struct {
 	// ImagePatterns is a per-profile glob pattern list matched against container
 	// Image fields and image RepoTags. See ResponseConfig.ImagePatterns.
 	ImagePatterns []string `mapstructure:"image_patterns"`
+	// VisibleNetworks is a per-profile network-name list. See
+	// ResponseConfig.VisibleNetworks.
+	VisibleNetworks []string `mapstructure:"visible_networks"`
+	// The Redact* overrides replace the matching root response.redact_* value
+	// for requests this profile serves. nil inherits the root value; a set
+	// value wins in either direction, so a profile can turn a redaction off
+	// (Portainer needing env) or on (root off, one consumer hardened). See
+	// ResponseConfig.RedactionSettings and ClientProfileResponseConfig.ApplyRedaction.
+	RedactContainerEnv    *bool `mapstructure:"redact_container_env"`
+	RedactMountPaths      *bool `mapstructure:"redact_mount_paths"`
+	RedactNetworkTopology *bool `mapstructure:"redact_network_topology"`
+	RedactSensitiveData   *bool `mapstructure:"redact_sensitive_data"`
+	RedactHostTopology    *bool `mapstructure:"redact_host_topology"`
+}
+
+// RedactionSettings is the resolved on/off state of the five response
+// redactions for one scope: the root, or a profile's root-merged view.
+type RedactionSettings struct {
+	ContainerEnv    bool
+	MountPaths      bool
+	NetworkTopology bool
+	SensitiveData   bool
+	HostTopology    bool
+}
+
+// RedactionSettings returns the root redaction state.
+func (c ResponseConfig) RedactionSettings() RedactionSettings {
+	return RedactionSettings{
+		ContainerEnv:    c.RedactContainerEnv,
+		MountPaths:      c.RedactMountPaths,
+		NetworkTopology: c.RedactNetworkTopology,
+		SensitiveData:   c.RedactSensitiveData,
+		HostTopology:    c.RedactHostTopology,
+	}
+}
+
+// ApplyRedaction returns base with this profile's non-nil overrides applied.
+func (p ClientProfileResponseConfig) ApplyRedaction(base RedactionSettings) RedactionSettings {
+	override := func(dst *bool, v *bool) {
+		if v != nil {
+			*dst = *v
+		}
+	}
+	override(&base.ContainerEnv, p.RedactContainerEnv)
+	override(&base.MountPaths, p.RedactMountPaths)
+	override(&base.NetworkTopology, p.RedactNetworkTopology)
+	override(&base.SensitiveData, p.RedactSensitiveData)
+	override(&base.HostTopology, p.RedactHostTopology)
+	return base
+}
+
+// redactionKeys pairs each setting with its config key, in a fixed order.
+func (s RedactionSettings) redactionKeys() [5]struct {
+	key string
+	on  bool
+} {
+	return [5]struct {
+		key string
+		on  bool
+	}{
+		{"redact_container_env", s.ContainerEnv},
+		{"redact_mount_paths", s.MountPaths},
+		{"redact_network_topology", s.NetworkTopology},
+		{"redact_sensitive_data", s.SensitiveData},
+		{"redact_host_topology", s.HostTopology},
+	}
+}
+
+// EnabledKeys lists the config keys of the redactions that are on.
+func (s RedactionSettings) EnabledKeys() []string {
+	var keys []string
+	for _, k := range s.redactionKeys() {
+		if k.on {
+			keys = append(keys, k.key)
+		}
+	}
+	return keys
+}
+
+// DisabledRelativeTo lists the config keys of redactions that are off in s but
+// on in root, in a fixed order.
+func (s RedactionSettings) DisabledRelativeTo(root RedactionSettings) []string {
+	var keys []string
+	rk := root.redactionKeys()
+	for i, k := range s.redactionKeys() {
+		if rk[i].on && !k.on {
+			keys = append(keys, k.key)
+		}
+	}
+	return keys
 }
 
 // OwnershipConfig configures per-proxy resource ownership labeling and
@@ -1645,6 +1832,82 @@ type OwnershipConfig struct {
 	// and denied too (consistent with every other container-targeting
 	// ownership check), so only a same-owner ref is allowed when this is false.
 	AllowCrossOwnerNamespaceSharing bool `mapstructure:"allow_cross_owner_namespace_sharing"`
+	// InsecureAllowWeakOwnerSelection acknowledges that a client profile
+	// carrying its own ownership.owner (or scope: all) may be selected by a
+	// weak selector: clients.source_ip_profiles or clients.default_profile.
+	// A source IP on a shared bridge is spoofable by any container on it, and
+	// default_profile is what every unmatched client gets, so by default the
+	// validator refuses that combination. Setting this true accepts it for
+	// per-profile owners. It never admits scope: all on a weak selector.
+	InsecureAllowWeakOwnerSelection bool `mapstructure:"insecure_allow_weak_owner_selection"`
+}
+
+// ClientProfileOwnershipConfig is a client profile's ownership override.
+// Every field is optional and an unset field inherits the root ownership
+// block. label_key is deliberately absent: it stays one key per instance, so
+// no profile can stamp resources another profile's filter never looks at.
+type ClientProfileOwnershipConfig struct {
+	// Owner is a pointer so "unset" (inherit ownership.owner) and an explicit
+	// empty string (refused by validation) are distinguishable.
+	Owner                           *string `mapstructure:"owner"`
+	AllowUnownedImages              *bool   `mapstructure:"allow_unowned_images"`
+	AllowCrossOwnerNamespaceSharing *bool   `mapstructure:"allow_cross_owner_namespace_sharing"`
+	// Scope is "" (the profile's own owner) or "all" (every owner's
+	// resources are visible and actionable; creates are still stamped with
+	// the effective owner).
+	Scope string `mapstructure:"scope"`
+}
+
+// OwnershipScopeAll is the ClientProfileOwnershipConfig.Scope value that
+// lifts owner scoping for a profile.
+const OwnershipScopeAll = "all"
+
+// EffectiveOwnership is the ownership a request runs under after a profile's
+// override is merged over the root ownership block.
+type EffectiveOwnership struct {
+	Owner                           string
+	AllowUnownedImages              bool
+	AllowCrossOwnerNamespaceSharing bool
+	AllOwners                       bool
+}
+
+// EffectiveOwnership merges profile over the root ownership block. A nil
+// profile yields the root values.
+func (c *Config) EffectiveOwnership(profile *ClientProfileConfig) EffectiveOwnership {
+	eff := EffectiveOwnership{
+		Owner:                           c.Ownership.Owner,
+		AllowUnownedImages:              c.Ownership.AllowUnownedImages,
+		AllowCrossOwnerNamespaceSharing: c.Ownership.AllowCrossOwnerNamespaceSharing,
+	}
+	if profile == nil {
+		return eff
+	}
+	o := profile.Ownership
+	if o.Owner != nil {
+		eff.Owner = *o.Owner
+	}
+	if o.AllowUnownedImages != nil {
+		eff.AllowUnownedImages = *o.AllowUnownedImages
+	}
+	if o.AllowCrossOwnerNamespaceSharing != nil {
+		eff.AllowCrossOwnerNamespaceSharing = *o.AllowCrossOwnerNamespaceSharing
+	}
+	eff.AllOwners = o.Scope == OwnershipScopeAll
+	return eff
+}
+
+// OwnershipActive reports whether the root or any client profile has an
+// effective owner, i.e. whether owner scoping is in force for some request.
+func (c *Config) OwnershipActive() bool {
+	if c.Ownership.Owner != "" {
+		return true
+	}
+	for i := range c.Clients.Profiles {
+		if c.EffectiveOwnership(&c.Clients.Profiles[i]).Owner != "" {
+			return true
+		}
+	}
+	return false
 }
 
 // HealthConfig configures the health check endpoint.
@@ -1659,6 +1922,10 @@ type HealthConfig struct {
 type HealthWatchdogConfig struct {
 	Enabled  bool   `mapstructure:"enabled"`
 	Interval string `mapstructure:"interval"`
+	// ExitAfter makes the process exit non-zero once the upstream has been
+	// continuously unreachable for this long, so an orchestrator restarts it.
+	// "0s" (the default) never exits.
+	ExitAfter string `mapstructure:"exit_after"`
 }
 
 // HealthReadinessConfig configures the optional readiness endpoint. Unlike the
@@ -1679,9 +1946,41 @@ type MetricsConfig struct {
 	Path    string `mapstructure:"path"`
 }
 
+// OTLPConfig configures the opt-in OTLP/HTTP JSON trace exporter. The whole
+// otlp.* block is reload-immutable. Header values are secrets: every surface
+// that renders config redacts them (keys are kept).
+type OTLPConfig struct {
+	Enabled bool `mapstructure:"enabled"`
+	// Endpoint is the full collector URL including the path, e.g.
+	// https://collector:4318/v1/traces.
+	Endpoint string `mapstructure:"endpoint"`
+	// Headers are sent on every export request. Values are secrets.
+	Headers map[string]string `mapstructure:"headers"`
+	// Timeout bounds each export HTTP request (Go duration).
+	Timeout string `mapstructure:"timeout"`
+	// QueueSize bounds the in-memory span queue.
+	QueueSize int64 `mapstructure:"queue_size"`
+	// BatchSize is the maximum number of spans per export request.
+	BatchSize int64 `mapstructure:"batch_size"`
+	// FlushInterval is how long the worker waits to fill a batch (Go duration).
+	FlushInterval string `mapstructure:"flush_interval"`
+	// SampleRatio in [0,1] applies to new root traces only.
+	SampleRatio float64 `mapstructure:"sample_ratio"`
+	// ServiceName is the service.name resource attribute.
+	ServiceName string        `mapstructure:"service_name"`
+	TLS         OTLPTLSConfig `mapstructure:"tls"`
+}
+
+// OTLPTLSConfig is the client-side TLS configuration for the OTLP exporter.
+type OTLPTLSConfig struct {
+	// CAFile verifies the collector's certificate. Empty uses the system roots.
+	CAFile             string `mapstructure:"ca_file"`
+	InsecureSkipVerify bool   `mapstructure:"insecure_skip_verify"`
+}
+
 // AdminConfig configures the admin HTTP endpoints (POST <path> for
-// candidate-config validation, GET <policy_version_path> for the active
-// policy generation counter).
+// candidate-config validation, POST <policy_diff_path> for a read-only
+// comparison, GET <policy_version_path> for the active generation counter).
 //
 // By default the admin endpoints ride the main listener and therefore
 // inherit its CIDR allowlist, mTLS, and rate-limit posture. When Listen is
@@ -1707,6 +2006,9 @@ type AdminConfig struct {
 	// /admin/policy/version. Must differ from Path, health.path, and
 	// metrics.path when those endpoints are enabled.
 	PolicyVersionPath string `mapstructure:"policy_version_path"`
+	// PolicyDiffPath shares the admin access boundary and body limit. Its
+	// normalized path must not collide with another enabled endpoint.
+	PolicyDiffPath string `mapstructure:"policy_diff_path"`
 	// Listen optionally moves the admin endpoints to a dedicated listener
 	// instead of sharing the main proxy listener. Configure either Socket
 	// (unix) or Address (TCP, optionally wrapped in TLS). When unset, the
@@ -1758,7 +2060,7 @@ func (cfg AdminListenConfig) Configured() bool {
 // on SIGHUP. A reload that mutates any immutable field — listen.*, server.*,
 // upstream.socket, upstream.endpoints, upstream.failover, upstream.flavor,
 // upstream.response_header_timeout,
-// log.*, health.*, metrics.*, admin.* — is rejected; the running config is
+// log.*, health.*, metrics.*, otlp.*, admin.* — is rejected; the running config is
 // preserved and the operator must restart sockguard to pick the new values up.
 // (The endpoint set, failover policy, and flavor are pinned because the
 // long-lived Resolver and engine-specific handler chain are built once at
@@ -1838,7 +2140,7 @@ type MutationsConfig struct {
 }
 
 // MutationRuleConfig is one declarative admission-mutation rule. Exactly one
-// of InjectLabels/RemapImage must be set; validate.go enforces this and the
+// of InjectLabels/RemapImage/RemapBindSource must be set; validate.go enforces this and the
 // remaining bounds (rule/label counts, key/value sizes, surface/action
 // compatibility, overlap rejection, owner-label-key reservation).
 type MutationRuleConfig struct {
@@ -1857,6 +2159,22 @@ type MutationRuleConfig struct {
 	// RemapImage configures a single string-field image replace mutation.
 	// Mutually exclusive with InjectLabels.
 	RemapImage *ImageRemapMutationConfig `mapstructure:"remap_image"`
+	// RemapBindSource configures a host-path prefix rewrite of bind-mount
+	// sources, for Docker-out-of-Docker runners. Mutually exclusive with
+	// InjectLabels and RemapImage.
+	RemapBindSource *BindSourceRemapMutationConfig `mapstructure:"remap_bind_source"`
+}
+
+// BindSourceRemapMutationConfig rewrites a bind-mount source from the path a
+// Docker-out-of-Docker client sees (From) to the path the daemon's host sees
+// (To). Both must be absolute, already-clean paths with no ":", ",", control
+// characters or NUL. A source matches only on a path-component boundary
+// (From "/builds" matches "/builds" and "/builds/x", never "/builds2"), and
+// a ".." component in a matching source is refused. Valid on the
+// container_create and libpod_container_create surfaces.
+type BindSourceRemapMutationConfig struct {
+	From string `mapstructure:"from"`
+	To   string `mapstructure:"to"`
 }
 
 // InjectLabelsMutationConfig unconditionally sets/replaces the configured
@@ -1886,6 +2204,12 @@ type RuleConfig struct {
 type MatchConfig struct {
 	Method string `mapstructure:"method"`
 	Path   string `mapstructure:"path"`
+	// Query optionally constrains the request query string. The rule matches
+	// only when every listed key is present and every occurrence of it equals
+	// one of its patterns (exact text, or "*" for any run of characters).
+	// Keys not listed are unconstrained. A query that does not parse never
+	// satisfies an allow rule and always satisfies a deny rule.
+	Query map[string][]string `mapstructure:"query"`
 }
 
 // Defaults returns a Config with sensible defaults.
@@ -2005,8 +2329,9 @@ func Defaults() Config {
 			Enabled: true,
 			Path:    "/health",
 			Watchdog: HealthWatchdogConfig{
-				Enabled:  false,
-				Interval: "5s",
+				Enabled:   false,
+				Interval:  "5s",
+				ExitAfter: "0s",
 			},
 			Readiness: HealthReadinessConfig{
 				Enabled:  false,
@@ -2019,11 +2344,22 @@ func Defaults() Config {
 			Enabled: false,
 			Path:    "/metrics",
 		},
+		OTLP: OTLPConfig{
+			Enabled:       false,
+			Headers:       map[string]string{},
+			Timeout:       "5s",
+			QueueSize:     2048,
+			BatchSize:     256,
+			FlushInterval: "2s",
+			SampleRatio:   1.0,
+			ServiceName:   "sockguard",
+		},
 		Admin: AdminConfig{
 			Enabled:           false,
 			Path:              "/admin/validate",
 			MaxRequestBytes:   524288,
 			PolicyVersionPath: "/admin/policy/version",
+			PolicyDiffPath:    "/admin/policy/diff",
 			Listen: AdminListenConfig{
 				ListenConfig: ListenConfig{
 					// Socket and Address both default to "" so the admin endpoints

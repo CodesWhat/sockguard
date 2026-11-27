@@ -2,6 +2,7 @@ package ownership
 
 import (
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -55,6 +56,64 @@ func TestMutateCompatSecretCreateOwnershipRequest(t *testing.T) {
 			}
 			if (refs.denyReason != "") != tt.deny {
 				t.Errorf("denyReason = %q, deny want %v", refs.denyReason, tt.deny)
+			}
+		})
+	}
+}
+
+func TestCompatSecretRouteRejectsPodmanIDPrefix(t *testing.T) {
+	t.Parallel()
+	fullID := strings.Repeat("a", 25)
+	tests := []struct {
+		name       string
+		flavor     upstreamflavor.Flavor
+		method     string
+		target     string
+		identifier string
+		denied     bool
+	}{
+		{"podman GET short hex", upstreamflavor.Podman, http.MethodGet, "/secrets/b0b0", "b0b0", true},
+		{"podman HEAD short hex", upstreamflavor.Podman, http.MethodHead, "/secrets/b0b0", "b0b0", true},
+		{"podman DELETE short hex", upstreamflavor.Podman, http.MethodDelete, "/secrets/b0b0", "b0b0", true},
+		{"podman GET versioned short hex", upstreamflavor.Podman, http.MethodGet, "/v1.45/secrets/b0b0", "b0b0", true},
+		{"podman HEAD versioned short hex", upstreamflavor.Podman, http.MethodHead, "/v1.45/secrets/b0b0", "b0b0", true},
+		{"podman DELETE versioned short hex", upstreamflavor.Podman, http.MethodDelete, "/v1.45/secrets/b0b0", "b0b0", true},
+		{"docker short hex reaches owned secret", upstreamflavor.Docker, http.MethodGet, "/secrets/b0b0", "b0b0", false},
+		{"podman full-length ID reaches owned secret", upstreamflavor.Podman, http.MethodGet, "/secrets/" + fullID, fullID, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			opts := Options{Owner: "job-123", LabelKey: "com.sockguard.owner", UpstreamFlavor: tt.flavor}
+			inspector := &recordingInspector{resources: map[string]map[string]inspectResult{
+				"secrets": {tt.identifier: {labels: map[string]string{"com.sockguard.owner": "job-123"}, found: true}},
+			}}
+			upstreamCalls := 0
+			handler := middlewareWithDeps(testLogger(), opts, inspector.inspectResource, inspector.inspectExec)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				upstreamCalls++
+				w.WriteHeader(http.StatusNoContent)
+			}))
+
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, httptest.NewRequest(tt.method, tt.target, nil))
+
+			if !tt.denied {
+				if rec.Code != http.StatusNoContent || upstreamCalls != 1 {
+					t.Fatalf("status = %d, upstream calls = %d, want 204 and 1; body: %s", rec.Code, upstreamCalls, rec.Body.String())
+				}
+				return
+			}
+			if rec.Code != http.StatusForbidden {
+				t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusForbidden, rec.Body.String())
+			}
+			if !strings.Contains(rec.Body.String(), "secret ID prefix") {
+				t.Fatalf("deny body = %q, want the ID-prefix refusal", rec.Body.String())
+			}
+			if len(inspector.calls) != 0 {
+				t.Fatalf("inspect calls = %v, want none", inspector.calls)
+			}
+			if upstreamCalls != 0 {
+				t.Fatalf("upstream calls = %d, want 0", upstreamCalls)
 			}
 		})
 	}

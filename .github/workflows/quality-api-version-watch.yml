@@ -7,7 +7,7 @@ run-name: >-
 
 # Sockguard's request/response inspectors are validated against a specific
 # ceiling of the Docker Engine API (see app/testdata/docker-api/
-# max-supported-version.txt, currently 1.56; the 1.55 validation work
+# max-supported-version.txt, currently 1.57; the 1.55 validation work
 # was tracked in #153). NormalizePath itself strips any
 # well-formed /vN[.N]/ prefix regardless of value, so sockguard never
 # hard-rejects traffic from a newer daemon — but a new Engine API minor can
@@ -34,6 +34,19 @@ run-name: >-
 # pins the field set the inspector was reviewed against and this job
 # re-derives it from Podman's source at `main`. A new field lands as a red
 # monthly check instead of as an uninspected key nobody is looking for.
+#
+# Podman's ownership SpecGenerator snapshots are checked against the latest
+# containers/podman release tag, resolved at run time, in the same job. The
+# UpdateEntities snapshot stays on `main` on purpose: it is the early warning
+# for a field that has not shipped yet.
+#
+# The third job re-derives the known-route catalog
+# (app/internal/cmd/known_api_routes.json, the route surface) with
+# scripts/update-route-catalog.py at the latest moby/moby and
+# containers/podman release tags, resolved at run time, and fails when the
+# routes differ from the committed catalog. A new route upstream lands as a
+# red monthly check instead of as a path the catalog has never seen. A newer
+# tag with identical routes only warns that the pinned revisions are stale.
 
 on:
   workflow_dispatch: {}
@@ -167,17 +180,46 @@ jobs:
       # embedded struct or a changed json tag is resolved the way
       # encoding/json resolves it rather than grepped for. It skips itself
       # without the ref, which is how the rest of the suite stays offline.
-      - name: Compare snapshot against Podman main
+      - name: Compare UpdateEntities snapshot against Podman main
         id: drift
         working-directory: app
         env:
           SOCKGUARD_TEST_PODMAN_UPSTREAM_REF: main
-        run: go test ./internal/filter/ -run TestLibpodContainerUpdateSnapshotMatchesUpstreamPodman -count=1 -v
+        run: go test ./internal/filter/ -run 'SnapshotMatchesUpstreamPodman' -count=1 -v
+
+      # Latest release tag, not main: SpecGenerator is the create surface and
+      # only releases are what users run.
+      # Runs even when the main-branch UpdateEntities check fails, so
+      # SpecGenerator drift isn't hidden behind unrelated drift.
+      - name: Resolve latest Podman release tag
+        id: podman
+        if: ${{ !cancelled() && steps.drift.outcome != 'skipped' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          TAG="$(gh api repos/containers/podman/releases/latest --jq .tag_name)"
+          if [ -z "${TAG}" ]; then
+            echo "::error::could not resolve the latest containers/podman release tag"
+            exit 1
+          fi
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "Latest Podman release: ${TAG}"
+
+      - name: Compare SpecGenerator snapshots against latest Podman release
+        id: specgen
+        if: ${{ !cancelled() && steps.podman.outcome == 'success' }}
+        working-directory: app
+        env:
+          SOCKGUARD_TEST_PODMAN_UPSTREAM_REF: ${{ steps.podman.outputs.tag }}
+        run: go test ./internal/ownership/ -run 'SnapshotMatchesUpstreamPodman' -count=1 -v
 
       - name: Summarize
         if: always()
         env:
           STATUS: ${{ steps.drift.outcome }}
+          SPECGEN: ${{ steps.specgen.outcome }}
+          PODMAN_TAG: ${{ steps.podman.outputs.tag }}
         run: |
           {
             echo "### libpod UpdateEntities root fields"
@@ -185,11 +227,103 @@ jobs:
             echo "- Pinned set: \`app/testdata/podman-api/update-entities-root-fields.json\`"
             echo "- Checked against: \`containers/podman@main\`"
             echo "- Result: ${STATUS}"
-            if [ "${STATUS}" != "success" ]; then
+            echo "- SpecGenerator snapshots checked against: \`containers/podman@${PODMAN_TAG}\`"
+            echo "- SpecGenerator result: ${SPECGEN}"
+            if [ "${STATUS}" != "success" ] || [ "${SPECGEN}" != "success" ]; then
               echo ""
-              echo "Podman's update body no longer matches the pinned field set."
+              echo "Podman's update body or SpecGenerator no longer matches the pinned field set."
               echo "The step log names every field that moved. Add each new one to a"
               echo "gate list in \`app/internal/filter/libpod_container_update.go\`,"
               echo "refresh the snapshot, and re-run the offline drift test."
             fi
           } >> "$GITHUB_STEP_SUMMARY"
+
+  check-route-catalog:
+    name: "Re-derive known route catalog"
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    steps:
+      # Audit mode: block mode intermittently refused allow-listed hosts on hosted runners (DEP-19). Release workflows keep block.
+      - name: Harden Runner
+        uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43  # v2.22.3
+        with:
+          egress-policy: audit
+          disable-sudo: true
+
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Resolve latest upstream release tags
+        id: tags
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          resolve() {
+            local repo="$1" tag sha
+            tag="$(gh api "repos/${repo}/releases/latest" --jq .tag_name)"
+            sha="$(gh api "repos/${repo}/commits/${tag}" --jq .sha)"
+            if [ -z "${tag}" ] || [ -z "${sha}" ]; then
+              echo "::error::could not resolve the latest ${repo} release"
+              exit 1
+            fi
+            echo "${tag} ${sha}"
+          }
+          read -r ENGINE_TAG ENGINE_SHA < <(resolve moby/moby)
+          read -r PODMAN_TAG PODMAN_SHA < <(resolve containers/podman)
+          {
+            echo "engine_tag=${ENGINE_TAG}"
+            echo "engine_sha=${ENGINE_SHA}"
+            echo "podman_tag=${PODMAN_TAG}"
+            echo "podman_sha=${PODMAN_SHA}"
+          } >> "$GITHUB_OUTPUT"
+          echo "moby/moby ${ENGINE_TAG} (${ENGINE_SHA}), containers/podman ${PODMAN_TAG} (${PODMAN_SHA})"
+
+      - name: Regenerate catalog at the latest tags
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SOCKGUARD_ENGINE_REV: ${{ steps.tags.outputs.engine_sha }}
+          SOCKGUARD_PODMAN_REV: ${{ steps.tags.outputs.podman_sha }}
+        run: python3 scripts/update-route-catalog.py
+
+      # The catalog's `sources` block records the pinned revisions, so a newer
+      # tag always changes that block. Only the route list is the drift signal.
+      - name: Fail on route drift
+        env:
+          ENGINE_TAG: ${{ steps.tags.outputs.engine_tag }}
+          ENGINE_SHA: ${{ steps.tags.outputs.engine_sha }}
+          PODMAN_TAG: ${{ steps.tags.outputs.podman_tag }}
+          PODMAN_SHA: ${{ steps.tags.outputs.podman_sha }}
+        run: |
+          set -euo pipefail
+          CATALOG=app/internal/cmd/known_api_routes.json
+          git show "HEAD:${CATALOG}" > "${RUNNER_TEMP}/committed.json"
+          {
+            echo "### Route catalog re-derivation"
+            echo ""
+            echo "- moby/moby: \`${ENGINE_TAG}\`"
+            echo "- containers/podman: \`${PODMAN_TAG}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+          if python3 - "${RUNNER_TEMP}/committed.json" "${CATALOG}" <<'PY'
+          import json, sys
+          old = json.load(open(sys.argv[1]))["routes"]
+          new = json.load(open(sys.argv[2]))["routes"]
+          sys.exit(0 if old == new else 1)
+          PY
+          then
+            if git diff --quiet -- "${CATALOG}"; then
+              echo "**Result: catalog matches upstream.**" >> "$GITHUB_STEP_SUMMARY"
+            else
+              echo "::warning::Routes match, but newer upstream tags exist. Bump ENGINE_REV and PODMAN_REV in scripts/update-route-catalog.py to ${ENGINE_SHA} (${ENGINE_TAG}) and ${PODMAN_SHA} (${PODMAN_TAG})."
+              echo "**Result: routes match; pinned revisions are behind.**" >> "$GITHUB_STEP_SUMMARY"
+            fi
+            exit 0
+          fi
+          DIFF="$(git diff --unified=0 -- "${CATALOG}" | grep -E '^[+-] ' | head -50 | tr '\n' ' ')"
+          echo "::error::Upstream routes moved at ${ENGINE_TAG} / ${PODMAN_TAG}. Re-run scripts/update-route-catalog.py at those revisions, review the new routes against the filter rules, and commit the catalog. Diff: ${DIFF}"
+          git diff --unified=0 -- "${CATALOG}" | head -100 >> "$GITHUB_STEP_SUMMARY"
+          echo "**Result: route drift.**" >> "$GITHUB_STEP_SUMMARY"
+          exit 1

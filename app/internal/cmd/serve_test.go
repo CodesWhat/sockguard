@@ -1588,6 +1588,7 @@ func TestBuildServeHandlerLayers(t *testing.T) {
 		"withVisibility",
 		"withFilter",
 		"withFormBodyGuard",
+		"withPolicyDiffEndpoint",
 		"withAdminEndpoint",
 		"withHealth",
 		"withMetricsEndpoint",

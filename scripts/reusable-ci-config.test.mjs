@@ -30,7 +30,6 @@ const FIXED_SCRIPTS = new Map([
       "command -v syft",
       // biome-ignore lint/suspicious/noTemplateCurlyInString: literal bash from go-release-check.sh, matched as text; no `skip` binding exists here so biome's fix would throw
       'release --snapshot --clean --skip="${skip}"',
-      "cask ",
     ],
   ],
   ["go-fuzz.sh", ["FUZZER", "PKG", "fuzztime=60s"]],
@@ -48,8 +47,9 @@ const FIXED_SCRIPTS = new Map([
 ]);
 
 // The exact 28-fuzzer inventory currently scheduled in the branch-CI fuzz
-// matrix (Tier 1). This lives only as the go-ci caller's fuzzers-json input
-// — never hardcoded inside scripts/ci/go-fuzz.sh, which is caller-agnostic.
+// matrix (Tier 1). The list lives in .github/ci-fuzzers.json, which the
+// changes job narrows per PR into the go-ci caller's fuzzers-json input —
+// never hardcoded inside scripts/ci/go-fuzz.sh, which is caller-agnostic.
 const FUZZERS = [
   ["FuzzPathMatch", "./internal/filter/"],
   ["FuzzGlobToRegex", "./internal/filter/"],
@@ -217,10 +217,13 @@ function assertReusableCaller(source) {
   assert.ok(jobSection(source, "commit-message"), "commit-message must remain local");
   assert.ok(jobSection(source, "docker"), "Docker Build must remain local");
 
-  const inventory = go.match(/&& '(\[.*?\])' \|\| '\[\]'/u)?.[1];
-  assert.ok(inventory, "go-ci must keep its conditional fuzz inventory in the caller");
+  assert.match(
+    go,
+    /^ {6}fuzzers-json: \$\{\{ needs\.changes\.outputs\.fuzzers_json \|\| '\[\]' \}\}$/mu,
+    "go-ci must take its fuzz list from the changes job",
+  );
   assert.deepEqual(
-    JSON.parse(inventory),
+    JSON.parse(fs.readFileSync(path.join(ROOT, ".github", "ci-fuzzers.json"), "utf8")),
     FUZZERS.map(([name, pkg]) => ({ name, pkg })),
   );
 

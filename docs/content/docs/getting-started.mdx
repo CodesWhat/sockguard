@@ -1,6 +1,6 @@
 ---
 title: Getting Started
-description: Install sockguard with Docker Compose, Docker Run, Homebrew, or a release binary, and point your apps at the proxy socket.
+description: Install sockguard with Docker Compose, Docker Run, or a release binary, and point your apps at the proxy socket.
 ---
 
 ## Installation
@@ -52,30 +52,6 @@ Set `DOCKER_SOCK_GID` before starting Compose (`export DOCKER_SOCK_GID=$(stat -c
 your runtime's seccomp/AppArmor/SELinux defaults.
 
 The filtered socket and its named-volume directory are owner-only and owned by UID/GID 65532. A non-root consumer of that socket must also use UID 65532; root consumers can connect as well. If an application must keep another UID, run Sockguard with that matching UID against a pre-owned bind-mounted directory, set `listen.socket_mode: "0660"` with an explicit `listen.socket_gid` so a named group can reach the socket, or use an authenticated TCP listener. `0600` and `0660` are the only modes Sockguard accepts, and `0660` without `socket_gid` is rejected, so a group-shared socket is always a deliberate choice rather than a default.
-
-### Homebrew
-
-Install the latest stable native binary on macOS or Linux from the CodesWhat tap:
-
-```bash
-brew install --cask codeswhat/tap/sockguard
-sockguard version
-```
-
-Stable releases update the cask automatically. Release candidates and other prereleases remain available from [GitHub Releases](https://github.com/CodesWhat/sockguard/releases) without moving the stable Homebrew channel.
-
-The cask installs only the `sockguard` command. It does not create a service, grant Docker socket access, or generate a policy file. Run it under your own service manager after configuring the upstream Docker socket and an explicit policy; Docker Compose remains the recommended production deployment.
-
-<Callout type="warn">
-The macOS binary is not yet signed and notarized with an Apple Developer ID. After Homebrew verifies the release archive's SHA-256 checksum, the cask removes the quarantine attribute from its staged `sockguard` binary so Gatekeeper does not block it. This bypass applies only to that installed file. That checksum proves the archive wasn't corrupted or tampered with in transit, it does not prove who published it, so it is not a substitute for Apple Developer ID signing/notarization. If your policy requires Apple notarization, or you don't want the quarantine bypass at all, use the container image or verify the GitHub Releases binary with cosign instead.
-</Callout>
-
-Upgrade or remove the cask with:
-
-```bash
-brew upgrade --cask sockguard
-brew uninstall --cask sockguard
-```
 
 ### Helm
 
@@ -154,6 +130,9 @@ sockguard validate --strict -c /etc/sockguard/sockguard.yaml
 sockguard match -c /etc/sockguard/sockguard.yaml \
   -X GET --path /v1.45/containers/json
 
+# Suggest allow rules from warn or audit access-log lines (stdout only)
+sockguard policy suggest --from /var/log/sockguard/access.jsonl
+
 # Runtime self-check: is the upstream daemon answering, is this
 # sockguard's own health endpoint up, does the TLS material load
 sockguard verify -c /etc/sockguard/sockguard.yaml
@@ -166,6 +145,35 @@ sockguard version
 normalization as the running proxy, and reports the decision in
 text (default) or JSON (`-o json`). Use it to sanity-check a
 ruleset before any traffic hits the proxy.
+
+To see what a client profile would do, add `--profile NAME`, or `--source-ip IP`
+to let `match` pick the profile the proxy would pick (the first matching
+`clients.source_ip_profiles` entry, then `clients.default_profile`). The output
+names the profile and how it was selected, its rollout mode, the effective
+ownership scope, and the configured response redaction and visibility lists.
+Everything beyond the rule decision is read from the config, not from a running
+daemon. Each run ends with a `Not inspected` list (`not_inspected` in JSON):
+the request body, live resources, and any client certificate or unix peer
+assignments that would select a profile before source IP.
+
+To check a request body too, add `--body-file PATH` (or `--body-file -` to read
+stdin). `match` runs the same request-body inspectors the proxy runs (container
+create, exec create, service, build, image pull, volume and network writes, and
+the rest) on that file, for the selected profile or the root policy, and reports
+the verdict: `allow`, or `deny` with the inspector's reason and reason code
+(`request_body_policy_denied`, `request_body_too_large`, and so on). The body
+verdict joins the rule decision, so a body deny turns an allowed request into a
+deny, and under a `warn` or `audit` profile it passes through the way the proxy
+would. Three cases report no verdict: the rules denied the request first
+(`skipped`, since the proxy only reads the body of an allowed request), no
+inspector covers that method and path (`not_inspected`, and the file is never
+read), and `POST /exec/{id}/start` (`not_inspected`, since its check is a lookup
+of the exec instance on the daemon). Nothing is looked up on a daemon. A
+`Not evaluated` line lists each check that needs one: the exec target's
+protection label, and the Docker or Podman and cgroup-version gates on container
+create, build and image push, which run with their offline defaults.
+Ownership and visibility are still read from the config only. An unreadable
+file fails the command.
 
 `sockguard verify` is the runtime counterpart to `sockguard
 validate`. Where validate is an offline check on a config file,
@@ -202,6 +210,39 @@ verification timeout. The signed candidate carries
 combined with this mode; migrate those grants to YAML before signing. See
 [Signed Policy Bundles](/configuration#signed-policy-bundles) for the complete
 layout.
+
+### Suggesting rules from warn and audit traffic
+
+Run a profile in `warn` or `audit` rollout, collect the JSON access log, then
+let sockguard draft the rules that would have let that traffic through:
+
+```bash
+sockguard policy suggest --from /var/log/sockguard/access.jsonl > suggested-rules.yaml
+```
+
+Use `--from -` to read stdin. The command reads only `request_would_deny`
+lines, groups them by method and normalized path, and prints a YAML `rules:`
+snippet to stdout. It never writes a config file and nothing it prints is
+active until you copy it in, so treat every rule as a suggestion that needs
+review. Each rule carries a comment saying so, and write methods are flagged.
+
+What it will and won't include:
+
+- Only the method and the normalized path are read. Query strings, headers,
+  bodies, client addresses and request IDs never reach the output.
+- Segments that are 12 to 64 lowercase hex characters (container, exec and
+  network IDs) become `*`. Names stay literal, since a name can't be told from
+  a path word.
+- A path containing glob characters, `..`, encoded bytes or anything outside
+  letters, digits and `-_.~:` is skipped and counted, never emitted.
+- Input is bounded: lines over 64 KiB are skipped, reading stops at 1,000,000
+  lines, and at most 500 distinct rules are printed.
+- The snippet is compiled with the same rule compiler `serve` uses before it
+  is printed. A snippet that fails to compile is an error, not output.
+
+The suggested rules are plain `allow` rules with no body or query constraints.
+Tighten them (`match.query`, request-body policy, ownership) before relying on
+them, and place them before your final deny. A summary line goes to stderr.
 
 ## Next Steps
 

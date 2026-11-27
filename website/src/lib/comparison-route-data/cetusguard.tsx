@@ -4,6 +4,7 @@ export const cetusguardComparisonRouteData = {
   slug: "cetusguard",
   comparisonTable: `
 Method + path filtering|Yes (regex)|Yes|tie
+Query-string rule matching|Yes (regex, since v1.2.0)|Yes (next v3.2, per-key match.query)|tie
 Remote TCP mTLS listener|Yes|Yes (TLS 1.3)|tie
 Remote daemon upstream (TLS)|Yes (in production)|Yes (active/passive failover)|self
 Multiple frontend listeners|Yes|Yes (Unix and/or TCP, listener-scoped TLS + profiles)|tie
@@ -20,7 +21,7 @@ Rollout modes (enforce / warn / audit)|No|Yes (per-profile shadow mode)|self
 Audit log schema|No|Yes (opt-in, JSON schema + reason codes)|self
 `,
   highlightsTable: `
-shield|Request Body Inspection|CetusGuard filters by method and path only. Sockguard inspects request bodies, blocking exec commands by pattern, bind mounts by path, and more across 12+ resource types.
+shield|Request Body Inspection|CetusGuard rules match the method, path and (since v1.2.0) query string, but never the request body. Sockguard inspects request bodies, blocking exec commands by pattern, bind mounts by path, and more across 12+ resource types.
 users|Per-Client Policies|CetusGuard applies the same regex rules to every caller. Sockguard assigns different policies per CIDR range, Docker label, TLS certificate selector (including SPKI pinning), or Unix peer credential.
 key|Signed Policy Bundles|Sockguard verifies policy files with cosign keyed or keyless signatures and Rekor transparency log inclusion. An unsigned or tampered bundle is rejected before any request is evaluated.
 fingerprint|Container Image Trust|Sockguard enforces image signatures at deployment time, blocking container or swarm-service creates whose images aren't signed or don't match a trusted digest. CetusGuard has no image-trust layer.

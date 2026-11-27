@@ -1,7 +1,9 @@
 package policybundle
 
 import (
+	"bytes"
 	"context"
+	"crypto"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -10,12 +12,18 @@ import (
 	"encoding/hex"
 	"encoding/pem"
 	"errors"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
 	"time"
 
+	protobundle "github.com/sigstore/protobuf-specs/gen/pb-go/bundle/v1"
+	protocommon "github.com/sigstore/protobuf-specs/gen/pb-go/common/v1"
+	"github.com/sigstore/sigstore-go/pkg/bundle"
 	"github.com/sigstore/sigstore-go/pkg/testing/ca"
+	sigsig "github.com/sigstore/sigstore/pkg/signature"
 )
 
 // generatePEM mints a fresh ECDSA P-256 keypair and returns the PEM-encoded
@@ -606,5 +614,158 @@ func TestVerify_KeyedBranchExecutes(t *testing.T) {
 		if !strings.Contains(err.Error(), fingerprint) {
 			t.Fatalf("error should identify attempted key %q, got: %v", fingerprint, err)
 		}
+	}
+}
+
+// newKeyedPEMPair mints an ECDSA P-256 keypair and returns the private key and
+// the PEM-encoded public key.
+func newKeyedPEMPair(t *testing.T) (*ecdsa.PrivateKey, string) {
+	t.Helper()
+	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	der, err := x509.MarshalPKIXPublicKey(priv.Public())
+	if err != nil {
+		t.Fatalf("marshal DER: %v", err)
+	}
+	return priv, string(pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: der}))
+}
+
+// signKeyedBundle signs yaml with priv and returns a genuine raw-key sigstore
+// bundle (message signature plus a public-key hint, no certificate).
+func signKeyedBundle(t *testing.T, priv *ecdsa.PrivateKey, yaml []byte) *bundle.Bundle {
+	t.Helper()
+	signer, err := sigsig.LoadECDSASignerVerifier(priv, crypto.SHA256)
+	if err != nil {
+		t.Fatalf("LoadECDSASignerVerifier: %v", err)
+	}
+	sig, err := signer.SignMessage(bytes.NewReader(yaml))
+	if err != nil {
+		t.Fatalf("SignMessage: %v", err)
+	}
+	digest := sha256.Sum256(yaml)
+	b, err := bundle.NewBundle(&protobundle.Bundle{
+		MediaType: "application/vnd.dev.sigstore.bundle.v0.3+json",
+		VerificationMaterial: &protobundle.VerificationMaterial{
+			Content: &protobundle.VerificationMaterial_PublicKey{
+				PublicKey: &protocommon.PublicKeyIdentifier{Hint: "test-key"},
+			},
+		},
+		Content: &protobundle.Bundle_MessageSignature{
+			MessageSignature: &protocommon.MessageSignature{
+				MessageDigest: &protocommon.HashOutput{
+					Algorithm: protocommon.HashAlgorithm_SHA2_256,
+					Digest:    digest[:],
+				},
+				Signature: sig,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("bundle.NewBundle: %v", err)
+	}
+	return b
+}
+
+func newKeyedVerifier(t *testing.T, pems ...string) (Verifier, Config) {
+	t.Helper()
+	keys := make([]SigningKeyConfig, 0, len(pems))
+	for _, p := range pems {
+		keys = append(keys, SigningKeyConfig{PEM: p})
+	}
+	cfg, err := BuildConfig(RawConfig{Enabled: true, AllowedSigningKeys: keys})
+	if err != nil {
+		t.Fatalf("BuildConfig: %v", err)
+	}
+	v, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	return v, cfg
+}
+
+// TestVerify_KeyedTrustedAndUntrustedKeys proves a bundle signed by key B is
+// accepted only while B is trusted: trusting an independent key A must fail
+// closed with an empty result.
+func TestVerify_KeyedTrustedAndUntrustedKeys(t *testing.T) {
+	t.Parallel()
+	yaml := []byte("rules: []\n")
+	privB, pemB := newKeyedPEMPair(t)
+	_, pemA := newKeyedPEMPair(t)
+	entity := signKeyedBundle(t, privB, yaml)
+
+	trusted, _ := newKeyedVerifier(t, pemB)
+	if _, err := trusted.Verify(context.Background(), yaml, entity); err != nil {
+		t.Fatalf("Verify with the signing key trusted: %v", err)
+	}
+
+	untrusted, _ := newKeyedVerifier(t, pemA)
+	res, err := untrusted.Verify(context.Background(), yaml, entity)
+	if err == nil {
+		t.Fatal("expected a bundle signed by an untrusted key to be rejected")
+	}
+	if !strings.Contains(err.Error(), "keyed:") {
+		t.Fatalf("error should come from the keyed branch, got %v", err)
+	}
+	if res != (VerifyResult{}) {
+		t.Fatalf("result = %+v, want empty on rejection", res)
+	}
+}
+
+// TestVerify_KeyedHappyPath pins the keyed success return: signer fingerprint,
+// exact YAML digest, and fallthrough past a wrong first key.
+func TestVerify_KeyedHappyPath(t *testing.T) {
+	t.Parallel()
+	yaml := []byte("rules:\n  - match: {method: GET, path: /_ping}\n    action: allow\n")
+	privB, pemB := newKeyedPEMPair(t)
+	_, pemA := newKeyedPEMPair(t)
+	entity := signKeyedBundle(t, privB, yaml)
+
+	v, cfg := newKeyedVerifier(t, pemA, pemB)
+	res, err := v.Verify(context.Background(), yaml, entity)
+	if err != nil {
+		t.Fatalf("Verify: %v", err)
+	}
+	wantSigner := "keyed:" + cfg.AllowedSigningKeys[1].Fingerprint()
+	if res.Signer != wantSigner {
+		t.Fatalf("Signer = %q, want %q (the second, matching key)", res.Signer, wantSigner)
+	}
+	sum := sha256.Sum256(yaml)
+	if res.DigestHex != hex.EncodeToString(sum[:]) {
+		t.Fatalf("DigestHex = %q, want %q", res.DigestHex, hex.EncodeToString(sum[:]))
+	}
+
+	// A different YAML payload must not verify against the same signature.
+	if _, err := v.Verify(context.Background(), append(yaml, '#'), entity); err == nil {
+		t.Fatal("expected a tampered YAML payload to be rejected")
+	}
+}
+
+// TestLoadBundle_ValidKeyedBundleRoundTrip serializes a genuine keyed bundle to
+// disk, loads it with the production LoadBundle, and verifies the result.
+func TestLoadBundle_ValidKeyedBundleRoundTrip(t *testing.T) {
+	t.Parallel()
+	yaml := []byte("rules: []\n")
+	priv, pemStr := newKeyedPEMPair(t)
+	raw, err := signKeyedBundle(t, priv, yaml).MarshalJSON()
+	if err != nil {
+		t.Fatalf("MarshalJSON: %v", err)
+	}
+	path := filepath.Join(t.TempDir(), "policy.bundle.json")
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		t.Fatalf("write bundle: %v", err)
+	}
+
+	entity, err := LoadBundle(path)
+	if err != nil {
+		t.Fatalf("LoadBundle: %v", err)
+	}
+	if entity == nil {
+		t.Fatal("LoadBundle returned a nil entity")
+	}
+	v, _ := newKeyedVerifier(t, pemStr)
+	if _, err := v.Verify(context.Background(), yaml, entity); err != nil {
+		t.Fatalf("Verify of the loaded bundle: %v", err)
 	}
 }

@@ -956,6 +956,35 @@ func TestServiceInspectImageTrustDeniesUnverified(t *testing.T) {
 	}
 }
 
+func TestServiceInspectImageTrustInitErrFailsClosed(t *testing.T) {
+	// An invalid signing key makes the verifier fail to build. The service
+	// path must deny rather than skip verification.
+	for _, path := range []string{"/services/create", "/services/abc/update"} {
+		t.Run(path, func(t *testing.T) {
+			policy := newServicePolicy(ServiceOptions{
+				AllowAllRegistries: true,
+				ImageTrust: ImageTrustOptions{
+					Mode:               "enforce",
+					AllowedSigningKeys: []SigningKeyOptions{{PEM: "not-a-valid-pem"}},
+				},
+			})
+			if policy.imageTrust.initErr == nil {
+				t.Fatal("expected imageTrust.initErr for invalid PEM, got nil")
+			}
+			req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(
+				`{"TaskTemplate":{"ContainerSpec":{"Image":"registry.example.com/app:v1"}}}`))
+
+			reason, err := policy.inspect(nil, req, NormalizePath(req.URL.Path))
+			if err != nil {
+				t.Fatalf("inspect() error = %v", err)
+			}
+			if !strings.Contains(reason, "image trust policy initialization error") {
+				t.Fatalf("reason = %q, want image-trust init-error denial", reason)
+			}
+		})
+	}
+}
+
 func TestServiceInspectImageTrustPinsVerifiedDigest(t *testing.T) {
 	// On successful verification the mutable tag in ContainerSpec.Image is
 	// rewritten to the verified digest, closing the verify→pull TOCTOU.

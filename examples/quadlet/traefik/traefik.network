@@ -1,0 +1,8 @@
+# Private network shared by Traefik and the containers it routes to. Traefik
+# routes to a container's address on a network it shares, so both sides join
+# this one.
+[Network]
+NetworkName=traefik
+
+[Install]
+WantedBy=default.target

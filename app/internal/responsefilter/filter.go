@@ -74,11 +74,46 @@ type Options struct {
 // Filter applies response redactions to selected Docker JSON response shapes.
 type Filter struct {
 	opts Options
+	// profiles holds one precomputed filter per client profile, built from the
+	// profile's effective (root merged with overrides) options. Each carries
+	// no profile table of its own. resolveProfile names the profile a request
+	// was assigned; an unnamed or unknown profile uses opts (the root).
+	profiles       map[string]*Filter
+	resolveProfile func(*http.Request) (string, bool)
 }
 
 // New constructs a response filter with the provided options.
 func New(opts Options) *Filter {
 	return &Filter{opts: opts}
+}
+
+// NewWithProfiles constructs a response filter whose options depend on the
+// client profile resolveProfile reports for the request. profiles maps a
+// profile name to its already-effective options; requests with no profile, or
+// one absent from the map, use root. The per-profile filters are built here,
+// once, so nothing is merged per request.
+func NewWithProfiles(root Options, profiles map[string]Options, resolveProfile func(*http.Request) (string, bool)) *Filter {
+	f := &Filter{opts: root, resolveProfile: resolveProfile}
+	if len(profiles) > 0 && resolveProfile != nil {
+		f.profiles = make(map[string]*Filter, len(profiles))
+		for name, opts := range profiles {
+			f.profiles[name] = &Filter{opts: opts}
+		}
+	}
+	return f
+}
+
+// forRequest returns the filter whose options apply to req.
+func (f *Filter) forRequest(req *http.Request) *Filter {
+	if f.resolveProfile == nil || len(f.profiles) == 0 {
+		return f
+	}
+	if name, ok := f.resolveProfile(req); ok {
+		if pf, found := f.profiles[name]; found {
+			return pf
+		}
+	}
+	return f
 }
 
 // Enabled reports whether any response-side policy is active.
@@ -97,6 +132,9 @@ func (f *Filter) Enabled() bool {
 func (f *Filter) ModifyResponse(resp *http.Response) error {
 	if f == nil || resp == nil || resp.Request == nil {
 		return nil
+	}
+	if pf := f.forRequest(resp.Request); pf != f {
+		return pf.ModifyResponse(resp)
 	}
 	method := resp.Request.Method
 
@@ -122,7 +160,7 @@ func (f *Filter) ModifyResponse(resp *http.Response) error {
 	// and Podman's libpod API mirrors both plus its own
 	// POST /libpod/containers/{id}/init ("container already initialized").
 	// Checked against the Engine API spec (moby/moby api/docs, through
-	// v1.56) and Podman's server route comments (containers/podman
+	// v1.57) and Podman's server route comments (containers/podman
 	// pkg/api/server/register_containers.go): restart, kill, pause and
 	// unpause document no 304 response on either API, so start/stop/init are
 	// the whole set today. Rejecting those turns a correct no-op into a 502
@@ -632,7 +670,17 @@ var responseTable = []tableEntry{
 
 // dispatchTableEntry walks responseTable and calls the appropriate modify function
 // for the first entry whose path/inspect predicate matches normPath.
+//
+// Table-driven redaction is a read-side feature, so it only runs on GET. A
+// write on a table path (DELETE /services/{id}, POST /services/create) returns
+// an empty or non-resource body, and decoding that as the resource rejects or
+// rewrites a response the daemon got right. A GET that comes back 2xx with an
+// empty body is still rejected, on purpose: it is malformed, and relaying it
+// unredacted would fail open.
 func (f *Filter) dispatchTableEntry(normPath string, resp *http.Response) error {
+	if resp.Request.Method != http.MethodGet {
+		return nil
+	}
 	for _, e := range responseTable {
 		matched := (e.path != "" && normPath == e.path) ||
 			(e.inspect != nil && e.inspect(normPath))

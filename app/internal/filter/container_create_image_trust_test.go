@@ -76,6 +76,16 @@ func TestContainerCreateImageTrustInitErrFailsClosed(t *testing.T) {
 	if policy.imageTrustVerifier != nil {
 		t.Fatal("expected nil imageTrustVerifier when init failed, got non-nil")
 	}
+
+	// The init error must actually deny a create request with a body.
+	reason, err := policy.inspect(nil, makeInspectRequest(t, `{"Image":"registry.example.com/app:v1","HostConfig":{}}`), "/containers/create")
+	if err != nil {
+		t.Fatalf("inspect() error = %v", err)
+	}
+	const wantSub = "image trust policy initialization error"
+	if !containsSubstring(reason, wantSub) {
+		t.Fatalf("reason = %q, want substring %q", reason, wantSub)
+	}
 }
 
 // TestContainerCreateImageTrustTimeoutHonorsExplicitConfig pins the

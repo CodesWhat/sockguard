@@ -1,0 +1,50 @@
+# examples/compose/beszel/docker-compose.yml
+#
+# Sockguard + Beszel agent, unix-socket mode. Sockguard writes a filtered
+# socket into a shared named volume and the agent reads it through
+# DOCKER_HOST instead of mounting /var/run/docker.sock.
+#
+# The agent's default container monitoring needs version, info, container
+# list, inspect and stats, plus image inspect for update checks. The beszel
+# preset allows exactly those and nothing that creates, execs, or writes. The
+# hub's container log view is not supported by the base preset.
+#
+# Fill in KEY, HUB_URL and the agent's auth credential from the hub's "Add
+# system" dialog. The agent uses host networking to read host metrics.
+
+services:
+  sockguard:
+    image: codeswhat/sockguard:latest
+    restart: unless-stopped
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    group_add:
+      - "${DOCKER_SOCK_GID:?set to the GID of /var/run/docker.sock}"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./sockguard.yaml:/etc/sockguard/sockguard.yaml:ro
+      - sockguard-socket:/var/run/sockguard
+    environment:
+      - SOCKGUARD_LISTEN_SOCKET=/var/run/sockguard/sockguard.sock
+
+  beszel-agent:
+    image: henrygd/beszel-agent:0.21.2
+    restart: unless-stopped
+    network_mode: host
+    depends_on:
+      - sockguard
+    volumes:
+      - ./beszel_agent_data:/var/lib/beszel-agent
+      - sockguard-socket:/var/run/sockguard:ro
+    environment:
+      DOCKER_HOST: unix:///var/run/sockguard/sockguard.sock
+      LISTEN: 45876
+      KEY: "${BESZEL_KEY:?set to the hub public key}"
+      HUB_URL: "${BESZEL_HUB_URL:?set to the hub URL}"
+      TOKEN: "${BESZEL_AGENT_TOKEN:?set to the agent auth value from the hub}"
+
+volumes:
+  sockguard-socket:

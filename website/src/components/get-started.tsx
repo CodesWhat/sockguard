@@ -29,8 +29,11 @@ function Quick() {
         <code>
           <C>$</C> <V>docker run</V> -d \{"\n"}
           {"  "}--name sockguard \{"\n"}
+          {"  "}--read-only --cap-drop ALL \{"\n"}
+          {"  "}--security-opt no-new-privileges:true \{"\n"}
+          {"  "}--group-add $(stat -c <V>&apos;%g&apos;</V> /var/run/docker.sock) \{"\n"}
           {"  "}-v /var/run/docker.sock:/var/run/docker.sock:ro \{"\n"}
-          {"  "}-v /var/run/sockguard:/var/run/sockguard \{"\n"}
+          {"  "}-v sockguard-socket:/var/run/sockguard \{"\n"}
           {"  "}-e SOCKGUARD_LISTEN_SOCKET=/var/run/sockguard/sockguard.sock \{"\n"}
           {"  "}
           <V>{SITE_CONFIG.dockerImage}</V>
@@ -57,6 +60,19 @@ function ComposeFile() {
           {"\n"}
           {"    "}
           <K>restart</K>: <V>unless-stopped</V>
+          {"\n"}
+          {"    "}
+          <K>read_only</K>: <V>true</V>
+          {"\n"}
+          {"    "}
+          <K>cap_drop</K>:{"\n"}
+          {"      "}- ALL{"\n"}
+          {"    "}
+          <K>security_opt</K>:{"\n"}
+          {"      "}- no-new-privileges:true{"\n"}
+          {"    "}
+          <K>group_add</K>:{"\n"}
+          {"      "}- &quot;${"{"}DOCKER_SOCK_GID:?set to the GID of /var/run/docker.sock{"}"}&quot;
           {"\n"}
           {"    "}
           <K>volumes</K>:{"\n"}

@@ -9,7 +9,8 @@ import (
 
 // IsStreamingRequest reports whether r is an open-ended stream that holds a
 // connection for as long as a client cares to keep it: events, followed
-// container, service and task logs, streaming stats, Podman top?stream, wait,
+// container, service and task logs, streaming stats (including Podman's
+// collection GET /libpod/containers/stats), Podman top?stream, wait,
 // attach, and exec start (which hijacks). The
 // rate-limit middleware exempts these from the concurrency caps and bounds
 // them with the separate stream cap instead.
@@ -52,6 +53,8 @@ func IsStreamingRequestForFlavor(w http.ResponseWriter, r *http.Request, podmanU
 			return dockerBoolValue(r, "follow")
 		case matchResourceAction(path, "services", "logs"), matchResourceAction(path, "tasks", "logs"):
 			return dockerBoolValue(r, "follow")
+		case nativeLibpod && path == "/containers/stats":
+			return podmanBoolValueOrDefault(r, "stream", true)
 		case matchContainerAction(path, "stats"):
 			return dockerBoolValueOrDefault(r, "stream", true)
 		case strings.HasPrefix(path, "/containers/") && strings.HasSuffix(path, "/attach/ws"):

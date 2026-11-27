@@ -7,9 +7,11 @@ const routes = [
   "/compare/linuxserver",
   "/compare/tecnativa",
   "/compare/wollomatic",
+  "/compare/yorvogate",
   "/docs",
   "/docs/admin",
   "/docs/cis-docker-benchmark",
+  "/docs/compliance-report",
   "/docs/configuration",
   "/docs/deprecations",
   "/docs/frontend-runner",
@@ -20,7 +22,9 @@ const routes = [
   "/docs/podman",
   "/docs/presets",
   "/docs/roadmap",
+  "/docs/rootless-quadlet",
   "/docs/security",
+  "/docs/swarm",
   "/docs/verification",
 ] as const;
 

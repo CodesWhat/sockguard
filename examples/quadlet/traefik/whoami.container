@@ -1,0 +1,20 @@
+# A throwaway backend for checking the Traefik wiring. Traefik finds it
+# through the labels below; remove it once your own services carry labels.
+[Unit]
+Description=whoami test backend
+After=sockguard.service
+
+[Container]
+ContainerName=whoami
+Image=docker.io/traefik/whoami:latest
+Network=traefik.network
+Label=traefik.enable=true
+Label=traefik.http.routers.whoami.rule=Host(`whoami.localhost`)
+Label=traefik.http.routers.whoami.entrypoints=web
+Label=traefik.http.services.whoami.loadbalancer.server.port=80
+
+[Service]
+Restart=on-failure
+
+[Install]
+WantedBy=default.target

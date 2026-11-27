@@ -105,35 +105,3 @@ release:
   replace_existing_draft: true
   replace_existing_artifacts: true
   make_latest: '{{ eq (index .Env "RELEASE_LATEST") "true" }}'
-
-homebrew_casks:
-  - name: sockguard
-    ids:
-      - default
-    binaries:
-      - sockguard
-    homepage: https://getsockguard.com/
-    description: Default-deny Docker socket proxy with request-aware policy enforcement
-    caveats: |
-      Sockguard needs access to a Docker socket and an explicit policy configuration.
-      See https://getsockguard.com/docs/getting-started before starting it.
-      The macOS binary is not yet Apple notarized. This cask removes its quarantine
-      attribute after Homebrew verifies the release archive checksum.
-    custom_block: |
-      postflight_steps do
-        on_macos do
-          run "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "sockguard"], chdir: "."
-        end
-      end
-    skip_upload: '{{ if eq (index .Env "RELEASE_LATEST") "true" }}auto{{ else }}true{{ end }}'
-    repository:
-      owner: CodesWhat
-      name: homebrew-tap
-      # Publish to a per-release tap branch. The tap's own workflow opens the
-      # PR into main, runs cask-ci and auto-merges it, so tap main only moves
-      # through a checked PR.
-      branch: sockguard-{{ .Version }}
-      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
-    commit_author:
-      name: goreleaserbot
-      email: security@codeswhat.com

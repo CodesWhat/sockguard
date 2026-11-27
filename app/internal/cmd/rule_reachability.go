@@ -154,6 +154,12 @@ func firstAllowedCatalogPath(method, catalogPath string, identifierShape catalog
 		catalogMachines = append(catalogMachines, machine)
 	}
 
+	// A query-constrained deny rule is skipped: a request can dodge it by
+	// carrying a different query, so it never shadows an allow below it. A
+	// query-constrained allow stays and is read as matching on method and path
+	// alone, so a conditional allow is reported as reachable.
+	rules = withoutQueryConstrainedDenies(rules)
+
 	lastAllow := -1
 	for i := range rules {
 		if rules[i].Action == "allow" && configuredRuleMatchesMethod(rules[i].Match.Method, method) {
@@ -574,4 +580,15 @@ func reachabilityHas(state []uint64, pc int) bool {
 
 func reachabilitySet(state []uint64, pc int) {
 	state[pc/64] |= uint64(1) << uint(pc%64)
+}
+
+func withoutQueryConstrainedDenies(rules []config.RuleConfig) []config.RuleConfig {
+	kept := make([]config.RuleConfig, 0, len(rules))
+	for _, rule := range rules {
+		if rule.Action == "deny" && len(rule.Match.Query) > 0 {
+			continue
+		}
+		kept = append(kept, rule)
+	}
+	return kept
 }

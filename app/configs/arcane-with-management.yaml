@@ -1,0 +1,197 @@
+# Sockguard, Arcane with Management Preset
+#
+# Arcane's read-only view (see arcane.yaml) plus the management actions:
+# container start, stop, restart and remove, image pulls, the image updater
+# (rename the old container aside, create and start the replacement, remove
+# the backup) and compose projects (containers, networks, volumes).
+# Allows: everything arcane.yaml allows, plus POST container create, start,
+#   stop, restart, rename, DELETE container, POST image create (pull),
+#   POST network create/connect/disconnect, DELETE network, POST volume create.
+# Denies: exec, attach, kill, pause, commit, archive, image remove, tag,
+# prune, load and build, volume remove, Swarm, and every other route.
+#
+# Derived from Arcane v3.1.1 (getarcaneapp/arcane), backend/internal/
+# container/service.go (ContainerStart, ContainerStop, ContainerRestart,
+# ContainerRename, ContainerCreate, ContainerRemove), backend/internal/image/
+# service.go (ImagePull) and backend/internal/updater/. Compose projects run
+# through the compose library, which issues the same container, network and
+# volume calls. Arcane's terminal and exec features, kill and pause actions,
+# volume removal, image removal and prunes are not covered here.
+#
+# Bounding the writes:
+#   - Privileged mode, host network, PID, IPC, user and cgroup namespaces,
+#     devices, capability additions, sysctls, unconfined seccomp and AppArmor
+#     and published ports are refused. Joining another container's
+#     namespaces (container:<id>) is refused too.
+#   - Bind mounts are refused outside allowed_bind_mounts. The shipped entry
+#     is a placeholder for Arcane's compose projects directory; replace it
+#     with the host paths your projects mount, as narrowly as possible. The
+#     updater recreates a container with its original mounts, so a container
+#     that binds a host path outside the list cannot be updated or redeployed.
+#   - ownership.owner stamps every container, network and volume Arcane
+#     creates with an owner label and limits Arcane to resources carrying it.
+#     Containers that already exist do not carry the label, so Arcane's lists
+#     and actions skip them until you label them (see the presets docs).
+#     Arcane's own container stays unmanaged on purpose.
+#   - Publishing ports is refused, so a compose project that publishes a host
+#     port fails to deploy. Put a reverse proxy on a shared network instead.
+#
+# Residual risk: Arcane can still run any image from any registry with any
+# command, as root unless the image or project sets a user. Sockguard keeps
+# privilege and host access out of those containers, it does not vet what
+# they run. Arcane's own login is the only gate on who can trigger it.
+# Restrict who can reach the proxy socket to the Arcane process.
+#
+# Swarm mode and Podman are untested with this preset.
+
+upstream:
+  socket: /var/run/docker.sock
+
+log:
+  level: info
+  format: json
+  access_log: true
+
+health:
+  enabled: true
+  path: /health
+
+# Arcane's container detail page streams container logs, which are an
+# explicit read-exfiltration route.
+insecure_allow_read_exfiltration: true
+
+ownership:
+  owner: arcane
+
+request_body:
+  container_create:
+    allow_privileged: false
+    allow_host_network: false
+    allow_host_pid: false
+    allow_host_ipc: false
+    allow_host_userns: false
+    allow_host_cgroupns: false
+
+    # Refuse container:<id> and ns:<path> namespace joins. The empty
+    # allowlist denies every container:<ref>.
+    restrict_namespace_sharing: true
+    allowed_namespace_sharing_containers: []
+
+    allowed_bind_mounts:
+      - /opt/arcane/projects
+
+    allow_all_devices: false
+    allowed_devices: []
+    allow_device_requests: false
+    allow_device_cgroup_rules: false
+
+    allow_all_capabilities: false
+    allowed_capabilities: []
+
+    deny_unconfined_seccomp: true
+    deny_unconfined_apparmor: true
+    allow_sysctls: false
+
+    deny_published_ports: true
+
+  # Arcane pulls whatever image a project or the updater names.
+  image_pull:
+    allow_all_registries: true
+
+  # The updater force-removes its backup container, and removing a
+  # container with its anonymous volumes is a normal Arcane action.
+  container_remove:
+    allow_force: true
+    allow_remove_volumes: true
+
+rules:
+  # Arcane pings the daemon to negotiate the API version.
+  - match: { method: GET, path: "/_ping" }
+    action: allow
+  - match: { method: HEAD, path: "/_ping" }
+    action: allow
+
+  # Engine identity and capabilities: Info, ServerVersion.
+  - match: { method: GET, path: "/version" }
+    action: allow
+  - match: { method: GET, path: "/info" }
+    action: allow
+
+  # The event stream keeps Arcane's inventory current.
+  - match: { method: GET, path: "/events" }
+    action: allow
+
+  # Disk usage (verbose) for the dashboard and the prune pages.
+  - match: { method: GET, path: "/system/df" }
+    action: allow
+
+  # Container reads: list, inspect, stats, process list and logs.
+  - match: { method: GET, path: "/containers/json" }
+    action: allow
+  - match: { method: GET, path: "/containers/*/json" }
+    action: allow
+  - match: { method: GET, path: "/containers/*/stats" }
+    action: allow
+  - match: { method: GET, path: "/containers/*/top" }
+    action: allow
+  - match: { method: GET, path: "/containers/*/logs" }
+    action: allow
+
+  # Image list and inspect. Image names span slashes (ghcr.io/org/app:tag),
+  # so these use "**". The /json and /history suffixes keep the glob from
+  # swallowing /images/get and /images/{name}/get, which export image
+  # layers and stay denied. "**" can match nothing, so the first rule also
+  # covers GET /images/json (the list).
+  - match: { method: GET, path: "/images/**/json" }
+    action: allow
+  - match: { method: GET, path: "/images/**/history" }
+    action: allow
+
+  # Volume and network reads.
+  - match: { method: GET, path: "/volumes" }
+    action: allow
+  - match: { method: GET, path: "/volumes/*" }
+    action: allow
+  - match: { method: GET, path: "/networks" }
+    action: allow
+  - match: { method: GET, path: "/networks/*" }
+    action: allow
+
+
+  # Management: container lifecycle. Create is inspected by
+  # request_body.container_create above and scoped by ownership.
+  - match: { method: POST, path: "/containers/create" }
+    action: allow
+  - match: { method: POST, path: "/containers/*/start" }
+    action: allow
+  - match: { method: POST, path: "/containers/*/stop" }
+    action: allow
+  - match: { method: POST, path: "/containers/*/restart" }
+    action: allow
+  - match: { method: POST, path: "/containers/*/rename" }
+    action: allow
+  - match: { method: DELETE, path: "/containers/*" }
+    action: allow
+
+  # Management: image pulls for the updater and compose projects. The pull
+  # policy above applies.
+  - match: { method: POST, path: "/images/create" }
+    action: allow
+
+  # Management: compose project networks and volumes. Network
+  # teardown is allowed, volume removal stays denied.
+  - match: { method: POST, path: "/networks/create" }
+    action: allow
+  - match: { method: POST, path: "/networks/*/connect" }
+    action: allow
+  - match: { method: POST, path: "/networks/*/disconnect" }
+    action: allow
+  - match: { method: DELETE, path: "/networks/*" }
+    action: allow
+  - match: { method: POST, path: "/volumes/create" }
+    action: allow
+
+  # Deny everything else
+  - match: { method: "*", path: "/**" }
+    action: deny
+    reason: "not allowed by arcane-with-management preset"

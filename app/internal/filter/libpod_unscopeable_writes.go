@@ -108,6 +108,27 @@ const LibpodSystemCheckDenyReason = "libpod system check denied: " +
 	"POST /libpod/system/check checks the host's storage and can repair it by removing damaged containers and images " +
 	"whoever owns them, so it cannot be scoped to one caller"
 
+// LibpodAutoUpdatePath is the normalized path of Podman's native
+// POST /libpod/autoupdate endpoint.
+const LibpodAutoUpdatePath = "/libpod/autoupdate"
+
+// LibpodAutoUpdateDenyReason is reported when owner isolation refuses
+// POST /libpod/autoupdate.
+//
+// Podman's handler (pkg/api/handlers/libpod/autoupdate.go) runs the
+// `podman auto-update` machinery: it checks every running, systemd-managed
+// container carrying an auto-update label, pulls the image reference stored
+// on it and restarts the whole systemd unit when the image changed. It
+// accepts `authfile`, `dryRun` and `rollback`, so there is no argument that
+// narrows it to one owner's containers, and a unit restart takes down every
+// container in the unit, owned by the caller or not. The refusal is
+// unconditional for the reason the pod prune one is. A caller under owner
+// isolation updates one container by recreating it, which the ownership
+// layer checks.
+const LibpodAutoUpdateDenyReason = "libpod auto-update denied: " +
+	"POST /libpod/autoupdate pulls and restarts every auto-update labeled systemd unit on the host and accepts no owner scope, " +
+	"so it cannot be scoped to one caller"
+
 // LibpodKubeDownDenyReason is reported when owner isolation refuses kube
 // down, DELETE /libpod/play/kube and its DELETE /libpod/kube/play alias.
 //
@@ -145,14 +166,16 @@ const (
 // Podman registers every manifest list write under /libpod/manifests/{name:.*}
 // (create, POST/PUT/DELETE {name}, {name}/add, {name}/registry/{destination:.*}
 // and {name}/push), so the name is greedy and one prefix covers all seven. A
-// manifest list carries no owner label that create could stamp, create and add
-// take image references in the query or body, and push and registry send the
-// list to a caller-named destination, so the ownership layer has nothing to
-// check a caller against. The reads on the same family are already refused.
+// manifest list is an image in Podman's store, but it is not one the ownership
+// layer can check by path: create and add take image references in the query or
+// body, push and registry send it to a caller-named destination, and a list
+// carries no owner label that create could stamp. The reads on the same family
+// are already refused for that reason, so the writes are too.
 //
 // Volume rename (Podman 6.2) names the new volume in a parameter nothing here
-// reads, so a rename could move an owned volume onto a name chosen without any
-// ownership check. It is refused rather than half-checked.
+// reads. Letting it through would move an owned volume onto a name chosen
+// without a collision or ownership check against the other owners' volumes, so
+// it is refused rather than half-checked.
 const (
 	LibpodManifestWritePath       = "/libpod/manifests/sockguard-test"
 	LibpodVolumeRenamePath        = "/libpod/volumes/sockguard-test/rename"
@@ -177,6 +200,7 @@ var libpodUnscopeableWrites = []LibpodUnscopeableWrite{
 	{Method: http.MethodPost, Path: LibpodPodPrunePath, ReasonCodeStem: "pod_prune", Reason: LibpodPodPruneDenyReason},
 	{Method: http.MethodPost, Path: LibpodSystemPrunePath, ReasonCodeStem: "system_prune", Reason: LibpodSystemPruneDenyReason},
 	{Method: http.MethodPost, Path: LibpodSystemCheckPath, ReasonCodeStem: "system_check", Reason: LibpodSystemCheckDenyReason},
+	{Method: http.MethodPost, Path: LibpodAutoUpdatePath, ReasonCodeStem: "autoupdate", Reason: LibpodAutoUpdateDenyReason},
 	{Method: http.MethodDelete, Path: libpodPathPrefix + "play/kube", ReasonCodeStem: "kube_down", Reason: LibpodKubeDownDenyReason},
 	{Method: http.MethodDelete, Path: libpodPathPrefix + "kube/play", ReasonCodeStem: "kube_down", Reason: LibpodKubeDownDenyReason},
 }

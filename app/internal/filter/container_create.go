@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"net/http"
 	"path"
 	"slices"
@@ -237,6 +238,11 @@ type ContainerCreateOptions struct {
 	// closed. The server sets it from the resolved upstream flavor.
 	DockerUpstream bool
 
+	// NetworkExposure holds the opt-in published-port and network gates. They
+	// run in the resource-limit guard, which can ask the daemon what a network
+	// reference resolves to. Zero value: unrestricted.
+	NetworkExposure NetworkExposureOptions
+
 	// AllowEndpointConfig permits static IP, MAC address, Links, and
 	// DriverOpts in NetworkingConfig.EndpointsConfig entries carried on
 	// POST /containers/create. Docker connects every entry here the same way
@@ -357,6 +363,9 @@ func newContainerCreatePolicy(opts ContainerCreateOptions) containerCreatePolicy
 			driver:              driver,
 			allowedCapabilities: canonCaps,
 			maxCount:            entry.MaxCount,
+			deviceIDs:           slices.Clone(entry.DeviceIDs),
+			count:               entry.Count,
+			options:             maps.Clone(entry.Options),
 		})
 	}
 
@@ -1784,12 +1793,58 @@ func deviceRequestAllowed(req dockerDeviceRequest, driver string, allowlist []al
 		if !countAllowed(req.Count, entry.maxCount) {
 			continue
 		}
+		if entry.count != nil && req.Count != *entry.count {
+			continue
+		}
+		if !deviceIDsAllowed(req, entry.deviceIDs) {
+			continue
+		}
+		if !deviceOptionsAllowed(req.Options, entry.options) {
+			continue
+		}
 		if !capabilitySetsAllowed(req.Capabilities, entry.allowedCapabilities) {
 			continue
 		}
 		return true
 	}
 	return false
+}
+
+// deviceIDsAllowed enforces an entry's exact device_ids list. An entry with no
+// list places no constraint on the IDs. With a list, the request must name at
+// least one ID, every ID must equal a listed one exactly (no trimming, no case
+// folding, no globbing), and Count must be zero: the Docker daemon rejects a
+// request carrying both, and a leftover Count could widen what a runtime hands
+// out, so the combination fails closed here.
+func deviceIDsAllowed(req dockerDeviceRequest, allowed []string) bool {
+	if len(allowed) == 0 {
+		return true
+	}
+	if len(req.DeviceIDs) == 0 || req.Count != 0 {
+		return false
+	}
+	for _, id := range req.DeviceIDs {
+		if !slices.Contains(allowed, id) {
+			return false
+		}
+	}
+	return true
+}
+
+// deviceOptionsAllowed enforces an entry's exact options map. An entry with no
+// map places no constraint on Options. With a map, every request key must be
+// listed with an identical value (no trimming, no case folding), so an option
+// the grant did not name is denied. A request with no Options always passes.
+func deviceOptionsAllowed(reqOptions, allowed map[string]string) bool {
+	if len(allowed) == 0 {
+		return true
+	}
+	for k, v := range reqOptions {
+		if want, ok := allowed[k]; !ok || want != v {
+			return false
+		}
+	}
+	return true
 }
 
 // countAllowed reports whether the request Count is permitted by maxCount.

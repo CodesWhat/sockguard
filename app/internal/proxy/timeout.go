@@ -221,6 +221,11 @@ func longLivedClassification(w http.ResponseWriter, r *http.Request, podmanUpstr
 			// GET /tasks/{id}/logs?follow=1 tails a single swarm task's log
 			// stream.
 			return dockerBoolValue(r, "follow")
+		case nativeLibpod && path == "/containers/stats":
+			// Podman's collection stats (GET /libpod/containers/stats) streams
+			// by default, like the per-container route below, but it decodes
+			// the query with gorilla/schema rather than the Docker bool rules.
+			return podmanBoolValueOrDefault(r, "stream", true)
 		case matchContainerAction(path, "stats"):
 			// Stats streams by default; only an explicitly false stream makes it
 			// one-shot — mirror the daemon's BoolValueOrDefault(stream, true).
@@ -347,6 +352,34 @@ func podmanBoolValue(r *http.Request, key string) bool {
 		if err == nil && parsed {
 			return true
 		}
+	}
+	return false
+}
+
+// podmanBoolValueOrDefault is podmanBoolValue for a parameter Podman
+// pre-populates with def before decoding. A key that is absent, or present only
+// with an empty value (which gorilla/schema skips), leaves def in force; an
+// explicit false, or an invalid value, makes the request finite.
+func podmanBoolValueOrDefault(r *http.Request, key string, def bool) bool {
+	present := false
+	for queryKey, values := range logging.RequestQuery(r) {
+		if !strings.EqualFold(queryKey, key) || len(values) == 0 {
+			continue
+		}
+		value := values[len(values)-1]
+		if value == "" {
+			continue
+		}
+		present = true
+		if value == "on" {
+			return true
+		}
+		if parsed, err := strconv.ParseBool(value); err == nil && parsed {
+			return true
+		}
+	}
+	if !present {
+		return def
 	}
 	return false
 }

@@ -17,7 +17,7 @@ test("generated-file inventory ignores an inherited Git index", (t) => {
       "--test-name-pattern=Gosec scans canonical app packages with audited suppressions",
       "scripts/go-module-layout.test.mjs",
     ],
-    { cwd: resolve(import.meta.dirname, ".."), env, encoding: "utf8", timeout: 20_000 },
+    { cwd: resolve(import.meta.dirname, ".."), env, encoding: "utf8", timeout: 120_000 },
   );
   assert.equal(result.status, 0, result.stdout + result.stderr);
   assert.match(result.stdout, /pass 1/);

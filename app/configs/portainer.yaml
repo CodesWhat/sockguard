@@ -62,7 +62,7 @@ request_body:
 # If you don't use Recreate or Duplicate, set the three keys back to true.
 #
 # The broad "/images/**" allow rule below inherits GET
-# /images/{name}/attestations (Engine API 1.53+) without Portainer or this
+# /images/{name}/attestations (Engine API 1.55+) without Portainer or this
 # preset ever having reasoned about it. allow_attestation_statements defaults
 # to false; set explicitly here so the deny posture for full attestation
 # statement content is visible at the call site rather than relying on the

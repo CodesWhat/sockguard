@@ -10,8 +10,9 @@ const (
 	traceparentHeader = "Traceparent"
 	tracestateHeader  = "Tracestate"
 
-	traceVersion   = "00"
-	traceFlagsNone = "00"
+	traceVersion      = "00"
+	traceFlagsNone    = "00"
+	traceFlagsSampled = "01"
 )
 
 var traceRandRead = rand.Read
@@ -20,11 +21,24 @@ var traceRandRead = rand.Read
 // exporting spans. It preserves a valid incoming trace ID, replaces the parent
 // ID with a proxy-local span ID, and records the IDs in RequestMeta for logs.
 func TraceContextMiddleware() func(http.Handler) http.Handler {
+	return TraceContextMiddlewareWithRootSampler(nil)
+}
+
+// TraceContextMiddlewareWithRootSampler is TraceContextMiddleware with a
+// head-sampling decision for new root traces: when sampleRoot returns true the
+// generated root carries the W3C sampled flag, so the traceparent forwarded
+// upstream agrees with whether the request is exported. A request that arrives
+// with a valid traceparent keeps its own flags. A nil sampleRoot never marks
+// roots as sampled.
+func TraceContextMiddlewareWithRootSampler(sampleRoot func() bool) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			ctx, ok := traceContextFromRequest(r)
 			if !ok {
 				ctx = newRootTraceContext()
+				if sampleRoot != nil && sampleRoot() {
+					ctx.flags = traceFlagsSampled
+				}
 				if r != nil {
 					r.Header.Del(tracestateHeader)
 				}

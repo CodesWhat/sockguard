@@ -21,7 +21,7 @@ clients:
   profiles:
     - name: a
       response:
-        redact_container_env: true
+        redact_env: true
       rules:
         - match: { method: GET, path: "/_ping" }
           action: allow
@@ -56,7 +56,7 @@ func TestValidateWarnsOnUnknownKeysAndPasses(t *testing.T) {
 	if err != nil {
 		t.Fatalf("validate must exit 0 without --strict, got %v", err)
 	}
-	for _, key := range []string{"log.bogus_key", "clients.profiles[0].response.redact_container_env"} {
+	for _, key := range []string{"log.bogus_key", "clients.profiles[0].response.redact_env"} {
 		if strings.Count(stderr, "key="+key) != 1 {
 			t.Errorf("want exactly one warning for %s, stderr:\n%s", key, stderr)
 		}

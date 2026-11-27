@@ -1031,6 +1031,7 @@ var wantOwnerUnscopeableWriteReasonCodes = map[string]string{
 	"POST " + filter.LibpodPodPrunePath:               "owner_libpod_pod_prune_unscopeable",
 	"POST " + filter.LibpodSystemPrunePath:            "owner_libpod_system_prune_unscopeable",
 	"POST " + filter.LibpodSystemCheckPath:            "owner_libpod_system_check_unscopeable",
+	"POST " + filter.LibpodAutoUpdatePath:             "owner_libpod_autoupdate_unscopeable",
 	"DELETE /libpod/play/kube":                        "owner_libpod_kube_down_unscopeable",
 	"DELETE /libpod/kube/play":                        "owner_libpod_kube_down_unscopeable",
 }
@@ -1333,5 +1334,45 @@ func TestLibpodImageScpEmptySourceIsDeniedWithoutAnInspect(t *testing.T) {
 				t.Fatalf("meta = decision %q code %q, want %q and %q", meta.Decision, meta.ReasonCode, logging.DecisionDeny, reasonCodeOwnerPolicyDeniedAccess)
 			}
 		})
+	}
+}
+
+// TestLibpodAutoUpdateIsRefusedWhateverTheRequestCarries covers the request
+// shapes a caller controls on POST /libpod/autoupdate: dryRun, a forged owner
+// label filter, rollback and the versioned spelling. None of them narrows what
+// the daemon touches, so every shape is refused with zero upstream calls in
+// every rollout mode.
+func TestLibpodAutoUpdateIsRefusedWhateverTheRequestCarries(t *testing.T) {
+	t.Parallel()
+	queries := []string{
+		"",
+		"?dryRun=true",
+		"?dryRun=false&rollback=true",
+		`?filters=%7B%22label%22%3A%5B%22com.sockguard.owner%3Djob-123%22%5D%7D`,
+		"?authfile=%7B%7D",
+	}
+	for _, prefix := range []string{"", "/v5.8.1", "/v4.0.0"} {
+		for _, query := range queries {
+			for _, rolloutMode := range []string{"enforce", "warn", "audit"} {
+				t.Run(prefix+query+"/"+rolloutMode, func(t *testing.T) {
+					t.Parallel()
+					handler := middlewareWithDeps(testLogger(), Options{Owner: "job-123", LabelKey: "com.sockguard.owner"}, fakeInspector{}.inspectResource, fakeInspector{}.inspectExec)(
+						http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+							t.Fatal("auto-update reached the upstream")
+						}))
+					meta := &logging.RequestMeta{RolloutMode: rolloutMode}
+					req := httptest.NewRequest(http.MethodPost, prefix+filter.LibpodAutoUpdatePath+query, nil)
+					req = req.WithContext(logging.WithMeta(req.Context(), meta))
+					rec := httptest.NewRecorder()
+					handler.ServeHTTP(rec, req)
+					if rec.Code != http.StatusForbidden {
+						t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusForbidden, rec.Body.String())
+					}
+					if meta.ReasonCode != "owner_libpod_autoupdate_unscopeable" {
+						t.Fatalf("meta.ReasonCode = %q", meta.ReasonCode)
+					}
+				})
+			}
+		}
 	}
 }

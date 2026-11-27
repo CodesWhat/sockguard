@@ -1,0 +1,113 @@
+name: "Quality: Dozzle Conformance"
+run-name: >-
+  ${{
+    github.event_name == 'schedule' && 'Quality: Dozzle Conformance — Weekly' ||
+    format('Quality: Dozzle Conformance — Manual by {0}', github.actor)
+  }}
+
+# Boots the published Dozzle image against the published sockguard image with
+# app/configs/dozzle.yaml, then asserts through Dozzle's own HTTP API that the
+# container list and logs work, that sockguard denied nothing Dozzle needed,
+# that no unreviewed route appeared (scripts/dozzle-conformance/known-routes.json),
+# and that forbidden calls (POST /containers/create and friends) stay denied.
+# See scripts/dozzle-conformance/README.md.
+#
+# Not run on every PR: it pulls two registries' images for a surface that
+# changes rarely. Weekly plus workflow_dispatch, including as a check before
+# changing the preset or bumping the Dozzle tag in the example compose file.
+# workflow_dispatch only resolves once this file is on the default branch.
+
+on:
+  workflow_dispatch:
+    inputs:
+      sockguard_image:
+        description: "Full sockguard image reference to test (codeswhat/sockguard or the ghcr.io, docker.io, quay.io equivalents). Empty means codeswhat/sockguard:latest."
+        required: false
+        default: ""
+      dozzle_image:
+        description: "Dozzle image reference, amir20/dozzle:<tag>. Empty means the tag pinned in scripts/dozzle-conformance/run.sh."
+        required: false
+        default: ""
+  schedule:
+    - cron: '45 6 * * 1'  # Weekly on Monday at 06:45 UTC
+
+permissions:
+  contents: read
+
+concurrency:
+  group: quality-dozzle-conformance-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  conformance:
+    name: "Dozzle conformance"
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      # Audit mode: block mode intermittently refused allow-listed hosts on hosted runners (DEP-19). Release workflows keep block.
+      - name: Harden Runner
+        uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43  # v2.22.3
+        with:
+          egress-policy: audit
+
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
+        with:
+          node-version: "24"
+
+      - name: Run helper tests and harness self-test
+        run: |
+          node --test scripts/dozzle-conformance.test.mjs
+          scripts/dozzle-conformance/run.sh --self-test
+
+      - name: Verify Docker daemon is reachable
+        run: docker version
+
+      - name: Run conformance
+        env:
+          SOCKGUARD_IMAGE_INPUT: ${{ github.event.inputs.sockguard_image }}
+          DOZZLE_IMAGE_INPUT: ${{ github.event.inputs.dozzle_image }}
+        run: |
+          set -uo pipefail
+          args=(--out "${GITHUB_WORKSPACE}/out")
+          if [ -n "${SOCKGUARD_IMAGE_INPUT}" ]; then
+            args+=(--sockguard-image "${SOCKGUARD_IMAGE_INPUT}")
+          fi
+          if [ -n "${DOZZLE_IMAGE_INPUT}" ]; then
+            args+=(--dozzle-image "${DOZZLE_IMAGE_INPUT}")
+          fi
+          mkdir -p out
+          scripts/dozzle-conformance/run.sh "${args[@]}"
+
+      - name: Summarize
+        if: always()
+        run: |
+          if [ -f out/dozzle-conformance.json ]; then
+            {
+              echo "### Dozzle conformance"
+              echo ""
+              echo "| Assertion | Status |"
+              echo "|---|---|"
+              jq -r '.assertions[] | "| " + .name + " | " + .status + " |"' out/dozzle-conformance.json
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "::error::no dozzle-conformance.json evidence was written"
+          fi
+
+      # Always uploaded, pass or fail: the JSON is the machine-readable verdict
+      # and the logs separate a sockguard denial from a Dozzle startup problem.
+      - name: Upload conformance evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: dozzle-conformance
+          path: |
+            out/dozzle-conformance.json
+            out/dozzle-conformance-logs/
+          retention-days: 90
+          if-no-files-found: error

@@ -39,6 +39,7 @@ func mutateVolumeCreateOwnershipBody(r *http.Request, labelKey, owner, labelFiel
 		labels[labelKey] = owner
 		for _, name := range filter.FoldedStrings(decoded, "Name") {
 			appendEmbeddedOwnershipReference(&refs.existingResources, dockerresource.KindVolume, name, "volume create Name")
+			refs.addLockName(dockerresource.KindVolume, name)
 		}
 		return nil
 	})
@@ -144,6 +145,7 @@ func mutateLibpodNetworkCreateOwnershipBody(r *http.Request, labelKey, owner str
 		labels[labelKey] = owner
 		for _, name := range filter.FoldedStrings(decoded, "name") {
 			appendEmbeddedOwnershipReference(&refs.existingResources, dockerresource.KindNetwork, name, "network create name")
+			refs.addLockName(dockerresource.KindNetwork, name)
 		}
 		return nil
 	})

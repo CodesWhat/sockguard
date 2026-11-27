@@ -197,6 +197,88 @@ func TestPolicyBundleReload_RejectsBadSignature(t *testing.T) {
 	}
 }
 
+// countingBundleVerifier records how often Verify runs so a test can prove a
+// reload was rejected before reaching signature verification.
+type countingBundleVerifier struct{ calls int }
+
+func (c *countingBundleVerifier) Verify(_ context.Context, _ []byte, _ verify.SignedEntity) (policybundle.VerifyResult, error) {
+	c.calls++
+	return policybundle.VerifyResult{Signer: "keyed:x", DigestHex: "ab"}, nil
+}
+
+// assertPolicyBundleReloadRejected checks that a rejected bundle reload counts
+// as reject_signature, publishes nothing, and leaves the active config and
+// serving handler untouched.
+func assertPolicyBundleReloadRejected(t *testing.T, f *policyBundleFixture, initial *config.Config) {
+	t.Helper()
+	if got, ok := metricsReloadCount(t, f.registry, "reject_signature"); !ok || got != 1 {
+		t.Fatalf("reject_signature count = %d (found=%v), want 1", got, ok)
+	}
+	if got, ok := metricsReloadCount(t, f.registry, "ok"); ok && got != 0 {
+		t.Fatalf("ok count = %d, want 0 (rejected reload must not record success)", got)
+	}
+	if snap := f.versioner.Snapshot(); snap != nil {
+		t.Fatalf("expected no snapshot publish on rejected reload, got %+v", snap)
+	}
+	if f.coordinator.activeCfg != initial {
+		t.Fatal("active config changed on a rejected reload")
+	}
+	rec := httptest.NewRecorder()
+	f.swappable.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+	if body := rec.Body.String(); body != "v1" {
+		t.Fatalf("serving handler body = %q, want the original v1 handler", body)
+	}
+}
+
+func TestPolicyBundleReload_RejectsMissingSignaturePath(t *testing.T) {
+	initial := policyBundleInitialConfig()
+	counter := &countingBundleVerifier{}
+	f := newPolicyBundleFixture(t, initial, &stubBundleVerifier{})
+	f.coordinator.bundleVerifier = counter
+
+	// The candidate drops signature_path; trust stays enabled on the
+	// coordinator, so the reload must refuse rather than skip verification.
+	candidate := config.Defaults()
+	candidate.PolicyBundle.Enabled = true
+	candidate.PolicyBundle.SignaturePath = ""
+	candidate.PolicyBundle.AllowedSigningKeys = []config.PolicyBundleSigningKey{{PEM: "stub"}}
+	f.loadCfg = &candidate
+
+	entityLoaded := false
+	f.coordinator.deps.loadBundleEntity = func(string) (verify.SignedEntity, error) {
+		entityLoaded = true
+		return &stubEntity{}, nil
+	}
+
+	f.coordinator.reload()
+
+	assertPolicyBundleReloadRejected(t, f, initial)
+	if entityLoaded {
+		t.Fatal("loadBundleEntity must not run with an empty signature_path")
+	}
+	if counter.calls != 0 {
+		t.Fatalf("Verify calls = %d, want 0", counter.calls)
+	}
+}
+
+func TestPolicyBundleReload_RejectsUnloadableBundle(t *testing.T) {
+	initial := policyBundleInitialConfig()
+	counter := &countingBundleVerifier{}
+	f := newPolicyBundleFixture(t, initial, &stubBundleVerifier{})
+	f.coordinator.bundleVerifier = counter
+
+	f.coordinator.deps.loadBundleEntity = func(string) (verify.SignedEntity, error) {
+		return nil, errors.New("bundle file is unreadable")
+	}
+
+	f.coordinator.reload()
+
+	assertPolicyBundleReloadRejected(t, f, initial)
+	if counter.calls != 0 {
+		t.Fatalf("Verify calls = %d, want 0", counter.calls)
+	}
+}
+
 func TestPolicyBundleReload_RejectsCompatEnvironment(t *testing.T) {
 	t.Setenv("CONTAINERS", "1")
 	verifier := &stubBundleVerifier{res: policybundle.VerifyResult{Signer: "keyed:abcd"}}

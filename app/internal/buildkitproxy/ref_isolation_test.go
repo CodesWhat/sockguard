@@ -40,7 +40,11 @@ func (d *refHistoryDaemon) RoundTrip(r *http.Request) (*http.Response, error) {
 		if err := proto.Unmarshal(payload, &req); err != nil {
 			return nil, err
 		}
-		body = d.history[req.Ref]
+		// Status is a server-streaming RPC, so the daemon answers with one
+		// length-prefixed gRPC message per update.
+		if history := d.history[req.Ref]; history != "" {
+			body = string(grpcFrame([]byte(history)))
+		}
 	}
 	return &http.Response{
 		StatusCode: http.StatusOK,
@@ -86,8 +90,12 @@ func TestControlRefIsolationAcrossPrincipals(t *testing.T) {
 				if bytes.Contains(status.Body.Bytes(), []byte(bridges[0].registry.daemonSessionID(victim, "victim-session"))) {
 					t.Fatal("duplicate Solve granted access to another principal's build status")
 				}
-				if status.Body.String() != bridges[1].registry.daemonSessionID(attacker, "attacker-session") {
-					t.Fatalf("own build status = %q, want attacker-session", status.Body.String())
+				gotStatus := status.Body.String()
+				if len(gotStatus) >= grpcMessageHeaderLen {
+					gotStatus = gotStatus[grpcMessageHeaderLen:]
+				}
+				if gotStatus != bridges[1].registry.daemonSessionID(attacker, "attacker-session") {
+					t.Fatalf("own build status = %q, want attacker-session", gotStatus)
 				}
 			})
 		}
