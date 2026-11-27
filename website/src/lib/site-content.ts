@@ -511,6 +511,27 @@ export const roadmap: Milestone[] = [
     ],
   },
   {
+    version: "v2.4.8",
+    title: "Security Backports and Buildx Fix",
+    emoji: "🔒",
+    status: "released",
+    items: [
+      "Applies a reloaded clients.allowed_cidrs to the dedicated admin listener",
+      "Refuses the writable-cgroups security option and gates inline seccomp profiles",
+      "Fixes mediated Buildx builds that failed at random with an unadmitted-ref error",
+      "Waits for hijacked sessions before closing audit and log sinks, so a long session's audit event is no longer lost",
+    ],
+  },
+  {
+    version: "v2.4.9",
+    title: "Podman Owner Isolation Fix",
+    emoji: "🔒",
+    status: "released",
+    items: [
+      "Owner isolation refuses libpod manifest list writes and POST /libpod/volumes/{name}/rename, which had no owner check",
+    ],
+  },
+  {
     version: "v3.0.0",
     title: "Verified TLS and Security Hardening",
     emoji: "🔐",
@@ -518,7 +539,7 @@ export const roadmap: Milestone[] = [
     items: [
       "Published v3.0.0-rc.8 candidate; select its image or /v3 Go tag explicitly. Includes the combined compatibility/hardening work, v2.4.5, v2.4.6 and v2.4.7 security fixes and Go 1.27.4",
       "Rejects the deprecated endpoint skip-verification setting and unverified Docker TLS fallback; configure the daemon CA and verified TLS",
-      "Go imports, generated descriptors and release builds use /v3; stable channels serve v2.4.7",
+      "Go imports, generated descriptors and release builds use /v3; stable channels serve v2.4.9",
       "The combined rc.8 includes the completed hardening work, v2.4.5, v2.4.6 and v2.4.7 security fixes and Go 1.27.4; owner-scoped Podman builds are refused and build-argument history entries are fully redacted when environment redaction is enabled",
       "The combined candidate needs fresh exact-source soak, TLS/security checks, published-image conformance and a new 14-day bake from publication. GA is no earlier than 14 days after rc.8 publishes, plus final release gates; opaque BuildKit removal remains undecided",
     ],
