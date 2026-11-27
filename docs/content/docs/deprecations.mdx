@@ -47,7 +47,6 @@ guidance; a rejected reload leaves the active policy running. v2 operators can
 migrate now without changing their v2 compatibility contract.
 
 The published candidate uses the `/v3` Go module path, including imports,
-generated descriptor options and build contracts. It has an independent validation
-and 14-day bake window; GA is no earlier than 14 days after rc.9 publishes.
-Candidate-only behavior fixes restart that window. See the
+generated descriptor options and build contracts. GA follows rc.9 after candidate
+validation: conformance, TLS/security checks and a 4-hour exact-source soak. See the
 [v3 migration guide](/migration#from-sockguard-v2-to-v3-release-candidate) for installation.

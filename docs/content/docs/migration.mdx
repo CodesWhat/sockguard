@@ -17,14 +17,14 @@ Owner-scoped creates use bounded in-process create-name locks, including single-
 
 | Line | Availability | Upgrade guidance |
 | --- | --- | --- |
-| v2.4.7 | Published stable | Keep normal Docker, deb/rpm and binary release channels. |
+| v2.4.9 | Published stable | Keep normal Docker, deb/rpm and binary release channels. |
 | v2.3.3 | End of life | The last v2.3 patch. It no longer receives security fixes, so upgrade to v2.4. |
-| v2.2.11 | End of life | The last v2.2 patch. It no longer receives security fixes, so upgrade to v2.4.7. |
-| v3.0.0-rc.9 | Published candidate | Select its image or `/v3` Go tag explicitly and migrate the removed TLS settings below. It carries the combined compatibility/hardening work and v2.4.5, v2.4.6 and v2.4.7 security fixes; its bake and validation are independent of v2.4. Stable channels serve v2.4.7. |
+| v2.2.11 | End of life | The last v2.2 patch. It no longer receives security fixes, so upgrade to v2.4.9. |
+| v3.0.0-rc.9 | Published candidate | Select its image or `/v3` Go tag explicitly and migrate the removed TLS settings below. It carries the combined compatibility/hardening work and v2.4.5 through v2.4.9 security fixes; GA follows candidate validation. Stable channels serve v2.4.9. |
 
 ## From Sockguard v2.1 to v2.2
 
-The v2.2 line is retired. Upgrade to v2.4.7 and validate the deployed
+The v2.2 line is retired. Upgrade to v2.4.9 and validate the deployed
 configuration before switching images. The v2.2 upgrade notes below are historical.
 That line retained the configuration surface, but intentional security fixes
 could deny requests that older patches forwarded:
@@ -58,9 +58,9 @@ before enabling external frontend execution.
 
 ## Upgrading to v2.4
 
-v2.4 is the current stable line. Pull `codeswhat/sockguard:2.4.7` or the
+v2.4 is the current stable line. Pull `codeswhat/sockguard:2.4.9` or the
 `latest` tag, install through deb/rpm or the release binaries, or run
-`go install github.com/codeswhat/sockguard/v2/app/cmd/sockguard@v2.4.7`. Go
+`go install github.com/codeswhat/sockguard/v2/app/cmd/sockguard@v2.4.9`. Go
 source builds require Go 1.27. Don't copy v2.4-only settings into an older
 binary.
 
@@ -74,8 +74,8 @@ identity remains a documented limit; use distinct UID/GID client profiles.
 ## From Sockguard v2 to v3 (release candidate)
 
 The current candidate, [v3.0.0-rc.9](https://github.com/CodesWhat/sockguard/releases/tag/v3.0.0-rc.9),
-is published. It combines the compatibility and hardening work, including v2.4.5, v2.4.6 and v2.4.7 security fixes and Go 1.27.4, with the TLS removals below.
-Use stable v2.4.7 for security-sensitive deployments while candidate validation continues. Published rc.6 retains its original identity; the combined fixes are in rc.9.
+is published. It combines the compatibility and hardening work, including v2.4.5 through v2.4.9 security fixes and Go 1.27.4, with the TLS removals below.
+Use stable v2.4.9 for security-sensitive deployments while candidate validation continues. Published rc.6 retains its original identity; the combined fixes are in rc.9.
 
 All v2 release lines retain their accepted settings.
 Before testing the v3 candidate:
@@ -105,12 +105,12 @@ go install github.com/codeswhat/sockguard/v3/app/cmd/sockguard@v3.0.0-rc.9
 
 The candidate module is `github.com/codeswhat/sockguard/v3`. Go consumers must
 change Sockguard import prefixes from `/v2` to `/v3`. Published v2 install commands retain `/v2`; stable Docker channels
-serve v2.4.7.
+serve v2.4.9.
 
 ### Combined candidate
 
 `v3.0.0-rc.9` is published with the compatibility and hardening work in one
-release. It includes the v2.4.5, v2.4.6 and v2.4.7 security fixes and Go 1.27.4.
+release. It includes the v2.4.5 through v2.4.9 security fixes and Go 1.27.4.
 
 - Owner-scoped Podman builds are refused on Docker-compatible, native and
   daemon-host routes in every rollout mode. `pullpolicy=never` cannot prevent
@@ -133,8 +133,7 @@ See the [configuration reference](/configuration) and [Podman guide](/podman)
 for the exact option scopes and the additional tmpfs and ownership restrictions.
 
 The combined candidate requires fresh exact-source four-hour soak and TLS/security
-checks, published-image conformance and a fresh 14-day bake from publication.
-GA is no earlier than 14 days after rc.9 publishes.
+checks, published-image conformance. GA follows rc.9 after candidate validation.
 Final release gates still apply; v2.3/v2.4 validation does not replace the
 combined candidate's evidence.
 

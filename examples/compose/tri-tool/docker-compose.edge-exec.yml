@@ -54,7 +54,7 @@
 
 services:
   sockguard:
-    image: "${SOCKGUARD_IMAGE:-codeswhat/sockguard:2.4.7}"
+    image: "${SOCKGUARD_IMAGE:-codeswhat/sockguard:2.4.9}"
     restart: unless-stopped
     read_only: true
     cap_drop:
