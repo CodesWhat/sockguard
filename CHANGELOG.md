@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.0.0-rc.9] - 2026-11-27
+
+Combined candidate carrying the dev/v3.2 work and the v2.4.9 fixes forward.
+
 ### Added
 
 - Add `request_body.exec.allowed_users` (env `SOCKGUARD_REQUEST_BODY_EXEC_ALLOWED_USERS`) to pin the exec `User`. Entries are trimmed and compared exactly against the request User, so there is no case folding and no group stripping: `app` does not admit `app:wheel`, and `""` does not admit `:5`. The empty string is a real entry meaning "User unset", where Docker runs the exec as the container's configured user. It is enforced on exec create and on the exec-start re-check, for both the Docker-compat and libpod routes, and sits on top of `allow_root_user` rather than replacing it. Config load rejects padded and duplicate entries. Default empty means no pin.

@@ -220,7 +220,7 @@ See [Security](/security#standard-buildx-dockerfile-builds).
 
 ## v3 compatibility boundary
 
-The current candidate, [v3.0.0-rc.8](https://github.com/CodesWhat/sockguard/releases/tag/v3.0.0-rc.8),
+The current candidate, [v3.0.0-rc.9](https://github.com/CodesWhat/sockguard/releases/tag/v3.0.0-rc.9),
 is published with the combined compatibility/hardening work and v2.4.5, v2.4.6 and v2.4.7 security fixes. The insecure endpoint
 TLS setting and unverified `DOCKER_TLS` fallback deprecated in v2.1 are rejected.
 The [deprecation ledger](/deprecations) owns the exact contracts. All v2 lines
@@ -234,12 +234,12 @@ Candidate release routing targets `dev/v3.0`. See
 [migration](/migration#from-sockguard-v2-to-v3-release-candidate) for explicit
 image and Go installation commands and TLS configuration changes.
 
-The combined `v3.0.0-rc.8` is published with the completed hardening work,
+The combined `v3.0.0-rc.9` is published with the completed hardening work,
 the v2.4.5, v2.4.6 and v2.4.7 security fixes and Go 1.27.4. It includes owner-scoped Podman
 build refusals and complete build-argument history redaction. Its candidate-only
 behavior changes require a fresh 14-day bake from publication, fresh four-hour
 soak and TLS/security checks on its exact source, and conformance against its
-published image. GA is no earlier than 14 days after rc.8 publishes, plus all required final release gates.
+published image. GA is no earlier than 14 days after rc.9 publishes, plus all required final release gates.
 The v2.3 and v2.4 clocks don't cover v3; those candidate sources, stable channels
 and their existing validation remain separate.
 
