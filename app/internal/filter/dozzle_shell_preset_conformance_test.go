@@ -202,3 +202,52 @@ func TestDozzleShellPresetProtectedTargetDenied(t *testing.T) {
 	fireDrydockCase(t, handler, presetCase{"exec-create-protected-denied", http.MethodPost, "/containers/proxy/exec", body, false})
 	fireDrydockCase(t, handler, presetCase{"exec-create-unprotected-allowed", http.MethodPost, "/containers/web/exec", body, true})
 }
+
+// TestDozzleShellPresetExecStartConfigUser covers images that set USER. Docker
+// stores the container's configured user as the User of an exec created with
+// none, so the start re-check sees "node" for a create that passed as "".
+func TestDozzleShellPresetExecStartConfigUser(t *testing.T) {
+	cfg, err := config.Load(filepath.Join("..", "..", "configs", "dozzle-with-shell.yaml"))
+	if err != nil {
+		t.Fatalf("load preset: %v", err)
+	}
+	const targetID = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+
+	cases := []struct {
+		name       string
+		storedUser string
+		configUser string
+		target     bool
+		want       int
+	}{
+		{"named-config-user-allowed", "node", "node", true, http.StatusOK},
+		{"numeric-config-user-allowed", "1000", "1000", true, http.StatusOK},
+		{"stored-differs-from-config-user-denied", "node", "app", true, http.StatusForbidden},
+		{"explicit-root-denied", "0", "", true, http.StatusForbidden},
+		// The preset allows root, and a create with no User on a USER 0 image is
+		// admitted, so the stored "0" that Docker fills in is too.
+		{"root-config-user-same-as-unset-allowed", "0", "0", true, http.StatusOK},
+		{"no-target-inspector-denied", "node", "node", false, http.StatusForbidden},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			handler := drydockPresetHandlerFromConfig(t, cfg, func(p *filter.PolicyConfig) {
+				p.Exec.InspectStart = func(context.Context, string) (filter.ExecInspectResult, bool, error) {
+					return filter.ExecInspectResult{ContainerID: targetID, Command: dozzleShellCmd, User: c.storedUser}, true, nil
+				}
+				if c.target {
+					p.Exec.InspectTarget = func(context.Context, string) (filter.ExecTargetInspectResult, bool, error) {
+						return filter.ExecTargetInspectResult{ContainerID: targetID, ConfigUser: c.configUser}, true, nil
+					}
+				}
+			})
+			req := httptest.NewRequest(http.MethodPost, "/exec/e1/start", strings.NewReader(`{"Detach":false,"Tty":true}`))
+			req.Header.Set("Content-Type", "application/json")
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+			if rec.Code != c.want {
+				t.Fatalf("status = %d, want %d (body %q)", rec.Code, c.want, strings.TrimSpace(rec.Body.String()))
+			}
+		})
+	}
+}

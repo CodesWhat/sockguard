@@ -1,10 +1,12 @@
 package cmd
 
 import (
-	"github.com/codeswhat/sockguard/v3/app/internal/config"
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/codeswhat/sockguard/v3/app/internal/config"
+	"github.com/codeswhat/sockguard/v3/app/internal/filter"
 )
 
 func TestPolicySuggestGolden(t *testing.T) {
@@ -42,7 +44,7 @@ func TestPolicySuggestMissingFile(t *testing.T) {
 }
 
 func TestPolicySuggestFromStdin(t *testing.T) {
-	rootCmd.SetIn(strings.NewReader(`{"msg":"request_would_deny","method":"GET","normalized_path":"/info","decision":"would_deny"}` + "\n"))
+	rootCmd.SetIn(strings.NewReader(`{"msg":"request_would_deny","method":"GET","normalized_path":"/info","decision":"would_deny","reason_code":"no_matching_allow_rule"}` + "\n"))
 	t.Cleanup(func() { rootCmd.SetIn(nil) })
 	stdout, _, err := executeRootCommand(t, "policy", "suggest", "--from", "-")
 	if err != nil {
@@ -66,7 +68,7 @@ func TestPolicySuggestNoWouldDeny(t *testing.T) {
 
 func TestCollectSuggestionsBounds(t *testing.T) {
 	long := `{"msg":"request_would_deny","method":"GET","normalized_path":"/` + strings.Repeat("a", suggestMaxLineBytes) + `"}`
-	in := long + "\n" + `{"msg":"request_would_deny","method":"GET","normalized_path":"/info"}` // no trailing newline
+	in := long + "\n" + `{"msg":"request_would_deny","method":"GET","normalized_path":"/info","reason_code":"no_matching_allow_rule"}` // no trailing newline
 	rules, stats, err := collectSuggestions(strings.NewReader(in))
 	if err != nil {
 		t.Fatal(err)
@@ -84,7 +86,7 @@ func TestCollectSuggestionsRuleCap(t *testing.T) {
 		b.WriteString(strings.Repeat("a", i%7))
 		b.WriteString("/n")
 		b.WriteString(strings.Repeat("b", i/7+1))
-		b.WriteString("\"}\n")
+		b.WriteString("\",\"reason_code\":\"no_matching_allow_rule\"}\n")
 	}
 	rules, stats, err := collectSuggestions(strings.NewReader(b.String()))
 	if err != nil {
@@ -104,13 +106,15 @@ func TestGeneralizeSuggestPath(t *testing.T) {
 		"/containers/abcdef01234/json":         "/containers/abcdef01234/json",
 		"/networks/" + strings.Repeat("a", 64): "/networks/*",
 		"/images/library:tag/json":             "/images/library:tag/json",
+		"/libpod/containers/abcdef012345/json": "/libpod/containers/*/json",
 	} {
 		got, ok := generalizeSuggestPath(in)
 		if !ok || got != want {
 			t.Errorf("%q = %q,%v want %q", in, got, ok, want)
 		}
 	}
-	for _, bad := range []string{"", "x", "/a/*", "/a/**", "/a/../b", "/a/./b", "/a b", "/a?x=1", "/a/", "/a%2fb", "/a\x00", "/[a]"} {
+	for _, bad := range []string{"", "x", "/a/*", "/a/**", "/a/../b", "/a/./b", "/a b", "/a?x=1", "/a/", "/a%2fb", "/a\x00", "/[a]",
+		"/0123456789ab", "/aaaaaaaaaaaa/bbbbbbbbbbbb", "/aaaaaaaaaaaa/containers", "/containers/aaaaaaaaaaaa/bbbbbbbbbbbb"} {
 		if got, ok := generalizeSuggestPath(bad); ok {
 			t.Errorf("%q accepted as %q", bad, got)
 		}
@@ -135,5 +139,104 @@ func TestPolicySuggestGoldenLoadsAsConfig(t *testing.T) {
 	}
 	if _, err := compileConfiguredRules(cfg.Rules); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestPolicySuggestNeverEmitsWildcardRoot(t *testing.T) {
+	in := strings.Join([]string{
+		`{"msg":"request_would_deny","method":"DELETE","normalized_path":"/aaaaaaaaaaaa/bbbbbbbbbbbb","decision":"would_deny","reason_code":"no_matching_allow_rule"}`,
+		`{"msg":"request_would_deny","method":"GET","normalized_path":"/0123456789ab","decision":"would_deny","reason_code":"no_matching_allow_rule"}`,
+		`{"msg":"request_would_deny","method":"POST","normalized_path":"/aaaaaaaaaaaa/bbbbbbbbbbbb/cccccccccccc","decision":"would_deny","reason_code":"no_matching_allow_rule"}`,
+	}, "\n")
+	rules, stats, err := collectSuggestions(strings.NewReader(in))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rules) != 0 || stats.WouldDeny != 3 || stats.Skipped != 3 {
+		t.Fatalf("rules=%d wouldDeny=%d skipped=%d, want 0, 3, 3", len(rules), stats.WouldDeny, stats.Skipped)
+	}
+	out, err := renderSuggestions(rules, stats)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "rules: []\n") {
+		t.Fatalf("output = %q, want rules: []", out)
+	}
+}
+
+func TestPolicySuggestGoldenNeverHasWildcardRoot(t *testing.T) {
+	golden, err := os.ReadFile("testdata/suggest_access.golden.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, line := range strings.Split(string(golden), "\n") {
+		if strings.Contains(line, "path:") && (strings.Contains(line, `path: "/*"`) || strings.Contains(line, "/*/*")) {
+			t.Errorf("golden rule widens to a wildcard root: %s", line)
+		}
+	}
+}
+
+// TestSuggestReasonCodesMatchFilter pins the values the log carries, which the
+// suggestion gate compares against.
+func TestSuggestReasonCodesMatchFilter(t *testing.T) {
+	if filter.ReasonCodeNoMatchingAllowRule != "no_matching_allow_rule" || filter.ReasonCodeMatchedDenyRule != "matched_deny_rule" {
+		t.Fatalf("reason codes drifted: %q, %q", filter.ReasonCodeNoMatchingAllowRule, filter.ReasonCodeMatchedDenyRule)
+	}
+}
+
+func TestPolicySuggestOnlyRuleLayerMissesBecomeRules(t *testing.T) {
+	in := strings.Join([]string{
+		`{"msg":"request_would_deny","method":"POST","normalized_path":"/containers/create","decision":"would_deny","reason_code":"request_body_policy_denied"}`,
+		`{"msg":"request_would_deny","method":"POST","normalized_path":"/containers/abcdef012345/exec","decision":"would_deny","reason_code":"matched_deny_rule"}`,
+		`{"msg":"request_would_deny","method":"GET","normalized_path":"/containers/json","decision":"would_deny","reason_code":"owner_policy_denied_access"}`,
+		`{"msg":"request_would_deny","method":"GET","normalized_path":"/containers/json","decision":"would_deny","reason_code":"rate_limit_exceeded"}`,
+		`{"msg":"request_would_deny","method":"GET","normalized_path":"/containers/json","decision":"would_deny"}`,
+	}, "\n")
+	rules, stats, err := collectSuggestions(strings.NewReader(in))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rules) != 0 || stats.WouldDeny != 5 || stats.ExplicitDeny != 1 || stats.OtherLayer != 4 || stats.Skipped != 0 {
+		t.Fatalf("rules=%d stats=%+v", len(rules), stats)
+	}
+	out, err := renderSuggestions(rules, stats)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"# 1 would-deny request(s) matched an explicit deny rule and were not suggested.",
+		"# 4 would-deny request(s) came from body inspection, ownership, visibility or rate limiting; an allow rule cannot fix these.",
+		"rules: []",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output missing %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestPolicySuggestKeepsProfilesApart(t *testing.T) {
+	in := strings.Join([]string{
+		`{"msg":"request_would_deny","method":"GET","normalized_path":"/info","decision":"would_deny","reason_code":"no_matching_allow_rule","profile":"watchtower"}`,
+		`{"msg":"request_would_deny","method":"GET","normalized_path":"/info","decision":"would_deny","reason_code":"no_matching_allow_rule","profile":"portainer"}`,
+		`{"msg":"request_would_deny","method":"GET","normalized_path":"/info","decision":"would_deny","reason_code":"no_matching_allow_rule","profile":"bad\nname"}`,
+	}, "\n")
+	rules, stats, err := collectSuggestions(strings.NewReader(in))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rules) != 3 {
+		t.Fatalf("rules = %d, want 3 (one per profile)", len(rules))
+	}
+	out, err := renderSuggestions(rules, stats)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"# profile: portainer\n", "# profile: watchtower\n", "# profile: (unprintable)\n", "belong under that profile"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output missing %q:\n%s", want, out)
+		}
+	}
+	if strings.Index(out, "profile: portainer") > strings.Index(out, "profile: watchtower") {
+		t.Errorf("rules not ordered by profile:\n%s", out)
 	}
 }

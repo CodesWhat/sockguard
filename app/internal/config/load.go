@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"reflect"
+	"slices"
 	"strings"
 
 	mapstructure "github.com/go-viper/mapstructure/v2"
@@ -74,8 +75,11 @@ func LoadWithData(configPath string) (*Config, []byte, error) {
 	if err := v.Unmarshal(&cfg); err != nil {
 		return nil, nil, err
 	}
+	if err := rejectEmptyEnvExecAllowedUsers(); err != nil {
+		return nil, nil, err
+	}
 
-	restoreRuleQueryKeys(&cfg, fileData)
+	restoreCaseSensitiveKeys(&cfg, fileData)
 
 	applyCompatEnvAliases(&cfg)
 
@@ -472,7 +476,7 @@ func LoadBytes(data []byte) (*Config, error) {
 		return nil, err
 	}
 
-	restoreRuleQueryKeys(&cfg, data)
+	restoreCaseSensitiveKeys(&cfg, data)
 
 	if err := decodeMutationsStrict(v, &cfg); err != nil {
 		return nil, err
@@ -501,6 +505,26 @@ func rejectRemovedUpstreamTLS(v *viper.Viper) error {
 				return fmt.Errorf("upstream.endpoints[%d].insecure_skip_tls_verify was removed in v3.0.0; remove the setting and configure tls.ca_file to verify the daemon", i)
 			}
 		}
+	}
+	return nil
+}
+
+const execAllowedUsersEnv = "SOCKGUARD_REQUEST_BODY_EXEC_ALLOWED_USERS"
+
+// rejectEmptyEnvExecAllowedUsers refuses an empty comma field in the env form
+// of request_body.exec.allowed_users. The empty entry means "User unset" and
+// can only be written in YAML as [""], but a trailing or doubled comma in the
+// env value (app, or app,,1000) would add it by accident and admit the
+// container's default user, which is root for most images. It runs at load
+// time because Validate can't tell an env-sourced "" from a deliberate YAML
+// one. Whitespace-only fields are left to the padding check in validate.go.
+func rejectEmptyEnvExecAllowedUsers() error {
+	raw, ok := os.LookupEnv(execAllowedUsersEnv)
+	if !ok || raw == "" {
+		return nil
+	}
+	if slices.Contains(strings.Split(raw, ","), "") {
+		return fmt.Errorf("%s has an empty entry (trailing or doubled comma); the unset-User entry can only be written in YAML as [\"\"]", execAllowedUsersEnv)
 	}
 	return nil
 }

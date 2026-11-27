@@ -126,7 +126,8 @@ func TestExecTargetDenyReason(t *testing.T) {
 			}
 			policy := newExecPolicy(opts)
 
-			gotID, reason, err := policy.targetDenyReason(context.Background(), tc.id)
+			gotTarget, reason, err := policy.targetDenyReason(context.Background(), tc.id)
+			gotID := gotTarget.ContainerID
 
 			if calls != tc.wantCalls {
 				t.Fatalf("inspector calls = %d, want %d", calls, tc.wantCalls)
@@ -151,6 +152,28 @@ func TestExecTargetDenyReason(t *testing.T) {
 			}
 			if reason != tc.wantReason {
 				t.Fatalf("reason = %q, want %q", reason, tc.wantReason)
+			}
+		})
+	}
+}
+
+func TestExecTargetInspectorDecodesConfigUser(t *testing.T) {
+	id := strings.Repeat("b", 64)
+	for _, tc := range []struct{ name, body, want string }{
+		{"named user", `{"Id":"` + id + `","Config":{"Labels":{},"User":"node"}}`, "node"},
+		{"numeric user with group", `{"Id":"` + id + `","Config":{"Labels":{},"User":"1000:1000"}}`, "1000:1000"},
+		{"no user", `{"Id":"` + id + `","Config":{"Labels":{}}}`, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			inspect := NewExecTargetInspectorWithRoundTripper(execRoundTripperFunc(func(*http.Request) (*http.Response, error) {
+				return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(tc.body))}, nil
+			}))
+			got, found, err := inspect(context.Background(), "web")
+			if err != nil || !found {
+				t.Fatalf("inspect = %+v, %v, %v", got, found, err)
+			}
+			if got.ConfigUser != tc.want {
+				t.Fatalf("ConfigUser = %q, want %q", got.ConfigUser, tc.want)
 			}
 		})
 	}

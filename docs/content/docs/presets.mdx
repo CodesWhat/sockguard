@@ -547,8 +547,10 @@ tab runs as the container's default user, but sockguard cannot pin the exec
 User on its own (`allow_root_user` must be true because Dozzle sends an empty
 User, read as root), so `allowed_users: [""]` pins it: a request with any
 explicit User, root included, is refused on create and on the exec-start
-re-check. The shell then runs as the container's configured user, which is
-still root for images that default to it. Treat the grant as a shell in every
+re-check. On exec start Docker reports the container's configured user for an
+unset User, and sockguard accepts that value as "unset", so the Shell tab works
+on images that set `USER`. The shell then runs as the container's configured
+user, which is still root for images that default to it. Treat the grant as a shell in every
 container Dozzle lists, put Dozzle behind its own authentication and limit the
 shell role. Containers labeled `com.sockguard.exec=deny` are always
 refused, including the official sockguard image. The Attach tab
@@ -617,9 +619,11 @@ Least-privilege access for [Arcane](https://github.com/getarcaneapp/arcane)'s re
 
 Derived from Arcane v3.1.1 (`backend/internal/docker/service.go`,
 `backend/internal/container/`). Arcane's detail page streams logs, so this
-preset sets `insecure_allow_read_exfiltration: true`. Logs are the only
-exfiltration route it allows; archive, export, attach and image save stay
-denied. Container env, mount paths and network addresses stay redacted, so
+preset sets `insecure_allow_read_exfiltration: true`. Logs and the process
+list are the exfiltration routes it allows; archive, export, attach and image
+save stay denied. `top` returns process command lines unredacted, so only the
+two fixed `ps_args` values Arcane sends are accepted and any other `ps_args` is
+refused, which keeps the container environment from being requested through it. Container env, mount paths and network addresses stay redacted, so
 Arcane's detail pages show placeholders or empty values for them.
 
 Unsupported, and refused: container actions (start, stop, restart, redeploy,
@@ -648,12 +652,15 @@ Derived from Arcane v3.1.1 (`backend/internal/container/service.go`,
 `backend/pkg/projects/`). Container create is bounded by
 `request_body.container_create`: privileged mode, host network, PID, IPC,
 user and cgroup namespaces, `container:<id>` and `ns:<path>` namespace joins,
-devices, capability additions, sysctls, unconfined seccomp and AppArmor, and
-published ports are refused. Bind mounts are refused outside
+devices, capability additions, sysctls, unconfined seccomp and AppArmor,
+unmasked system paths (`systempaths=unconfined`, `MaskedPaths` or
+`ReadonlyPaths` overrides), SELinux disable, and published ports are refused. Bind mounts are refused outside
 `allowed_bind_mounts`, which ships with the placeholder `/opt/arcane/projects`;
 replace it with the host paths your projects mount. The updater and redeploys
 recreate a container with its original mounts, so a container that binds a
 path outside the list can't be updated until you add it.
+
+Stop and restart requests carrying a `signal` query are denied, since Arcane sends none. The Engine API honors `?signal=` on both routes, so without the guard they would deliver arbitrary signals (a kill, or a `SIGSTOP` freeze), which the preset otherwise denies.
 
 `ownership.owner: arcane` stamps every container, network and volume Arcane
 creates and limits Arcane to resources carrying that label. Containers that
@@ -691,7 +698,9 @@ from Dockge 1.5.0 (`backend/stack.ts`) and Docker Compose v5.8.0
 `ownership.owner: dockge` stamps every container, network and volume Dockge
 creates and scopes Dockge to resources carrying the label, container-create
 inspection stays on its defaults (no privileged containers, host namespaces,
-extra capabilities or devices), and bind mounts are limited to `/opt/stacks`
+extra capabilities or devices) and also refuses `seccomp=unconfined`,
+`apparmor=unconfined`, `systempaths=unconfined` and SELinux disable, so a
+stack's `security_opt` can't strip those protections, and bind mounts are limited to `/opt/stacks`
 (match it to `DOCKGE_STACKS_DIR`). Logs are the exfiltration route Dockge
 needs, so the preset sets `insecure_allow_read_exfiltration: true`. Compose
 parses network IPs and reuses mounts from inspect data, so mount and network
@@ -761,7 +770,8 @@ with an owner label (Komodo doesn't have to set it) and hides every other
 container from it. Container-create inspection stays at its defaults, which
 refuse privileged containers, host network, PID, IPC and user namespaces, extra
 capabilities and devices, and the preset also sets `restrict_namespace_sharing`
-to deny `container:<ref>` joins. Bind mounts are limited to `/etc/komodo`
+to deny `container:<ref>` joins and refuses `seccomp=unconfined`,
+`apparmor=unconfined`, `systempaths=unconfined` and SELinux disable. Bind mounts are limited to `/etc/komodo`
 (Periphery's root directory), network and volume creates keep the default driver
 allowlist.
 
@@ -904,7 +914,7 @@ Least-privilege access for the Jenkins [Docker plugin](https://plugins.jenkins.i
 # Denies: every other Docker API route
 ```
 
-Derived from jenkinsci/docker-plugin `1337.v3ca_fd1b_b_25ef`. Container create is bounded by `request_body.container_create`: the image must exactly match an entry in `allowed_images` (replace the shipped `jenkins/inbound-agent` entry with your own, fully qualified), and privileged mode, host namespaces, bind mounts, devices, capability additions, sysctls, unconfined seccomp and AppArmor, published ports, and joining another container's namespaces are all refused. `ownership.owner` scopes list, inspect, stop and remove to containers created through the proxy, and force and anonymous-volume removal are allowed because the plugin uses both.
+Derived from jenkinsci/docker-plugin `1337.v3ca_fd1b_b_25ef`. Container create is bounded by `request_body.container_create`: the image must exactly match an entry in `allowed_images` (replace the shipped `jenkins/inbound-agent` entry with your own, fully qualified), and privileged mode, host namespaces, bind mounts, devices, capability additions, sysctls, unconfined seccomp and AppArmor, unmasked system paths, SELinux disable, published ports, and joining another container's namespaces are all refused. `ownership.owner` scopes list, inspect, stop and remove to containers created through the proxy, and force and anonymous-volume removal are allowed because the plugin uses both. Stop requests carrying a `signal` query are denied, since the plugin sends none and the Engine API would otherwise let them deliver arbitrary signals.
 
 Not supported, and refused: the Attach connector (exec and archive copy), the SSH connector (archive copy and published ports), the plugin's log read on disconnect, template options that need host mounts or `--volumes-from`, and docker-workflow's `docker.image().inside()` and `docker.build()`, which run the `docker` CLI with host bind mounts, exec and top. Anyone who can edit an agent template can still run the allowed image with any command and environment; pin images by digest and restrict who can configure clouds and templates. See the [compose example](https://github.com/CodesWhat/sockguard/tree/main/examples/compose/jenkins).
 
@@ -930,7 +940,7 @@ Unsupported, and refused by the proxy:
 - Privileged steps, including admin-trusted plugins that set `privileged: true` (docker-in-docker, buildx).
 - Host bind mounts from a trusted repo's `volumes:` and from `WOODPECKER_BACKEND_DOCKER_VOLUMES`, until you add narrow `allowed_bind_mounts` entries.
 - `WOODPECKER_BACKEND_DOCKER_NETWORK`, because the agent does not own a pre-existing network.
-- `extra_hosts`, devices, added capabilities, sysctls and published ports.
+- `extra_hosts`, devices, added capabilities, sysctls, unmasked system paths (`systempaths=unconfined`, `MaskedPaths` or `ReadonlyPaths` overrides), SELinux disable and published ports.
 - The kubernetes and local backends (they do not use the Docker socket), and Windows engines and Podman (untested).
 
 Residual risk: steps still run arbitrary images and commands from every pipeline the agent accepts, as root unless a step sets `user`, with outbound network access. Sockguard stops them reaching the host or another owner's resources, it does not make an untrusted pipeline safe. Restrict the proxy socket to the agent process.

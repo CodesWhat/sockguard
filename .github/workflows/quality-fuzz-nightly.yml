@@ -138,6 +138,10 @@ jobs:
           - { name: FuzzLibpodPodCreate,                     pkg: ./internal/filter/ }
           - { name: FuzzLibpodVolumeCreate,                  pkg: ./internal/filter/ }
           - { name: FuzzLibpodNetworkCreate,                 pkg: ./internal/filter/ }
+          - { name: FuzzRemapBindSourcePath,                 pkg: ./internal/filter/ }
+          - { name: FuzzDeviceRequestGrant,                  pkg: ./internal/filter/ }
+          - { name: FuzzExecAllowedUsers,                    pkg: ./internal/filter/ }
+          - { name: FuzzPolicySuggest,                       pkg: ./internal/cmd/ }
           - { name: FuzzValidateFsutilPath,                  pkg: ./internal/buildkitproxy/ }
           - { name: FuzzParseGRPCPath,                       pkg: ./internal/buildkitproxy/ }
           - { name: FuzzReadGRPCFrame,                       pkg: ./internal/buildkitproxy/ }

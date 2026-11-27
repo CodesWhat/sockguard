@@ -135,3 +135,83 @@ func TestExactDeviceRequestOptionsLoadAndMap(t *testing.T) {
 		t.Errorf("device requests = %+v", reqs)
 	}
 }
+
+func loadDeviceOptionsYAML(t *testing.T, yaml string) *Config {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "sockguard.yaml")
+	if err := os.WriteFile(path, []byte(yaml), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if err := Validate(cfg); err != nil {
+		t.Fatalf("Validate() error = %v", err)
+	}
+	return cfg
+}
+
+func TestExactDeviceRequestOptionsKeepKeyCase(t *testing.T) {
+	cfg := loadDeviceOptionsYAML(t, `request_body:
+  container_create:
+    allowed_device_requests:
+      - driver: nvidia
+        allowed_capabilities: [["gpu"]]
+        options:
+          Visible: "0"
+          NVIDIA_Thing: X
+clients:
+  profiles:
+    - name: gpu
+      rules:
+        - match: { method: GET, path: "/_ping" }
+          action: allow
+      request_body:
+        container_create:
+          allowed_device_requests:
+            - driver: nvidia
+              options:
+                CamelKey: 1
+`)
+	top := cfg.RequestBody.ToFilterOptions().ContainerCreate.AllowedDeviceRequests
+	if len(top) != 1 || !reflect.DeepEqual(top[0].Options, map[string]string{"Visible": "0", "NVIDIA_Thing": "X"}) {
+		t.Errorf("top level options = %+v", top)
+	}
+	profile := cfg.Clients.Profiles[0].RequestBody.ToFilterOptions().ContainerCreate.AllowedDeviceRequests
+	if len(profile) != 1 || !reflect.DeepEqual(profile[0].Options, map[string]string{"CamelKey": "1"}) {
+		t.Errorf("profile options = %+v", profile)
+	}
+}
+
+func TestExactDeviceRequestOptionsKeysDifferingByCaseBothSurvive(t *testing.T) {
+	cfg := loadDeviceOptionsYAML(t, `request_body:
+  container_create:
+    allowed_device_requests:
+      - driver: nvidia
+        options:
+          Visible: "0"
+          visible: "1"
+`)
+	got := cfg.RequestBody.ToFilterOptions().ContainerCreate.AllowedDeviceRequests[0].Options
+	if !reflect.DeepEqual(got, map[string]string{"Visible": "0", "visible": "1"}) {
+		t.Errorf("options = %+v, want both spellings with their own values", got)
+	}
+}
+
+func TestExactDeviceRequestOptionsNonScalarStillFails(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sockguard.yaml")
+	yaml := `request_body:
+  container_create:
+    allowed_device_requests:
+      - driver: nvidia
+        options:
+          Visible: ["0"]
+`
+	if err := os.WriteFile(path, []byte(yaml), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(path); err == nil {
+		t.Fatal("Load() accepted a non-scalar option value")
+	}
+}

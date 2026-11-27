@@ -18,6 +18,9 @@
 #   - Privileged steps are refused. Woodpecker sets HostConfig.Privileged from
 #     a step's `privileged: true`, which only an admin-trusted plugin may use.
 #     Those pipelines (docker-in-docker, buildx) are not supported here.
+#   - Unconfined seccomp and AppArmor, unmasked system paths
+#     (systempaths=unconfined, MaskedPaths and ReadonlyPaths overrides) and
+#     SELinux disable are refused. The docker backend sends none of them.
 #   - Host namespaces, devices, capability additions, sysctls and published
 #     ports are all refused. The docker backend sets none of them.
 #   - Bind mounts are refused (allowed_bind_mounts is empty). Woodpecker mounts
@@ -81,6 +84,8 @@ request_body:
     allowed_capabilities: []
     deny_unconfined_seccomp: true
     deny_unconfined_apparmor: true
+    deny_unconfined_system_paths: true
+    deny_selinux_disable: true
     allow_sysctls: false
     deny_published_ports: true
 

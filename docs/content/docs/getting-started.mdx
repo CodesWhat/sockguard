@@ -75,18 +75,18 @@ This guide uses a unix socket because it is the simplest secure deployment. If y
 
 ### Published v3 release candidate
 
-[v3.0.0-rc.9](https://github.com/CodesWhat/sockguard/releases/tag/v3.0.0-rc.9)
-is available for testing. Select `ghcr.io/codeswhat/sockguard:3.0.0-rc.9`
+[v3.0.0-rc.10](https://github.com/CodesWhat/sockguard/releases/tag/v3.0.0-rc.10)
+is available for testing. Select `ghcr.io/codeswhat/sockguard:3.0.0-rc.10`
 explicitly, download its platform binary from that release, or install it with Go 1.27:
 
 ```bash
-go install github.com/codeswhat/sockguard/v3/app/cmd/sockguard@v3.0.0-rc.9
+go install github.com/codeswhat/sockguard/v3/app/cmd/sockguard@v3.0.0-rc.10
 ```
 
 Go consumers must use `/v3` imports; v2 candidate tags retain `/v2`. See the
 [v3 migration guidance](/migration#from-sockguard-v2-to-v3-release-candidate)
 before validating an existing configuration. The stable installation channels
-above serve v2.4.9. GA follows rc.9 after candidate validation: conformance
+above serve v2.4.9. GA follows rc.10 after candidate validation: conformance
 against the published image, TLS/security checks and a 4-hour exact-source soak.
 
 ## Connecting Your Apps
@@ -219,8 +219,14 @@ sockguard policy suggest --from /var/log/sockguard/access.jsonl > suggested-rule
 ```
 
 Use `--from -` to read stdin. The command reads only `request_would_deny`
-lines, groups them by method and normalized path, and prints a YAML `rules:`
-snippet to stdout. It never writes a config file and nothing it prints is
+lines, groups them by profile, method and normalized path, and prints a YAML
+`rules:` snippet to stdout. Only would-denies with `reason_code:
+no_matching_allow_rule` become rules. A would-deny from an explicit deny rule, or
+from body inspection, ownership, visibility or rate limiting, is counted in a
+header comment and the summary but never suggested, because an allow rule would
+override a deliberate deny or couldn't fix it. Each rule shows the profile the
+traffic came from; rules from a named profile belong under that profile, not the
+root `rules:` list. It never writes a config file and nothing it prints is
 active until you copy it in, so treat every rule as a suggestion that needs
 review. Each rule carries a comment saying so, and write methods are flagged.
 
@@ -229,7 +235,10 @@ What it will and won't include:
 - Only the method and the normalized path are read. Query strings, headers,
   bodies, client addresses and request IDs never reach the output.
 - Segments that are 12 to 64 lowercase hex characters (container, exec and
-  network IDs) become `*`. Names stay literal, since a name can't be told from
+  network IDs) become `*`, but only right after a literal resource segment
+  (`/containers/<id>/logs`). A path that starts with an ID, or has two IDs in
+  a row, is skipped, so one odd request can't turn into an allow-everything
+  rule such as `GET /*`. Names stay literal, since a name can't be told from
   a path word.
 - A path containing glob characters, `..`, encoded bytes or anything outside
   letters, digits and `-_.~:` is skipped and counted, never emitted.

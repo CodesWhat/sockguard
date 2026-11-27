@@ -58,7 +58,7 @@ jobs:
       - name: Setup Node (for release scripts)
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
         with:
-          node-version: 24
+          node-version: 26
           package-manager-cache: false
 
       # Keep HELM_VERSION and HELM_SHA256 identical to release-from-tag.yml's

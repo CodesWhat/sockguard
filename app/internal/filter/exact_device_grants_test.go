@@ -2,6 +2,8 @@ package filter
 
 import (
 	"fmt"
+	"math"
+	"strings"
 	"testing"
 )
 
@@ -171,5 +173,68 @@ func TestLibpodGPUGrantHasNoOptionsChannel(t *testing.T) {
 		if got := inspectLibpod(t, policy, body); got == "" {
 			t.Errorf("gpus %q was allowed", gpu)
 		}
+	}
+}
+
+// TestDockerDeviceRequestCountCeiling pins that max_count and a numeric count
+// stay ceilings: any negative Count means "all devices" to the daemon, and
+// DeviceIDs name devices without going through Count at all, so neither may
+// slip past a bounded entry.
+func TestDockerDeviceRequestCountCeiling(t *testing.T) {
+	gpu := [][]string{{"gpu"}}
+	nv := func(maxCount *int) AllowedDeviceRequestEntry {
+		return AllowedDeviceRequestEntry{Driver: "nvidia", AllowedCapabilities: gpu, MaxCount: maxCount}
+	}
+	tests := []struct {
+		name   string
+		entry  AllowedDeviceRequestEntry
+		req    string
+		denied bool
+	}{
+		{"max 1, count -2", nv(intPtr(1)), `{"Driver":"nvidia","Count":-2,"Capabilities":[["gpu"]]}`, true},
+		{"max 1, count min int", nv(intPtr(1)), fmt.Sprintf(`{"Driver":"nvidia","Count":%d,"Capabilities":[["gpu"]]}`, math.MinInt), true},
+		{"max 0, count -5", nv(intPtr(0)), `{"Driver":"nvidia","Count":-5,"Capabilities":[["gpu"]]}`, true},
+		{"max 1, count -1", nv(intPtr(1)), `{"Driver":"nvidia","Count":-1,"Capabilities":[["gpu"]]}`, true},
+		{"max -1, count -2", nv(intPtr(-1)), `{"Driver":"nvidia","Count":-2,"Capabilities":[["gpu"]]}`, false},
+		{"max -1, count -1", nv(intPtr(-1)), `{"Driver":"nvidia","Count":-1,"Capabilities":[["gpu"]]}`, false},
+		{"max -1, count 3", nv(intPtr(-1)), `{"Driver":"nvidia","Count":3,"Capabilities":[["gpu"]]}`, false},
+		{"max 2, count 2", nv(intPtr(2)), `{"Driver":"nvidia","Count":2,"Capabilities":[["gpu"]]}`, false},
+		{"max 2, count 3", nv(intPtr(2)), `{"Driver":"nvidia","Count":3,"Capabilities":[["gpu"]]}`, true},
+		{"no ceiling, count -2", nv(nil), `{"Driver":"nvidia","Count":-2,"Capabilities":[["gpu"]]}`, false},
+		{"max 1, count 0, ids all", nv(intPtr(1)), `{"Driver":"nvidia","Count":0,"DeviceIDs":["all"],"Capabilities":[["gpu"]]}`, true},
+		{"max 1, count 0, ids list", nv(intPtr(1)), `{"Driver":"nvidia","Count":0,"DeviceIDs":["0","1"],"Capabilities":[["gpu"]]}`, true},
+		{"max 1, ids all", nv(intPtr(1)), `{"Driver":"nvidia","DeviceIDs":["all"],"Capabilities":[["gpu"]]}`, true},
+		{"max 1, ids 0..3", nv(intPtr(1)), `{"Driver":"nvidia","DeviceIDs":["0","1","2","3"],"Capabilities":[["gpu"]]}`, true},
+		{"max 1, ids comma list", nv(intPtr(1)), `{"Driver":"nvidia","DeviceIDs":["0,1"],"Capabilities":[["gpu"]]}`, true},
+		{"max 1, count 1", nv(intPtr(1)), `{"Driver":"nvidia","Count":1,"Capabilities":[["gpu"]]}`, false},
+		{"exact count 0, ids all", AllowedDeviceRequestEntry{Driver: "nvidia", Count: intPtr(0)}, `{"Driver":"nvidia","DeviceIDs":["all"]}`, true},
+		{"max -1, ids all", AllowedDeviceRequestEntry{Driver: "nvidia", MaxCount: intPtr(-1)}, `{"Driver":"nvidia","DeviceIDs":["all"]}`, false},
+		{"cdi max 1, ids all", AllowedDeviceRequestEntry{Driver: "cdi", MaxCount: intPtr(1)}, `{"Driver":"cdi","DeviceIDs":["nvidia.com/gpu=all"]}`, true},
+		{"device_ids grant, no ceiling", AllowedDeviceRequestEntry{Driver: "nvidia", DeviceIDs: []string{"GPU-a"}}, `{"Driver":"nvidia","DeviceIDs":["GPU-a"]}`, false},
+		{"legacy entry still accepts any ids", AllowedDeviceRequestEntry{Driver: "nvidia"}, `{"Driver":"nvidia","DeviceIDs":["all"]}`, false},
+	}
+	for _, path := range []string{"/containers/create", "/v1.47/containers/create"} {
+		for _, tc := range tests {
+			t.Run(fmt.Sprintf("%s/%s", path, tc.name), func(t *testing.T) {
+				cfg := PolicyConfig{ContainerCreate: ContainerCreateOptions{AllowedDeviceRequests: []AllowedDeviceRequestEntry{tc.entry}}}
+				body := fmt.Sprintf(`{"HostConfig":{"DeviceRequests":[%s]}}`, tc.req)
+				assertFilterCreateRoundTrip(t, path, body, cfg, tc.denied)
+			})
+		}
+	}
+}
+
+// TestDeviceRequestCountNegativeIsAllDevices drives the issue's scenario
+// through the create inspector and checks the deny reason.
+func TestDeviceRequestCountNegativeIsAllDevices(t *testing.T) {
+	policy := newContainerCreatePolicy(ContainerCreateOptions{AllowedDeviceRequests: []AllowedDeviceRequestEntry{
+		{Driver: "nvidia", AllowedCapabilities: [][]string{{"gpu"}}, MaxCount: intPtr(1)},
+	}})
+	reason, err := policy.inspect(nil, makeInspectRequest(t, `{"HostConfig":{"DeviceRequests":[{"Driver":"nvidia","Count":-2,"Capabilities":[["gpu"]]}]}}`), "/containers/create")
+	if err != nil {
+		t.Fatalf("inspect: %v", err)
+	}
+	if reason == "" || !strings.Contains(reason, "not permitted by the allowlist") {
+		t.Fatalf("reason = %q, want a not-permitted-by-the-allowlist deny", reason)
 	}
 }

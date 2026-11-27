@@ -509,7 +509,7 @@ func (f *Filter) modifyNetworkInspect(resp *http.Response) error {
 }
 
 func (f *Filter) modifyVolumeList(resp *http.Response) error {
-	if !f.opts.RedactMountPaths {
+	if !f.redactsVolumes() {
 		return nil
 	}
 
@@ -531,14 +531,16 @@ func (f *Filter) modifyVolumeList(resp *http.Response) error {
 		if !ok {
 			return rejectResponse(fmt.Errorf("volume entry has unexpected type %T", volumeValue))
 		}
-		redactStringField(volume, "Mountpoint")
+		if err := f.redactVolume(volume); err != nil {
+			return rejectResponse(err)
+		}
 	}
 
 	return writeResponseBody(resp, payload)
 }
 
 func (f *Filter) modifyVolumeInspect(resp *http.Response) error {
-	if !f.opts.RedactMountPaths {
+	if !f.redactsVolumes() {
 		return nil
 	}
 
@@ -547,8 +549,47 @@ func (f *Filter) modifyVolumeInspect(resp *http.Response) error {
 		return rejectResponse(err)
 	}
 
-	redactStringField(payload, "Mountpoint")
+	if err := f.redactVolume(payload); err != nil {
+		return rejectResponse(err)
+	}
 	return writeResponseBody(resp, payload)
+}
+
+// redactsVolumes reports whether any option rewrites a volume object.
+// Mountpoint follows redact_mount_paths, driver Options follow either
+// redact_mount_paths or redact_sensitive_data.
+func (f *Filter) redactsVolumes() bool {
+	return f.opts.RedactMountPaths || f.opts.RedactSensitiveData
+}
+
+// redactVolume applies the volume redactions to one volume object: Mountpoint
+// under redact_mount_paths, driver Options under either option.
+func (f *Filter) redactVolume(volume map[string]any) error {
+	if f.opts.RedactMountPaths {
+		redactStringField(volume, "Mountpoint")
+	}
+	return redactVolumeDriverOptions(volume)
+}
+
+// redactVolumeDriverOptions blanks the values of a volume's driver Options
+// map and keeps the keys. The local driver's options carry host paths
+// (device) and, for CIFS and NFS volumes, credentials (o). Clients decode the
+// map as map[string]string, so the string placeholder decodes cleanly and the
+// UI still shows which options are set. A missing or null Options is left
+// alone; any other shape is rejected so an unexpected body fails closed.
+func redactVolumeDriverOptions(volume map[string]any) error {
+	value, ok := volume["Options"]
+	if !ok || value == nil {
+		return nil
+	}
+	options, ok := value.(map[string]any)
+	if !ok {
+		return fmt.Errorf("volume Options has unexpected type %T", value)
+	}
+	for key := range options {
+		options[key] = redactedValue
+	}
+	return nil
 }
 
 // tableEntry describes one list or inspect endpoint that follows the uniform
@@ -808,7 +849,7 @@ func redactFieldAnyShape(payload map[string]any, key string) {
 }
 
 func (f *Filter) modifySystemDataUsage(resp *http.Response) error {
-	if !f.opts.RedactMountPaths && !f.opts.RedactNetworkTopology {
+	if !f.opts.RedactMountPaths && !f.opts.RedactNetworkTopology && !f.opts.RedactSensitiveData {
 		return nil
 	}
 	return modifyMapResponse(resp, f.redactSystemDataUsagePayload)
@@ -1420,7 +1461,7 @@ func (f *Filter) redactSystemDataUsageContainers(payload map[string]any) error {
 }
 
 func (f *Filter) redactSystemDataUsageVolumes(payload map[string]any) error {
-	if !f.opts.RedactMountPaths {
+	if !f.redactsVolumes() {
 		return nil
 	}
 	volumes, err := systemDataUsageItems(payload, "VolumeUsage", "Volumes")
@@ -1428,7 +1469,9 @@ func (f *Filter) redactSystemDataUsageVolumes(payload map[string]any) error {
 		return err
 	}
 	for _, volume := range volumes {
-		redactStringField(volume, "Mountpoint")
+		if err := f.redactVolume(volume); err != nil {
+			return err
+		}
 	}
 	return nil
 }
