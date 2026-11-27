@@ -14,6 +14,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/codeswhat/sockguard/v3/app/internal/config"
+	"github.com/codeswhat/sockguard/v3/app/internal/filter"
 	"github.com/codeswhat/sockguard/v3/app/internal/logging"
 )
 
@@ -54,7 +55,14 @@ characters) are generalized to "*" only after a literal resource segment, and
 paths that start with an ID or have consecutive IDs are skipped; names are kept
 literal. Input is bounded in
 line length and line count, and the output is compiled with the real rule
-compiler before it is printed.`,
+compiler before it is printed.
+
+Only would-denies that no allow rule matched (reason_code
+no_matching_allow_rule) are suggested. A would-deny from an explicit deny rule,
+body inspection, ownership, visibility or rate limiting is counted and left
+out, since an allow rule would override a deliberate deny or can't fix it. Each
+rule is annotated with the profile the traffic came from; rules from a named
+profile belong under that profile, not the root.`,
 	Args: cobra.NoArgs,
 	RunE: runPolicySuggest,
 }
@@ -70,14 +78,33 @@ type suggestStats struct {
 	Lines        int
 	WouldDeny    int
 	Skipped      int
+	ExplicitDeny int
+	OtherLayer   int
 	Truncated    bool
 	DroppedRules int
 }
 
 type suggestKey struct {
-	method string
-	path   string
+	profile string
+	method  string
+	path    string
 }
+
+// suggestOutcome says what a would-deny record turned into.
+type suggestOutcome int
+
+const (
+	suggestNotWouldDeny suggestOutcome = iota
+	suggestRuleOK
+	// suggestUnsafe is a rule-layer miss whose method or path can't be turned
+	// into a safe rule.
+	suggestUnsafe
+	// suggestExplicitDeny matched a deliberate deny rule.
+	suggestExplicitDeny
+	// suggestOtherLayer was denied by something other than the rule layer, or
+	// carries no reason_code, so an allow rule can't be the fix.
+	suggestOtherLayer
+)
 
 type suggestRule struct {
 	suggestKey
@@ -108,8 +135,8 @@ func runPolicySuggest(cmd *cobra.Command, _ []string) error {
 	if _, err := io.WriteString(cmd.OutOrStdout(), out); err != nil {
 		return err
 	}
-	fmt.Fprintf(cmd.ErrOrStderr(), "read %d lines, %d would-deny, %d suggested rules, %d skipped\n",
-		stats.Lines, stats.WouldDeny, len(rules), stats.Skipped)
+	fmt.Fprintf(cmd.ErrOrStderr(), "read %d lines, %d would-deny, %d suggested rules, %d skipped, %d explicit deny, %d other layer\n",
+		stats.Lines, stats.WouldDeny, len(rules), stats.Skipped, stats.ExplicitDeny, stats.OtherLayer)
 	return nil
 }
 
@@ -137,11 +164,16 @@ func collectSuggestions(r io.Reader) ([]suggestRule, suggestStats, error) {
 
 		if tooLong {
 			stats.Skipped++
-		} else if key, ok, wouldDeny := parseSuggestLine(line); wouldDeny {
+		} else if key, outcome := parseSuggestLine(line); outcome != suggestNotWouldDeny {
 			stats.WouldDeny++
-			if ok {
+			switch outcome {
+			case suggestRuleOK:
 				counts[key]++
-			} else {
+			case suggestExplicitDeny:
+				stats.ExplicitDeny++
+			case suggestOtherLayer:
+				stats.OtherLayer++
+			default:
 				stats.Skipped++
 			}
 		}
@@ -155,6 +187,9 @@ func collectSuggestions(r io.Reader) ([]suggestRule, suggestStats, error) {
 		rules = append(rules, suggestRule{suggestKey: k, count: n})
 	}
 	sort.Slice(rules, func(i, j int) bool {
+		if rules[i].profile != rules[j].profile {
+			return rules[i].profile < rules[j].profile
+		}
 		if rules[i].path != rules[j].path {
 			return rules[i].path < rules[j].path
 		}
@@ -190,31 +225,40 @@ func readBoundedLine(br *bufio.Reader, max int) (line []byte, tooLong bool, err 
 	}
 }
 
-// parseSuggestLine decodes only the fields the suggestion needs. wouldDeny is
-// false for any line that is not a would-deny record. ok is false when it is
-// one but its path or method cannot be turned into a safe rule.
-func parseSuggestLine(line []byte) (key suggestKey, ok bool, wouldDeny bool) {
+// parseSuggestLine decodes only the fields the suggestion needs. Only a
+// would-deny whose reason_code is no_matching_allow_rule can become a rule: an
+// allowlist rather than a denylist, so a guard added later fails safe.
+func parseSuggestLine(line []byte) (key suggestKey, outcome suggestOutcome) {
 	var rec struct {
-		Msg      string `json:"msg"`
-		Method   string `json:"method"`
-		Path     string `json:"normalized_path"`
-		Decision string `json:"decision"`
+		Msg        string `json:"msg"`
+		Method     string `json:"method"`
+		Path       string `json:"normalized_path"`
+		Decision   string `json:"decision"`
+		ReasonCode string `json:"reason_code"`
+		Profile    string `json:"profile"`
 	}
 	if err := json.Unmarshal(line, &rec); err != nil {
-		return key, false, false
+		return key, suggestNotWouldDeny
 	}
 	if rec.Msg != suggestMsgWouldDeny && rec.Decision != logging.DecisionWouldDeny {
-		return key, false, false
+		return key, suggestNotWouldDeny
+	}
+	switch rec.ReasonCode {
+	case filter.ReasonCodeNoMatchingAllowRule:
+	case filter.ReasonCodeMatchedDenyRule:
+		return key, suggestExplicitDeny
+	default:
+		return key, suggestOtherLayer
 	}
 	method := strings.ToUpper(rec.Method)
 	if !safeSuggestMethod(method) {
-		return key, false, true
+		return key, suggestUnsafe
 	}
 	path, pathOK := generalizeSuggestPath(rec.Path)
 	if !pathOK {
-		return key, false, true
+		return key, suggestUnsafe
 	}
-	return suggestKey{method: method, path: path}, true, true
+	return suggestKey{profile: rec.Profile, method: method, path: path}, suggestRuleOK
 }
 
 func safeSuggestMethod(m string) bool {
@@ -306,6 +350,18 @@ func renderSuggestions(rules []suggestRule, stats suggestStats) (string, error) 
 	b.WriteString("# SUGGESTION ONLY. Generated from warn/audit access-log traffic.\n")
 	b.WriteString("# Review every rule before use. Nothing here is active until you copy it into your config.\n")
 	b.WriteString("# Only method and normalized path were read; query values, headers and bodies are never included.\n")
+	if stats.ExplicitDeny > 0 {
+		fmt.Fprintf(&b, "# %d would-deny request(s) matched an explicit deny rule and were not suggested.\n", stats.ExplicitDeny)
+	}
+	if stats.OtherLayer > 0 {
+		fmt.Fprintf(&b, "# %d would-deny request(s) came from body inspection, ownership, visibility or rate limiting; an allow rule cannot fix these.\n", stats.OtherLayer)
+	}
+	for _, r := range rules {
+		if r.profile != "" {
+			b.WriteString("# Rules marked with a profile belong under that profile's rules, not the root rules list.\n")
+			break
+		}
+	}
 	if stats.DroppedRules > 0 {
 		fmt.Fprintf(&b, "# %d further distinct rules were left out (limit %d).\n", stats.DroppedRules, suggestMaxRules)
 	}
@@ -323,9 +379,27 @@ func renderSuggestions(rules []suggestRule, stats suggestStats) (string, error) 
 			note = " Write method: confirm this call is really needed."
 		}
 		fmt.Fprintf(&b, "  # Suggestion, requires review: seen %d time(s) as would-deny.%s\n", r.count, note)
+		if r.profile != "" {
+			fmt.Fprintf(&b, "  # profile: %s\n", suggestProfileLabel(r.profile))
+		}
 		fmt.Fprintf(&b, "  - match: { method: %s, path: %q }\n", cfgRules[i].Match.Method, cfgRules[i].Match.Path)
 		b.WriteString("    action: allow\n")
 		fmt.Fprintf(&b, "    reason: %q\n", cfgRules[i].Reason)
 	}
 	return b.String(), nil
+}
+
+// suggestProfileLabel returns a profile name that is safe to print in a
+// comment: the same conservative byte set as paths, else a placeholder, so a
+// logged name can't break out of the comment line.
+func suggestProfileLabel(name string) string {
+	if len(name) > 64 {
+		return "(unprintable)"
+	}
+	for i := 0; i < len(name); i++ {
+		if !suggestPathByte(name[i]) {
+			return "(unprintable)"
+		}
+	}
+	return name
 }

@@ -221,8 +221,14 @@ sockguard policy suggest --from /var/log/sockguard/access.jsonl > suggested-rule
 ```
 
 Use `--from -` to read stdin. The command reads only `request_would_deny`
-lines, groups them by method and normalized path, and prints a YAML `rules:`
-snippet to stdout. It never writes a config file and nothing it prints is
+lines, groups them by profile, method and normalized path, and prints a YAML
+`rules:` snippet to stdout. Only would-denies with `reason_code:
+no_matching_allow_rule` become rules. A would-deny from an explicit deny rule, or
+from body inspection, ownership, visibility or rate limiting, is counted in a
+header comment and the summary but never suggested, because an allow rule would
+override a deliberate deny or couldn't fix it. Each rule shows the profile the
+traffic came from; rules from a named profile belong under that profile, not the
+root `rules:` list. It never writes a config file and nothing it prints is
 active until you copy it in, so treat every rule as a suggestion that needs
 review. Each rule carries a comment saying so, and write methods are flagged.
 
