@@ -80,6 +80,12 @@ rules:
     action: allow
   - match: { method: GET, path: "/containers/*/stats" }
     action: allow
+  # ps_args reaches the daemon host's ps, and its `e` flag prints each
+  # process's environment, which would undo env redaction. The consumer sends
+  # no ps_args, so any request carrying one is refused before the allow.
+  - match: { method: GET, path: "/containers/*/top", query: { ps_args: ["*"] } }
+    action: deny
+    reason: "caller-selected ps_args are not allowed by the portwing-with-exec preset"
   - match: { method: GET, path: "/containers/*/top" }
     action: allow
   - match: { method: GET, path: "/containers/*/changes" }

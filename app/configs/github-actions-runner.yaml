@@ -118,6 +118,10 @@ request_body:
     # disable the default seccomp or AppArmor profiles.
     deny_unconfined_seccomp: true
     deny_unconfined_apparmor: true
+    # Unmasked system paths (systempaths=unconfined, MaskedPaths and
+    # ReadonlyPaths overrides) and SELinux disable expose host /proc and /sys.
+    deny_unconfined_system_paths: true
+    deny_selinux_disable: true
 
     # Sysctls — denied by default; uncomment if integration tests need
     # specific kernel parameters (e.g. net.ipv4.ip_forward).
