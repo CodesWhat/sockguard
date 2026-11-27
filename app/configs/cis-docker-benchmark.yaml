@@ -102,6 +102,10 @@ request_body:
     # AppArmor-must-be-enabled control, but the docker-cis tool and
     # most CIS-aligned guides expect AppArmor unconfined to be denied.
     deny_unconfined_apparmor: true
+    # Unmasked system paths (systempaths=unconfined, MaskedPaths and
+    # ReadonlyPaths overrides) and SELinux disable expose host /proc and /sys.
+    deny_unconfined_system_paths: true
+    deny_selinux_disable: true
     # Sysctls: rare in CIS-aligned deployments. Off by default; flip
     # only if you allowlist the specific sysctls your workload needs.
     allow_sysctls: false

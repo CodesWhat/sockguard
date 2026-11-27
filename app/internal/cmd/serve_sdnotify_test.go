@@ -147,8 +147,14 @@ func TestRunServeStopsWatchdogPingsWhileUpstreamDown(t *testing.T) {
 	sigCh, done := startServeForNotify(t, newWatchdogExitDeps(shortSocketPath(t, "sdn-down")))
 
 	waitFor(t, "READY=1", func() bool { return notes.count("READY=1") == 1 })
-	// Let the watchdog record the outage, then require the pings to stop.
-	time.Sleep(150 * time.Millisecond)
+	// Let the watchdog record the outage, then require the pings to stop. A
+	// loaded runner can delay the outage probe well past a fixed sleep, so wait
+	// for a quiet stretch instead of assuming one by wall clock.
+	waitFor(t, "WATCHDOG=1 pings to go quiet", func() bool {
+		seen := notes.count("WATCHDOG=1")
+		time.Sleep(100 * time.Millisecond)
+		return notes.count("WATCHDOG=1") == seen
+	})
 	before := notes.count("WATCHDOG=1")
 	time.Sleep(200 * time.Millisecond)
 	if after := notes.count("WATCHDOG=1"); after != before {

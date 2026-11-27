@@ -188,7 +188,8 @@ any remote Docker agent that needs lifecycle control, image pull, and event stre
 # insecure_allow_read_exfiltration=true — required because GET /containers/*/logs and
 # GET /containers/*/top are allowed (Portwing's GetContainerLogs() and process view); logs can
 # carry secrets and top returns process command lines. Drop those rules and this
-# flag to harden. /containers/*/archive, /export, /attach stay denied (bulk-exfil paths).
+# flag to harden. top requests carrying ps_args are denied, because ps_args reaches the
+# host's ps and its `e` flag prints each process's environment. /containers/*/archive, /export, /attach stay denied (bulk-exfil paths).
 # Response redactions disabled (redact_mount_paths=false, redact_container_env=false,
 # redact_network_topology=false) — required for drydock passthrough topology so
 # inspect data forwarded to drydock is not corrupted by "<redacted>" placeholders
@@ -848,6 +849,9 @@ socket access to spawn `jobs.*.container` + `jobs.*.services` containers.
 
 **Use for:** self-hosted GitHub Actions runners that handle untrusted
 workflows (i.e. anything from a fork PR or a low-trust org member).
+Container creates are also refused when they set `systempaths=unconfined`,
+override `MaskedPaths` or `ReadonlyPaths`, or disable SELinux
+(`deny_unconfined_system_paths`, `deny_selinux_disable`).
 
 ```yaml
 # Allows: container lifecycle, exec, attach, log streaming (GET /containers/*/logs),
@@ -875,6 +879,12 @@ build + service + helper containers per CI job and uses `docker exec`
 to inject job steps.
 
 **Use for:** GitLab Runner deployments handling untrusted CI jobs.
+
+The runner sends no `ps_args` on `GET /containers/*/top`, so a request that
+carries one is denied. `ps_args` reaches the host's `ps`, and its `e` flag
+prints each process's environment, which would undo env redaction. Container
+creates are also refused when they set `systempaths=unconfined`, override
+`MaskedPaths` or `ReadonlyPaths`, or disable SELinux.
 
 ```yaml
 # Allows: container lifecycle, exec, attach, log streaming (GET /containers/*/logs),
@@ -953,7 +963,8 @@ Section 5 (Container Runtime) controls.
 
 **Use for:** any deployment that has to evidence CIS posture — every
 non-compliant `docker run` is rejected at the API boundary with `403`
-before dockerd executes it.
+before dockerd executes it. Unmasked system paths (`systempaths=unconfined`,
+`MaskedPaths` or `ReadonlyPaths` overrides) and SELinux disable are refused too.
 
 ```yaml
 # Enforces CIS 5.3, 5.4, 5.5, 5.9, 5.10, 5.11, 5.12, 5.15, 5.16, 5.17,
@@ -1011,7 +1022,10 @@ native `GET /libpod/pods/{id}/top`, which carries the same global guard but is
 not part of this preset's pod read surface. The flag is global rather than
 per-rule, so anything you add to this preset later that the exfiltration
 catalog covers, container logs being the obvious one, is admitted without a
-fresh startup refusal to warn you. Point
+fresh startup refusal to warn you. A monitoring consumer needs no custom
+`ps_args` (the `e` flag prints each process's environment, undoing env
+redaction), so any `top` request carrying `ps_args` is denied on both
+surfaces. Point
 `upstream.socket` at either a rootful
 (`/run/podman/podman.sock`) or rootless (`$XDG_RUNTIME_DIR/podman/podman.sock`)
 Podman socket; the rule set itself doesn't change.

@@ -456,6 +456,12 @@ jobs:
           CI: "true"
         run: npm run test:e2e
 
+      # Performance and accessibility must stay >= 90 on the home page and one
+      # docs page of the static export. Uses the image's Chromium.
+      - name: Lighthouse gate (performance and accessibility >= 90)
+        working-directory: website
+        run: npm run test:lighthouse
+
       - name: Upload Playwright report
         if: failure()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
