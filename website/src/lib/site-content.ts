@@ -536,11 +536,11 @@ export const roadmap: Milestone[] = [
     emoji: "🔐",
     status: "candidate",
     items: [
-      "Published v3.0.0-rc.9 candidate; select its image or /v3 Go tag explicitly. Includes the combined compatibility/hardening work, v2.4.5 through v2.4.9 security fixes and Go 1.27.4",
+      "Published v3.0.0-rc.10 candidate; select its image or /v3 Go tag explicitly. Includes the combined compatibility/hardening work, v2.4.5 through v2.4.9 security fixes and Go 1.27.4",
       "Rejects the deprecated endpoint skip-verification setting and unverified Docker TLS fallback; configure the daemon CA and verified TLS",
       "Go imports, generated descriptors and release builds use /v3; stable channels serve v2.4.9",
-      "The combined rc.9 includes the completed hardening work, v2.4.5 through v2.4.9 security fixes and Go 1.27.4; owner-scoped Podman builds are refused and build-argument history entries are fully redacted when environment redaction is enabled",
-      "The combined candidate needs a 4-hour exact-source soak, TLS/security checks, published-image conformance. GA follows rc.9 after that validation, plus final release gates; opaque BuildKit removal remains undecided",
+      "The combined rc.10 includes the completed hardening work, v2.4.5 through v2.4.9 security fixes and Go 1.27.4; owner-scoped Podman builds are refused and build-argument history entries are fully redacted when environment redaction is enabled",
+      "The combined candidate needs a 4-hour exact-source soak, TLS/security checks, published-image conformance. GA follows rc.10 after that validation, plus final release gates; opaque BuildKit removal remains undecided",
     ],
   },
 ];
