@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed
+
+- The Homebrew cask is deprecated and no longer published. Release archives still include the macOS binaries, but the `codeswhat/tap/sockguard` cask gets no new versions; run Sockguard from the Docker image.
+
 ## [2.4.9] - 2026-11-23
 
 v2.4.9 fixes an owner-isolation gap on Podman's manifest list and volume rename routes. It carries v2.4.8.
