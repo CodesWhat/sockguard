@@ -154,6 +154,9 @@ func Bootstrap(opts Options) (*Result, error) {
 	out = append(out, serverFiles...)
 
 	for _, name := range clients {
+		if err := refuseExistingFileNameCollision(dir, name); err != nil {
+			return nil, cleanupDir(dir, created, err)
+		}
 		files, action, err := ensureLeaf(dir, ca, leafSpec{
 			certName: ClientCertFileName(name), keyName: ClientKeyFileName(name),
 			commonName: name, dns: []string{name}, usage: x509.ExtKeyUsageClientAuth,
@@ -237,7 +240,65 @@ func normalizeClients(in []string) ([]string, error) {
 		out = append(out, n)
 	}
 	sort.Strings(out)
+	if err := rejectFileNameCollisions(out); err != nil {
+		return nil, err
+	}
 	return out, nil
+}
+
+// rejectFileNameCollisions refuses client names whose derived files land on
+// the same path. Client X's key file (client-X-key.pem) is the certificate
+// file of client "X-key", so provisioning both would overwrite X's private key
+// with the other client's certificate and report success for both. names is
+// sorted, so the message is deterministic.
+func rejectFileNameCollisions(names []string) error {
+	owner := make(map[string]string, 2*len(names))
+	for _, n := range names {
+		for _, f := range []string{ClientCertFileName(n), ClientKeyFileName(n)} {
+			if other, ok := owner[f]; ok && other != n {
+				return fmt.Errorf("--client %q and --client %q collide: both would write %s; rename one of them", other, n, f)
+			}
+			owner[f] = n
+		}
+	}
+	return nil
+}
+
+// refuseExistingFileNameCollision is the cross-run half of
+// rejectFileNameCollisions: a client whose certificate file is the private key
+// file of an already provisioned client, or whose key file is the certificate
+// file of one, is refused. --force does not override it, since reissuing would
+// destroy the other client's key or certificate.
+func refuseExistingFileNameCollision(dir, name string) error {
+	if base, ok := strings.CutSuffix(name, "-key"); ok && base != "" {
+		exists, err := fileExists(filepath.Join(dir, ClientCertFileName(base)))
+		if err != nil {
+			return err
+		}
+		if exists {
+			return fmt.Errorf("client %q: %s is the private key file of existing client %q; choose another name", name, ClientCertFileName(name), base)
+		}
+	}
+	exists, err := fileExists(filepath.Join(dir, ClientKeyFileName(name+"-key")))
+	if err != nil {
+		return err
+	}
+	if exists {
+		return fmt.Errorf("client %q: %s is the certificate file of existing client %q; choose another name", name, ClientKeyFileName(name), name+"-key")
+	}
+	return nil
+}
+
+func fileExists(path string) (bool, error) {
+	_, err := os.Lstat(path)
+	switch {
+	case err == nil:
+		return true, nil
+	case errors.Is(err, os.ErrNotExist):
+		return false, nil
+	default:
+		return false, fmt.Errorf("check %s: %w", path, err)
+	}
 }
 
 // prepareDir creates dir with mode 0700, or checks an existing one. An
@@ -482,6 +543,15 @@ func encodePair(certName, keyName string, der []byte, key *ecdsa.PrivateKey) ([]
 func commit(dir string, files []file) error {
 	if len(files) == 0 {
 		return nil
+	}
+	// Two entries on one path would stage both and let the later rename
+	// overwrite the earlier one while reporting success for each.
+	seenNames := make(map[string]struct{}, len(files))
+	for _, f := range files {
+		if _, dup := seenNames[f.name]; dup {
+			return fmt.Errorf("internal error: duplicate output file %s", f.name)
+		}
+		seenNames[f.name] = struct{}{}
 	}
 	type staged struct{ tmp, final, backup string }
 	var steps []staged
