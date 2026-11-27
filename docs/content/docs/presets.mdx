@@ -617,9 +617,11 @@ Least-privilege access for [Arcane](https://github.com/getarcaneapp/arcane)'s re
 
 Derived from Arcane v3.1.1 (`backend/internal/docker/service.go`,
 `backend/internal/container/`). Arcane's detail page streams logs, so this
-preset sets `insecure_allow_read_exfiltration: true`. Logs are the only
-exfiltration route it allows; archive, export, attach and image save stay
-denied. Container env, mount paths and network addresses stay redacted, so
+preset sets `insecure_allow_read_exfiltration: true`. Logs and the process
+list are the exfiltration routes it allows; archive, export, attach and image
+save stay denied. `top` returns process command lines unredacted, so only the
+two fixed `ps_args` values Arcane sends are accepted and any other `ps_args` is
+refused, which keeps the container environment from being requested through it. Container env, mount paths and network addresses stay redacted, so
 Arcane's detail pages show placeholders or empty values for them.
 
 Unsupported, and refused: container actions (start, stop, restart, redeploy,

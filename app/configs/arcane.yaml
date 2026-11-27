@@ -28,13 +28,18 @@ health:
   enabled: true
   path: /health
 
-# Arcane's container detail page streams container logs, which are an
-# explicit read-exfiltration route.
+# Arcane's container detail page streams container logs and lists processes
+# through top. Both are read-exfiltration routes, so the flag is needed for
+# each. top returns process command lines unredacted, which is why ps_args
+# is pinned below.
 insecure_allow_read_exfiltration: true
 
 # Response redaction stays on (the defaults). Container env, mount paths and
 # network addresses are redacted, so Arcane's detail pages show placeholders
 # or empty values for them.
+# Logs and the process list are the exfiltration routes it allows. The
+# process list is returned unredacted, so ps_args is refused and the
+# environment can't be requested through it.
 
 rules:
   # Arcane pings the daemon to negotiate the API version.
@@ -64,8 +69,20 @@ rules:
     action: allow
   - match: { method: GET, path: "/containers/*/stats" }
     action: allow
-  - match: { method: GET, path: "/containers/*/top" }
+  # ps_args reaches the daemon host's ps, and its `e` flag prints each
+  # process's environment, which would undo env redaction. Arcane sends one
+  # of two fixed values (containerProcessesPsArgs in v3.1.1), so only those
+  # are allowed; any other ps_args, a duplicate key or an unparseable query
+  # falls through to the deny.
+  - match:
+      method: GET
+      path: "/containers/*/top"
+      query:
+        ps_args: ["-eo pid,user,%cpu,%mem,etime,cmd", "-o pid,user,etime,args"]
     action: allow
+  - match: { method: GET, path: "/containers/*/top", query: { ps_args: ["*"] } }
+    action: deny
+    reason: "caller-selected ps_args are not allowed by the arcane preset"
   - match: { method: GET, path: "/containers/*/logs" }
     action: allow
 
