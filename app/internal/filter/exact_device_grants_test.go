@@ -127,3 +127,49 @@ func TestLibpodExactCDIDeviceGrants(t *testing.T) {
 		})
 	}
 }
+
+// TestDockerDeviceRequestExactOptions pins the exact Options contract on the
+// bare and versioned create routes.
+func TestDockerDeviceRequestExactOptions(t *testing.T) {
+	entry := AllowedDeviceRequestEntry{Driver: "nvidia", Count: intPtr(1), Options: map[string]string{"visible": "0"}}
+	tests := []struct {
+		name   string
+		entry  AllowedDeviceRequestEntry
+		req    string
+		denied bool
+	}{
+		{"listed pair", entry, `{"Driver":"nvidia","Count":1,"Options":{"visible":"0"}}`, false},
+		{"no options", entry, `{"Driver":"nvidia","Count":1}`, false},
+		{"empty options", entry, `{"Driver":"nvidia","Count":1,"Options":{}}`, false},
+		{"other value", entry, `{"Driver":"nvidia","Count":1,"Options":{"visible":"1"}}`, true},
+		{"unlisted key", entry, `{"Driver":"nvidia","Count":1,"Options":{"visible":"0","mig":"all"}}`, true},
+		{"only unlisted key", entry, `{"Driver":"nvidia","Count":1,"Options":{"mig":"all"}}`, true},
+		{"key case differs", entry, `{"Driver":"nvidia","Count":1,"Options":{"Visible":"0"}}`, true},
+		{"value padded", entry, `{"Driver":"nvidia","Count":1,"Options":{"visible":"0 "}}`, true},
+		{"legacy entry accepts any options", AllowedDeviceRequestEntry{Driver: "nvidia"}, `{"Driver":"nvidia","Options":{"x":"y"}}`, false},
+		{"cdi ids with unlisted option", AllowedDeviceRequestEntry{Driver: "cdi", DeviceIDs: []string{"nvidia.com/gpu=0"}, Options: map[string]string{"a": "b"}}, `{"Driver":"cdi","DeviceIDs":["nvidia.com/gpu=0"],"Options":{"c":"d"}}`, true},
+		{"cdi ids with listed option", AllowedDeviceRequestEntry{Driver: "cdi", DeviceIDs: []string{"nvidia.com/gpu=0"}, Options: map[string]string{"a": "b"}}, `{"Driver":"cdi","DeviceIDs":["nvidia.com/gpu=0"],"Options":{"a":"b"}}`, false},
+	}
+	for _, path := range []string{"/containers/create", "/v1.47/containers/create"} {
+		for _, tc := range tests {
+			t.Run(fmt.Sprintf("%s/%s", path, tc.name), func(t *testing.T) {
+				cfg := PolicyConfig{ContainerCreate: ContainerCreateOptions{AllowedDeviceRequests: []AllowedDeviceRequestEntry{tc.entry}}}
+				body := fmt.Sprintf(`{"HostConfig":{"DeviceRequests":[%s]}}`, tc.req)
+				assertFilterCreateRoundTrip(t, path, body, cfg, tc.denied)
+			})
+		}
+	}
+}
+
+// TestLibpodGPUGrantHasNoOptionsChannel pins that a libpod gpus string can't
+// smuggle options past the exact list: a value carrying extra settings is a
+// different string and is denied.
+func TestLibpodGPUGrantHasNoOptionsChannel(t *testing.T) {
+	policy := newLibpodContainerCreatePolicy(LibpodContainerCreateOptions{AllowedGPUs: []string{"nvidia.com/gpu=0"}})
+	for _, gpu := range []string{"nvidia.com/gpu=0,visible=1", "nvidia.com/gpu=0,", "nvidia.com/gpu=0 "} {
+		body := []byte(fmt.Sprintf(`{"image":"alpine:latest","systemd":"false","gpus":[%q]}`, gpu))
+		if got := inspectLibpod(t, policy, body); got == "" {
+			t.Errorf("gpus %q was allowed", gpu)
+		}
+	}
+}

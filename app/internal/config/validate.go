@@ -2244,6 +2244,11 @@ func validateContainerCreateConfig(prefix string, cfg ContainerCreateRequestBody
 		if len(entry.DeviceIDs) > 0 && entry.Count != nil && *entry.Count != 0 {
 			errs = append(errs, fmt.Sprintf("%s.container_create.allowed_device_requests[%d] cannot set device_ids with a non-zero count: Docker rejects a request carrying both", prefix, i))
 		}
+		for key := range entry.Options {
+			if key == "" || key != strings.TrimSpace(key) {
+				errs = append(errs, fmt.Sprintf("%s.container_create.allowed_device_requests[%d].options keys must be non-empty without surrounding whitespace, got %q", prefix, i, key))
+			}
+		}
 		if entry.MaxCount != nil && *entry.MaxCount < -1 {
 			errs = append(errs, fmt.Sprintf("%s.container_create.allowed_device_requests[%d].max_count must be -1 or a non-negative integer, got %d", prefix, i, *entry.MaxCount))
 		}
@@ -2294,6 +2299,18 @@ func validateExecConfig(prefix string, cfg ExecRequestBodyConfig) []string {
 			continue
 		}
 		errs = append(errs, fmt.Sprintf("%s.exec.allowed_commands entries must contain at least one non-empty argv token, got entry %d", prefix, i+1))
+	}
+	seenUsers := make(map[string]struct{}, len(cfg.AllowedUsers))
+	for i, user := range cfg.AllowedUsers {
+		if user != strings.TrimSpace(user) {
+			errs = append(errs, fmt.Sprintf("%s.exec.allowed_users entry %d must not have leading or trailing whitespace", prefix, i+1))
+			continue
+		}
+		if _, dup := seenUsers[user]; dup {
+			errs = append(errs, fmt.Sprintf("%s.exec.allowed_users entry %d is a duplicate of an earlier entry", prefix, i+1))
+			continue
+		}
+		seenUsers[user] = struct{}{}
 	}
 	for _, name := range cfg.AllowedEnvVars {
 		if validExecEnvVarName(name) {

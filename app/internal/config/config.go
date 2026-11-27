@@ -975,6 +975,10 @@ type AllowedDeviceRequest struct {
 	DeviceIDs []string `mapstructure:"device_ids"`
 	// Count, when set, requires the request Count to equal it exactly.
 	Count *int `mapstructure:"count"`
+	// Options, when non-empty, lists the only DeviceRequest Options entries
+	// the request may carry. Keys and values match byte for byte; any other
+	// entry is denied. A request with no Options still matches.
+	Options map[string]string `mapstructure:"options"`
 }
 
 // ExecRequestBodyConfig configures body inspection for exec creation/start.
@@ -982,6 +986,12 @@ type ExecRequestBodyConfig struct {
 	AllowPrivileged bool       `mapstructure:"allow_privileged"`
 	AllowRootUser   bool       `mapstructure:"allow_root_user"`
 	AllowedCommands [][]string `mapstructure:"allowed_commands"`
+	// AllowedUsers, when non-empty, pins the exec User to these exact values
+	// (whitespace-trimmed, case-sensitive, no group stripping). The empty
+	// string is a valid entry meaning "User unset". It applies on top of
+	// allow_root_user, which still decides whether a root or empty User
+	// passes. Default empty means no pin.
+	AllowedUsers []string `mapstructure:"allowed_users"`
 	// AllowedEnvVars, when non-empty, restricts the exec-create Env array to
 	// these variable names — matched by name only (the substring before the
 	// first "="), exact string comparison, case-sensitive; the value is

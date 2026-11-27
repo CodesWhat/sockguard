@@ -73,6 +73,49 @@ After=sockguard.service
 From the host, `podman volume inspect sockguard-socket --format '{{.Mountpoint}}'`
 gives the directory that holds `sockguard.sock`.
 
+## Example: Traefik as a Quadlet consumer
+
+`examples/quadlet/traefik/` adds Traefik as a second rootless container that
+reads the Podman socket through sockguard and never touches `podman.sock`:
+
+| File | Purpose |
+|---|---|
+| `sockguard.yaml` | The [Traefik preset](/docs/presets#traefik-traefikyaml) with `upstream.socket` pointed at the kit's Podman socket mount and the listener in the kit's socket volume |
+| `traefik.container` | Traefik, on port 8080, with the filtered socket mounted read-only |
+| `traefik.network` | A private `traefik` network shared with the services it routes to |
+| `whoami.container` | A throwaway labelled backend to check the wiring |
+
+Install them next to the kit's units, replacing the kit policy with the
+Traefik one:
+
+```bash
+cp examples/quadlet/traefik/{traefik.container,traefik.network,whoami.container} ~/.config/containers/systemd/
+cp examples/quadlet/traefik/sockguard.yaml ~/.config/sockguard/sockguard.yaml
+
+systemctl --user daemon-reload
+systemctl --user restart sockguard.service
+systemctl --user start traefik.service whoami.service
+curl -H 'Host: whoami.localhost' http://127.0.0.1:8080/
+```
+
+Traefik's Docker provider calls `ServerVersion`, `Events`, `ContainerList` and
+`ContainerInspect` ([`pkg/provider/docker/pdocker.go`](https://github.com/traefik/traefik/blob/v3.8.0/pkg/provider/docker/pdocker.go)
+and [`shared.go`](https://github.com/traefik/traefik/blob/v3.8.0/pkg/provider/docker/shared.go)
+at v3.8.0), which map to `/version`, `/events`, `/containers/json` and
+`/containers/{id}/json`. Those are the only container routes the preset allows,
+and Podman serves them on its Docker-compatible API. Network, service, task
+and node lookups are Swarm-only and don't apply to Podman.
+
+The provider endpoint defaults to `unix:///var/run/docker.sock`, so the unit
+sets `--providers.docker.endpoint` to the volume path. Traefik routes to a
+container's address on a network it shares, so `--providers.docker.network`
+names the `traefik` network and every routed service joins it. The preset sets
+`response.redact_network_topology: false` for the same reason: with addresses
+redacted Traefik has nothing to route to.
+
+The kit's smoke test only checks that these units parse with Quadlet. It
+doesn't start Traefik.
+
 ## Adjust the policy
 
 The bundled policy is read-only on purpose. Swap in one of the

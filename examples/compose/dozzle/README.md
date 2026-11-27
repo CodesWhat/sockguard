@@ -39,7 +39,7 @@ To get Dozzle's start, stop and restart buttons, point the sockguard service at 
 To get Dozzle's Shell tab, point the sockguard service at `app/configs/dozzle-with-shell.yaml` and set `DOZZLE_ENABLE_SHELL=true` on the Dozzle service. The preset allows exec create, start and resize, and pins `request_body.exec.allowed_commands` to the one command Dozzle v11.5.0 sends for every shell: `sh -c "command -v bash >/dev/null 2>&1 && exec bash || exec sh"`. Any other exec command is refused.
 
 - The pin limits what starts, not what is typed afterwards. Anyone who can open the Shell tab has a shell in every container Dozzle lists, so set `DOZZLE_AUTH_PROVIDER` and limit who holds the shell role.
-- `allow_root_user` is on because Dozzle sets no exec User and sockguard treats an empty User as root. Containers labeled `com.sockguard.exec=deny` (the official sockguard image carries it) are always refused.
+- `allow_root_user` is on because Dozzle sets no exec User and sockguard treats an empty User as root; `allowed_users: [""]` then refuses any explicit User, so the shell runs as the container's configured user. Containers labeled `com.sockguard.exec=deny` (the official sockguard image carries it) are always refused.
 - The Attach tab stays denied. It feeds stdin to the container's main process and the exec allowlist does not cover it.
 - The actions and shell variants are separate. To run both, merge the exec rules and `request_body.exec` block of the shell preset into the actions preset by hand.
 

@@ -73,6 +73,12 @@ func TestExactDeviceGrantsValidation(t *testing.T) {
 		{"ids with non-zero count", func(c *Config) {
 			c.RequestBody.ContainerCreate.AllowedDeviceRequests = []AllowedDeviceRequest{{Driver: "cdi", DeviceIDs: []string{"a.b/c=d"}, Count: intPtr(1)}}
 		}, "cannot set device_ids with a non-zero count"},
+		{"padded option key", func(c *Config) {
+			c.RequestBody.ContainerCreate.AllowedDeviceRequests = []AllowedDeviceRequest{{Driver: "nvidia", Options: map[string]string{" visible": "0"}}}
+		}, "allowed_device_requests[0].options keys must be non-empty"},
+		{"empty option key", func(c *Config) {
+			c.RequestBody.ContainerCreate.AllowedDeviceRequests = []AllowedDeviceRequest{{Driver: "nvidia", Options: map[string]string{"": "0"}}}
+		}, "allowed_device_requests[0].options keys must be non-empty"},
 		{"empty gpu", func(c *Config) {
 			c.RequestBody.LibpodContainerCreate.AllowedGPUs = []string{""}
 		}, "libpod_container_create.allowed_gpus[0] must be a non-empty value"},
@@ -92,5 +98,40 @@ func TestExactDeviceGrantsValidation(t *testing.T) {
 				t.Fatalf("Validate() = %v, want error containing %q", err, tc.want)
 			}
 		})
+	}
+}
+
+// exactNvidiaSingleGPUYAML is the NVIDIA single-GPU example shipped in the
+// configuration docs. The test keeps the documented grant loadable.
+const exactNvidiaSingleGPUYAML = `request_body:
+  container_create:
+    allowed_device_requests:
+      - driver: cdi
+        device_ids: ["nvidia.com/gpu=0"]
+      - driver: nvidia
+        count: 1
+        allowed_capabilities:
+          - ["gpu"]
+        options:
+          visible: "0"
+  libpod_container_create:
+    allowed_gpus: ["nvidia.com/gpu=0"]
+`
+
+func TestExactDeviceRequestOptionsLoadAndMap(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sockguard.yaml")
+	if err := os.WriteFile(path, []byte(exactNvidiaSingleGPUYAML), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if err := Validate(cfg); err != nil {
+		t.Fatalf("Validate() error = %v", err)
+	}
+	reqs := cfg.RequestBody.ToFilterOptions().ContainerCreate.AllowedDeviceRequests
+	if len(reqs) != 2 || reqs[0].Options != nil || !reflect.DeepEqual(reqs[1].Options, map[string]string{"visible": "0"}) {
+		t.Errorf("device requests = %+v", reqs)
 	}
 }

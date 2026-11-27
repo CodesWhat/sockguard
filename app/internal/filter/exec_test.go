@@ -1735,3 +1735,91 @@ func TestMiddlewareDeniesSignedRootUserOnLibpodExecCreate(t *testing.T) {
 		})
 	}
 }
+
+func TestExecDenyReasonAllowedUsers(t *testing.T) {
+	cmd := []string{"sh", "-c", "id"}
+	tests := []struct {
+		name   string
+		users  []string
+		root   bool
+		user   string
+		denied bool
+	}{
+		{"no pin admits any user", nil, true, "0", false},
+		{"unset pin admits empty", []string{""}, true, "", false},
+		{"unset pin denies whitespace-only", []string{""}, true, "  ", true},
+		{"named pin denies padded request", []string{"app"}, true, " app", true},
+		{"unset pin denies root", []string{""}, true, "root", true},
+		{"unset pin denies uid 0", []string{""}, true, "0", true},
+		{"unset pin denies 0:0", []string{""}, true, "0:0", true},
+		{"unset pin denies named user", []string{""}, true, "app", true},
+		{"unset pin denies group-only user", []string{""}, true, ":5", true},
+		{"named pin admits exact", []string{"app"}, true, "app", false},
+		{"named pin is case sensitive", []string{"app"}, true, "APP", true},
+		{"named pin denies group suffix", []string{"app"}, true, "app:wheel", true},
+		{"named pin denies padded uid", []string{"1000"}, true, "01000", true},
+		{"multi pin admits second", []string{"", "app"}, true, "app", false},
+		{"root still gated by allow_root_user", []string{"", "app"}, false, "", true},
+		{"root user pin needs allow_root_user", []string{"root"}, false, "root", true},
+		{"root user pin with allow_root_user", []string{"root"}, true, "root", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p := newExecPolicy(ExecOptions{
+				AllowRootUser:   tt.root,
+				AllowedUsers:    tt.users,
+				AllowedCommands: [][]string{cmd},
+			})
+			got := p.denyReason(ExecInspectResult{Command: cmd, User: tt.user})
+			if tt.denied && got == "" {
+				t.Fatalf("User %q admitted, want denied", tt.user)
+			}
+			if !tt.denied && got != "" {
+				t.Fatalf("User %q denied (%s), want admitted", tt.user, got)
+			}
+		})
+	}
+}
+
+func TestExecAllowedUsersCoversCreateStartAndLibpod(t *testing.T) {
+	cmd := []string{"sh", "-c", "id"}
+	stored := map[string]ExecInspectResult{
+		"unset": {Command: cmd},
+		"root":  {Command: cmd, User: "0"},
+	}
+	inspect := func(_ context.Context, id string) (ExecInspectResult, bool, error) {
+		r, ok := stored[id]
+		return r, ok, nil
+	}
+	p := newExecPolicy(ExecOptions{
+		AllowRootUser:      true,
+		AllowedUsers:       []string{""},
+		AllowedCommands:    [][]string{cmd},
+		InspectStart:       inspect,
+		InspectStartLibpod: inspect,
+	})
+
+	post := func(path, body string) string {
+		req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
+		reason, err := p.inspect(slog.New(slog.NewTextHandler(io.Discard, nil)), req, path)
+		if err != nil {
+			t.Fatalf("%s: %v", path, err)
+		}
+		return reason
+	}
+
+	for _, prefix := range []string{"", "/libpod"} {
+		if r := post(prefix+"/containers/abc/exec", `{"Cmd":["sh","-c","id"]}`); r != "" {
+			t.Fatalf("%s create without User denied: %s", prefix, r)
+		}
+		if r := post(prefix+"/containers/abc/exec", `{"Cmd":["sh","-c","id"],"User":"0"}`); r == "" {
+			t.Fatalf("%s create with User 0 admitted", prefix)
+		}
+		if r := post(prefix+"/exec/unset/start", `{}`); r != "" {
+			t.Fatalf("%s start of unset-user exec denied: %s", prefix, r)
+		}
+		if r := post(prefix+"/exec/root/start", `{}`); r == "" {
+			t.Fatalf("%s start of root exec admitted", prefix)
+		}
+	}
+}
