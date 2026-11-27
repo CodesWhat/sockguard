@@ -511,16 +511,36 @@ export const roadmap: Milestone[] = [
     ],
   },
   {
+    version: "v2.4.8",
+    title: "Security Backports",
+    emoji: "🔒",
+    status: "released",
+    items: [
+      "Backports request-filter, owner-isolation, audit-log and shutdown security fixes to the v2.4 line",
+      "Fixes random Buildx build failures caused by early Control/Status and gateway calls",
+    ],
+  },
+  {
+    version: "v2.4.9",
+    title: "Owner Isolation Fix",
+    emoji: "🔒",
+    status: "released",
+    items: [
+      "Owner isolation now refuses Podman libpod manifest list writes, which had no owner check",
+      "Owner isolation now refuses Podman 6.2's volume rename route, closing a rename onto any volume name",
+    ],
+  },
+  {
     version: "v3.0.0",
     title: "Verified TLS and Security Hardening",
     emoji: "🔐",
     status: "candidate",
     items: [
-      "Published v3.0.0-rc.8 candidate; select its image or /v3 Go tag explicitly. Includes the combined compatibility/hardening work, v2.4.5, v2.4.6 and v2.4.7 security fixes and Go 1.27.4",
+      "Published v3.0.0-rc.9 candidate; select its image or /v3 Go tag explicitly. Includes the combined compatibility/hardening work, v2.4.5 through v2.4.9 security fixes and Go 1.27.4",
       "Rejects the deprecated endpoint skip-verification setting and unverified Docker TLS fallback; configure the daemon CA and verified TLS",
-      "Go imports, generated descriptors and release builds use /v3; stable channels serve v2.4.7",
-      "The combined rc.8 includes the completed hardening work, v2.4.5, v2.4.6 and v2.4.7 security fixes and Go 1.27.4; owner-scoped Podman builds are refused and build-argument history entries are fully redacted when environment redaction is enabled",
-      "The combined candidate needs fresh exact-source soak, TLS/security checks, published-image conformance and a new 14-day bake from publication. GA is no earlier than 14 days after rc.8 publishes, plus final release gates; opaque BuildKit removal remains undecided",
+      "Go imports, generated descriptors and release builds use /v3; stable channels serve v2.4.9",
+      "The combined rc.9 includes the completed hardening work, v2.4.5 through v2.4.9 security fixes and Go 1.27.4; owner-scoped Podman builds are refused and build-argument history entries are fully redacted when environment redaction is enabled",
+      "The combined candidate needs a 4-hour exact-source soak, TLS/security checks, published-image conformance. GA follows rc.9 after that validation, plus final release gates; opaque BuildKit removal remains undecided",
     ],
   },
 ];

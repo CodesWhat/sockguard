@@ -100,7 +100,7 @@ test("website comparison rows live in extracted data modules", () => {
   assert.equal(comparisonRows.at(-1)?.feature, "Hot-reload + admin API");
 });
 
-test("v2.4.7 is a released milestone and the current stable version", () => {
+test("v2.4.9 is a released milestone and the current stable version", () => {
   const v245 = roadmap.find((milestone) => milestone.version === "v2.4.5");
   assert.equal(v245?.status, "released");
   assert.ok(v245.items.some((item) => item.includes("sign prefix")));
@@ -111,7 +111,14 @@ test("v2.4.7 is a released milestone and the current stable version", () => {
   assert.equal(v247?.status, "released");
   assert.ok(v247.items.some((item) => item.includes("OpenTelemetry")));
   assert.ok(v247.items.some((item) => item.includes("1.27.4")));
-  assert.equal(SITE_CONFIG.version, "2.4.7");
+  const v248 = roadmap.find((milestone) => milestone.version === "v2.4.8");
+  assert.equal(v248?.status, "released");
+  assert.ok(v248.items.some((item) => item.includes("Buildx")));
+  const v249 = roadmap.find((milestone) => milestone.version === "v2.4.9");
+  assert.equal(v249?.status, "released");
+  assert.ok(v249.items.some((item) => item.includes("manifest")));
+  assert.ok(v249.items.some((item) => item.includes("volume rename")));
+  assert.equal(SITE_CONFIG.version, "2.4.9");
 });
 
 test("opt-in Sockguard capabilities are labelled opt-in", () => {
@@ -295,11 +302,11 @@ test("each compare page names itself an alternative in its title, H1 and lead", 
 test("roadmap data is valid and matches expected milestones", () => {
   assert.ok(roadmap.length > 0, "roadmap must be non-empty");
 
-  // v2.4.7 is the latest stable release.
+  // v2.4.9 is the latest stable release.
   const releasedMilestones = roadmap.filter((m) => m.status === "released");
   assert.ok(releasedMilestones.length > 0, "must have at least one released milestone");
   const latestReleased = releasedMilestones[releasedMilestones.length - 1];
-  assert.equal(latestReleased.version, "v2.4.7", "latest released milestone must be v2.4.7");
+  assert.equal(latestReleased.version, "v2.4.9", "latest released milestone must be v2.4.9");
   assert.equal(latestReleased.status, "released");
 
   // Must retain the previous stable milestones.

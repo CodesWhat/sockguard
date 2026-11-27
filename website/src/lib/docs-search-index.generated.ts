@@ -280,6 +280,8 @@ export const DOCS_SEARCH_ITEMS: [page: number, heading: string, anchor: string][
   [15,"Shipped in v1.7","shipped-in-v17"],
   [15,"Compatibility boundary","compatibility-boundary"],
   [15,"Shipped in v2.4.7","shipped-in-v247"],
+  [15,"Shipped in v2.4.8","shipped-in-v248"],
+  [15,"Shipped in v2.4.9","shipped-in-v249"],
   [16,"",""],
   [16,"Why Socket Proxying Matters","why-socket-proxying-matters"],
   [16,"Defense in Depth","defense-in-depth"],
