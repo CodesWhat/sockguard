@@ -269,12 +269,12 @@ func (p execPolicy) inspect(logger *slog.Logger, r *http.Request, normalizedPath
 			prefix = "/libpod/containers/"
 		}
 		id := strings.TrimSuffix(strings.TrimPrefix(normalizedPath, prefix), "/exec")
-		targetID, reason, err := p.targetDenyReason(r.Context(), id)
+		target, reason, err := p.targetDenyReason(r.Context(), id)
 		if reason != "" || err != nil {
 			return reason, err
 		}
-		if targetID != "" {
-			pinExecTarget(r, targetID)
+		if target.ContainerID != "" {
+			pinExecTarget(r, target.ContainerID)
 		}
 		return p.inspectCreate(logger, r)
 	case isExecStartPath(normalizedPath) || isLibpodExecStartPath(normalizedPath):
@@ -350,13 +350,38 @@ func (p execPolicy) inspectExisting(ctx context.Context, normalizedPath string) 
 	if !found {
 		return "", nil
 	}
-	if _, reason, err := p.targetDenyReason(ctx, result.ContainerID); reason != "" || err != nil {
+	target, reason, err := p.targetDenyReason(ctx, result.ContainerID)
+	if reason != "" || err != nil {
 		return reason, err
 	}
-	return p.denyReason(result), nil
+	return p.denyReasonForUser(result, p.storedAllowedUser(result.User, target.ConfigUser)), nil
+}
+
+// storedAllowedUser returns the User to compare against allowed_users on the
+// exec-start re-check. Docker fills an exec created without a User with the
+// container's configured Config.User, so a stored User equal to it is what an
+// unset User looks like on the way back. When "" is allowlisted, that value
+// is read as "" and admits nothing a create with no User would not have.
+// Anything else compares as stored. An explicit User equal to Config.User has
+// the same effect on the daemon, and the root gate still sees the stored
+// value, so this only widens the allowlist membership test.
+func (p execPolicy) storedAllowedUser(stored, configUser string) string {
+	if stored == "" || configUser == "" || stored != configUser {
+		return stored
+	}
+	if !p.allowedUsersSet || !slices.Contains(p.allowedUsers, "") || slices.Contains(p.allowedUsers, stored) {
+		return stored
+	}
+	return ""
 }
 
 func (p execPolicy) denyReason(result ExecInspectResult) string {
+	return p.denyReasonForUser(result, result.User)
+}
+
+// denyReasonForUser is denyReason with the User compared against allowed_users
+// supplied separately, so the root gate keeps seeing result.User.
+func (p execPolicy) denyReasonForUser(result ExecInspectResult, allowlistUser string) string {
 	if len(p.allowedCommands) == 0 && !p.allowBlindWrites {
 		return "exec denied: no commands are allowlisted"
 	}
@@ -366,7 +391,7 @@ func (p execPolicy) denyReason(result ExecInspectResult) string {
 	if !p.allowRootUser && isRootUser(result.User) {
 		return "exec denied: root exec user is not allowed"
 	}
-	if p.allowedUsersSet && !slices.Contains(p.allowedUsers, result.User) {
+	if p.allowedUsersSet && !slices.Contains(p.allowedUsers, allowlistUser) {
 		return "exec denied: exec user is not allowlisted"
 	}
 	if reason := p.envDenyReason(result.Env); reason != "" {
