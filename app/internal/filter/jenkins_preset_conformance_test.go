@@ -171,6 +171,8 @@ func TestJenkinsPresetConformance(t *testing.T) {
 	// export and attach must stay denied.
 	cases = append(cases, exfilDenialCases...)
 
+	cases = append(cases, systemPathsDeniedCases(agent, true)...)
+
 	for _, c := range cases {
 		fireDrydockCase(t, handler, c)
 	}

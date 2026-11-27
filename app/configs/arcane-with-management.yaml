@@ -20,8 +20,9 @@
 #
 # Bounding the writes:
 #   - Privileged mode, host network, PID, IPC, user and cgroup namespaces,
-#     devices, capability additions, sysctls, unconfined seccomp and AppArmor
-#     and published ports are refused. Joining another container's
+#     devices, capability additions, sysctls, unconfined seccomp and AppArmor,
+#     unmasked system paths (systempaths=unconfined, MaskedPaths and
+#     ReadonlyPaths overrides), SELinux disable and published ports are refused. Joining another container's
 #     namespaces (container:<id>) is refused too.
 #   - Bind mounts are refused outside allowed_bind_mounts. The shipped entry
 #     is a placeholder for Arcane's compose projects directory; replace it
@@ -92,6 +93,8 @@ request_body:
 
     deny_unconfined_seccomp: true
     deny_unconfined_apparmor: true
+    deny_unconfined_system_paths: true
+    deny_selinux_disable: true
     allow_sysctls: false
 
     deny_published_ports: true

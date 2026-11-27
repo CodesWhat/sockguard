@@ -172,6 +172,8 @@ func TestDockgePresetConformance(t *testing.T) {
 
 	// Logs are the sole read-exfiltration route Dockge needs. Reuse the #379
 	// catalog for every other Docker-compat exfiltration path.
+	cases = append(cases, systemPathsDeniedCases(`{"Image":"nginx"`, true)...)
+
 	for _, c := range exfilDenialCases {
 		if c.name == "logs-denied" || c.name == "v-prefixed-logs-denied" {
 			continue

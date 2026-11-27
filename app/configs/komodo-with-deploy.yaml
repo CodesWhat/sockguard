@@ -44,7 +44,9 @@
 #     create through this proxy are invisible to it and cannot be touched.
 #   - container_create inspection stays at its defaults: no privileged
 #     containers, no host network, PID, IPC or user namespaces, no extra
-#     capabilities, no devices, no sysctls. Joining another container's
+#     capabilities, no devices, no sysctls. seccomp=unconfined, inline seccomp
+#     profiles, apparmor=unconfined, systempaths=unconfined (and MaskedPaths or
+#     ReadonlyPaths overrides) and SELinux disable are denied too. Joining another container's
 #     namespaces (`container:<ref>`) is denied too. Bind mounts are limited to
 #     /etc/komodo, Periphery's default root directory (stacks, repos and
 #     run directories live under it). Named volumes need no allowlist entry.
@@ -81,7 +83,9 @@
 # PERIPHERY_DISABLE_CONTAINER_EXEC to true), builds, image and volume removal,
 # `docker compose down --rmi` and `-v`, inline Compose `configs:` and
 # `secrets:` with `content:` (copied in through PUT /containers/*/archive),
-# Swarm mode, and prune.
+# Swarm mode, and prune. Compose `security_opt` with seccomp:unconfined,
+# apparmor:unconfined or systempaths=unconfined, and a Deployment's extra_args
+# carrying `--security-opt` with those values, are refused too.
 
 upstream:
   socket: /var/run/docker.sock
@@ -128,6 +132,13 @@ request_body:
     # joins (an empty allowlist denies every one). Compose `network_mode:
     # service:x` resolves to such a join and is refused.
     restrict_namespace_sharing: true
+    # A Deployment's extra_args or a Stack's security_opt cannot turn off
+    # seccomp, AppArmor or the /proc and /sys masking, or disable SELinux
+    # labelling.
+    deny_unconfined_seccomp: true
+    deny_unconfined_apparmor: true
+    deny_unconfined_system_paths: true
+    deny_selinux_disable: true
   network:
     # Compose detaches containers with Force: true before it recreates or
     # removes them, and force disconnect is denied by default. Static IPs,

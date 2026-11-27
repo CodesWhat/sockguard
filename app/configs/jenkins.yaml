@@ -21,7 +21,8 @@
 #   - Networks, volumes, build, swarm, plugins, everything else
 #   - On create: privileged, host namespaces, bind mounts, devices,
 #     capability additions, published ports, unconfined seccomp and AppArmor,
-#     sysctls, and any image outside allowed_images
+#     unmasked system paths (systempaths=unconfined, MaskedPaths and
+#     ReadonlyPaths overrides), SELinux disable, sysctls, and any image outside allowed_images
 #
 # Derived from jenkinsci/docker-plugin 1337.v3ca_fd1b_b_25ef (the Jenkins
 # docker-java-api client calls in DockerTemplate, DockerCloud,
@@ -98,6 +99,8 @@ request_body:
 
     deny_unconfined_seccomp: true
     deny_unconfined_apparmor: true
+    deny_unconfined_system_paths: true
+    deny_selinux_disable: true
     allow_sysctls: false
 
     # The Inbound connector needs no published ports. The SSH connector does,

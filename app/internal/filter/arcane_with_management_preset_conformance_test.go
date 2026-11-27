@@ -208,6 +208,8 @@ func TestArcaneWithManagementPresetConformance(t *testing.T) {
 
 	// Logs and the pinned process list are the read-exfiltration routes Arcane needs. Reuse the #379
 	// catalog for every other Docker-compat exfiltration path.
+	cases = append(cases, systemPathsDeniedCases(app, true)...)
+
 	for _, c := range exfilDenialCases {
 		if c.name == "logs-denied" || c.name == "v-prefixed-logs-denied" {
 			continue

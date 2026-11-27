@@ -722,14 +722,14 @@ func TestContainerCreateDecodedFieldsAreTheInspectedFields(t *testing.T) {
 		{
 			field:  "HostConfig.MaskedPaths",
 			policy: newContainerCreatePolicy(ContainerCreateOptions{DenyUnconfinedSystemPaths: true}),
-			deny:   `{"HostConfig":{"MaskedPaths":[]}}`,
-			allow:  `{"HostConfig":{"MaskedPaths":["/proc/kcore"]}}`,
+			deny:   `{"HostConfig":{"MaskedPaths":["/proc/kcore"]}}`,
+			allow:  `{"HostConfig":{"MaskedPaths":null}}`,
 		},
 		{
 			field:  "HostConfig.ReadonlyPaths",
 			policy: newContainerCreatePolicy(ContainerCreateOptions{DenyUnconfinedSystemPaths: true}),
-			deny:   `{"HostConfig":{"ReadonlyPaths":[]}}`,
-			allow:  `{"HostConfig":{"ReadonlyPaths":["/proc/sys"]}}`,
+			deny:   `{"HostConfig":{"ReadonlyPaths":["/proc/sys"]}}`,
+			allow:  `{"HostConfig":{"ReadonlyPaths":null}}`,
 		},
 	}
 

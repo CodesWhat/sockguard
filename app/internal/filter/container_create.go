@@ -183,8 +183,8 @@ type ContainerCreateOptions struct {
 	DenySelinuxLabelOverride bool
 
 	// DenyUnconfinedSystemPaths prevents systempaths=unconfined in SecurityOpt
-	// AND rejects requests that set MaskedPaths or ReadonlyPaths to an empty
-	// slice (the direct-API equivalent of systempaths=unconfined). Default false
+	// AND rejects any request that supplies MaskedPaths or ReadonlyPaths, empty
+	// or not (the direct-API equivalent of systempaths=unconfined). Default false
 	// for backward-compatibility.
 	DenyUnconfinedSystemPaths bool
 
@@ -2740,22 +2740,24 @@ func denyWritableCgroupsReason(raw string) string {
 	return "container create denied: writable-cgroups security option is not allowed"
 }
 
-// denySystemPathsReason rejects requests that set MaskedPaths or ReadonlyPaths
-// to an explicit empty slice. The Docker CLI translates
+// denySystemPathsReason rejects requests that supply MaskedPaths or
+// ReadonlyPaths at all. The Docker CLI translates
 // --security-opt systempaths=unconfined into HostConfig.MaskedPaths=[] and
 // HostConfig.ReadonlyPaths=[] client-side (using the =unconfined form only).
-// Direct API clients can achieve the same effect without the SecurityOpt string.
-// A non-nil empty slice means the default masked/readonly path sets are being
-// deliberately cleared; nil means the field was absent and daemon defaults apply.
+// Direct API clients can achieve the same effect without the SecurityOpt
+// string, and a non-empty list replaces the daemon's default sets just as
+// well (a list naming only /x unmasks /proc/kcore and leaves /proc/sys
+// writable). nil means the field was absent or JSON null and daemon defaults
+// apply, so only an explicitly supplied list is refused.
 func (p containerCreatePolicy) denySystemPathsReason(hostConfig containerCreateHostConfig) string {
 	if !p.denyUnconfinedSystemPaths {
 		return ""
 	}
-	if hostConfig.MaskedPaths != nil && len(*hostConfig.MaskedPaths) == 0 {
-		return "container create denied: clearing MaskedPaths (systempaths=unconfined equivalent) is not allowed"
+	if hostConfig.MaskedPaths != nil {
+		return "container create denied: overriding MaskedPaths/ReadonlyPaths (systempaths=unconfined equivalent) is not allowed"
 	}
-	if hostConfig.ReadonlyPaths != nil && len(*hostConfig.ReadonlyPaths) == 0 {
-		return "container create denied: clearing ReadonlyPaths (systempaths=unconfined equivalent) is not allowed"
+	if hostConfig.ReadonlyPaths != nil {
+		return "container create denied: overriding MaskedPaths/ReadonlyPaths (systempaths=unconfined equivalent) is not allowed"
 	}
 	return ""
 }

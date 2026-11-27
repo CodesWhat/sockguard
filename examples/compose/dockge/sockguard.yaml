@@ -27,7 +27,9 @@
 #     proxy are invisible to it and cannot be touched.
 #   - container_create inspection stays at its defaults: no privileged
 #     containers, no host network/PID/IPC/user namespaces, no extra
-#     capabilities, no devices, no sysctls. Bind mounts are limited to the
+#     capabilities, no devices, no sysctls. seccomp=unconfined, inline seccomp
+#     profiles, apparmor=unconfined, systempaths=unconfined (and MaskedPaths or
+#     ReadonlyPaths overrides) and SELinux disable are denied too. Bind mounts are limited to the
 #     stacks directory below.
 #   - network and volume creates keep the default driver allowlist.
 # Residual risk: anyone who can edit a stack's compose.yaml in Dockge can run
@@ -47,7 +49,9 @@
 # (exec, attach), `docker compose build` and `up --build` (BuildKit /session
 # and /grpc, plus POST /build), `down --rmi` and `down -v`, inline `configs:`
 # and `secrets:` with `content:` (copied in through PUT /containers/*/archive),
-# and Compose `post_start`/`pre_stop` hooks (exec).
+# and Compose `post_start`/`pre_stop` hooks (exec). Compose `security_opt`
+# with seccomp:unconfined, apparmor:unconfined or systempaths=unconfined is
+# refused too.
 #
 # Derived from Dockge 1.5.0 (backend/stack.ts, backend/dockge-server.ts) and
 # the Docker Compose v5.8.0 Engine client calls in pkg/compose.
@@ -95,6 +99,12 @@ request_body:
   container_create:
     allowed_bind_mounts:
       - /opt/stacks
+    # A stack's security_opt cannot turn off seccomp, AppArmor or the /proc
+    # and /sys masking, or disable SELinux labelling.
+    deny_unconfined_seccomp: true
+    deny_unconfined_apparmor: true
+    deny_unconfined_system_paths: true
+    deny_selinux_disable: true
   network:
     # Compose detaches containers with Force: true (pkg/compose/executor_ops.go)
     # before it recreates or removes them, and force disconnect is denied by
