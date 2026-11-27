@@ -134,7 +134,7 @@ request_body:
     restrict_namespace_sharing: true
     # A Deployment's extra_args or a Stack's security_opt cannot turn off
     # seccomp, AppArmor or the /proc and /sys masking, or disable SELinux
-    # labelling.
+    # labeling.
     deny_unconfined_seccomp: true
     deny_unconfined_apparmor: true
     deny_unconfined_system_paths: true

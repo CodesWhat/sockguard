@@ -97,7 +97,7 @@ request_body:
     allowed_bind_mounts:
       - /opt/stacks
     # A stack's security_opt cannot turn off seccomp, AppArmor or the /proc
-    # and /sys masking, or disable SELinux labelling.
+    # and /sys masking, or disable SELinux labeling.
     deny_unconfined_seccomp: true
     deny_unconfined_apparmor: true
     deny_unconfined_system_paths: true

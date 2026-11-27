@@ -1825,7 +1825,7 @@ func TestExecAllowedUsersCoversCreateStartAndLibpod(t *testing.T) {
 }
 
 // TestExecStartRecheckConfigUserCountsAsUnset covers the exec-start re-check
-// against Docker's behaviour of storing the container's configured user as
+// against Docker's behavior of storing the container's configured user as
 // the User of an exec created without one.
 func TestExecStartRecheckConfigUserCountsAsUnset(t *testing.T) {
 	cmd := []string{"sh", "-c", "id"}

@@ -4,7 +4,7 @@ import "net/http"
 
 // systemPathsDeniedCases returns the create-hardening rows every write
 // preset must refuse: unmasking /proc and /sys (systempaths=unconfined or an
-// explicit MaskedPaths/ReadonlyPaths list) and disabling SELinux labelling.
+// explicit MaskedPaths/ReadonlyPaths list) and disabling SELinux labeling.
 // base is the opening of an otherwise allowed create body, without its
 // closing brace. withSeccompApparmor adds the seccomp and AppArmor rows for
 // the presets whose create block carries those rails.
