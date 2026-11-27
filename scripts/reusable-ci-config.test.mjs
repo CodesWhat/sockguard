@@ -123,7 +123,7 @@ const GO_INPUTS = [
 ];
 
 const NODE_INPUTS = [
-  "node-version: 24",
+  "node-version: 26",
   "lockfile-path: package-lock.json",
   "lint-check-name: Biome Lint",
   "test-check-name: TS Test",

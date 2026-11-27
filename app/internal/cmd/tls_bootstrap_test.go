@@ -41,7 +41,7 @@ func TestTLSBootstrapCommandSnippetLoadsAsConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"cert_file: " + filepath.Join(dir, "server-cert.pem"), "client_ca_file: " + filepath.Join(dir, "ca.pem"), "profile: alice", "common_names: [bob]", "owner: bob"} {
+	for _, want := range []string{"cert_file: " + filepath.Join(dir, "server-cert.pem"), "client_ca_file: " + filepath.Join(dir, "ca.pem"), `profile: "alice"`, `common_names: ["bob"]`, `owner: "bob"`} {
 		if !strings.Contains(out, want) {
 			t.Errorf("snippet missing %q:\n%s", want, out)
 		}
@@ -201,5 +201,51 @@ func TestTLSBootstrapEndToEndMutualTLS(t *testing.T) {
 				t.Errorf("unselected client saw %v", ids)
 			}
 		}
+	}
+}
+
+// TestTLSBootstrapSnippetRoundTripsClientNames loads the printed snippet back
+// through the config loader. Names that YAML reads as a number, bool or null
+// (007, 0x10, 1e3, true, null) must come back as the exact string the
+// certificate's CommonName carries, or the profile and owner bind to another
+// identity.
+func TestTLSBootstrapSnippetRoundTripsClientNames(t *testing.T) {
+	tests := [][]string{
+		{"alpha"}, {"007"}, {"010"}, {"0x10"}, {"1e3"}, {"1.0"}, {"1.10"},
+		{"true"}, {"false"}, {"null"}, {"no"}, {"on"}, {"y"}, {"123"},
+		{"1.1", "1.10"},
+	}
+	for _, names := range tests {
+		t.Run(strings.Join(names, "+"), func(t *testing.T) {
+			res := &tlsbootstrap.Result{
+				ClientNames: names,
+				ServerCert:  "/pki/server-cert.pem",
+				ServerKey:   "/pki/server-key.pem",
+				CAFile:      "/pki/ca.pem",
+			}
+			var out bytes.Buffer
+			writeTLSBootstrapSnippet(&out, res)
+			cfg, err := config.LoadBytes(out.Bytes())
+			if err != nil {
+				t.Fatalf("LoadBytes: %v\n%s", err, out.String())
+			}
+			if len(cfg.Clients.ClientCertificateProfiles) != len(names) || len(cfg.Clients.Profiles) != len(names) {
+				t.Fatalf("loaded %d assignments and %d profiles, want %d each\n%s",
+					len(cfg.Clients.ClientCertificateProfiles), len(cfg.Clients.Profiles), len(names), out.String())
+			}
+			for i, name := range names {
+				assign := cfg.Clients.ClientCertificateProfiles[i]
+				if assign.Profile != name || len(assign.CommonNames) != 1 || assign.CommonNames[0] != name {
+					t.Errorf("assignment %d = %+v, want profile and common name %q", i, assign, name)
+				}
+				profile := cfg.Clients.Profiles[i]
+				if profile.Name != name {
+					t.Errorf("profile %d name = %q, want %q", i, profile.Name, name)
+				}
+				if profile.Ownership.Owner == nil || *profile.Ownership.Owner != name {
+					t.Errorf("profile %d owner = %v, want %q", i, profile.Ownership.Owner, name)
+				}
+			}
+		})
 	}
 }

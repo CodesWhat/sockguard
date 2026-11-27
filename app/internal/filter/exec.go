@@ -49,6 +49,14 @@ type ExecInspectFunc func(context.Context, string) (ExecInspectResult, bool, err
 type ExecOptions struct {
 	AllowPrivileged bool
 	AllowRootUser   bool
+	// AllowedUsers, when non-empty, pins the exec User to these exact values.
+	// Each entry is trimmed; the request's User is compared byte for
+	// byte and case-sensitively, so a padded User never matches and "app" does not admit "app:wheel" and "1000" does not
+	// admit "01000". The empty string is a real entry meaning "User unset":
+	// Docker then runs the exec as the container's configured user. It is
+	// checked in addition to AllowRootUser, not instead of it. Default empty
+	// means no pin.
+	AllowedUsers []string
 	// AllowedCommands is an allowlist of exec argv templates. Each token is a
 	// sockguard glob (see internal/glob): "*" matches a run of non-slash
 	// characters, "**" matches any sequence. A command is allowed when its
@@ -107,6 +115,8 @@ type ExecOptions struct {
 type execPolicy struct {
 	allowPrivileged    bool
 	allowRootUser      bool
+	allowedUsers       []string
+	allowedUsersSet    bool
 	allowedCommands    []execCommandMatcher
 	allowedEnvVars     []string
 	deniedEnvVars      []string
@@ -181,6 +191,8 @@ func newExecPolicy(opts ExecOptions) execPolicy {
 	return execPolicy{
 		allowPrivileged:    opts.AllowPrivileged,
 		allowRootUser:      opts.AllowRootUser,
+		allowedUsers:       normalizeExecUsers(opts.AllowedUsers),
+		allowedUsersSet:    len(opts.AllowedUsers) > 0,
 		allowedCommands:    allowed,
 		allowedEnvVars:     normalizeExecEnvNames(opts.AllowedEnvVars),
 		deniedEnvVars:      normalizeExecEnvNames(opts.DeniedEnvVars),
@@ -190,6 +202,20 @@ func newExecPolicy(opts ExecOptions) execPolicy {
 		inspectStartLibpod: opts.InspectStartLibpod,
 		inspectTarget:      opts.InspectTarget,
 	}
+}
+
+// normalizeExecUsers trims and dedupes allowed_users entries. Unlike the env
+// name lists, the empty string is kept: it is the "User unset" entry.
+func normalizeExecUsers(values []string) []string {
+	normalized := make([]string, 0, len(values))
+	for _, value := range values {
+		trimmed := strings.TrimSpace(value)
+		if slices.Contains(normalized, trimmed) {
+			continue
+		}
+		normalized = append(normalized, trimmed)
+	}
+	return normalized
 }
 
 func normalizeExecEnvValues(values []string) map[string][]string {
@@ -243,12 +269,12 @@ func (p execPolicy) inspect(logger *slog.Logger, r *http.Request, normalizedPath
 			prefix = "/libpod/containers/"
 		}
 		id := strings.TrimSuffix(strings.TrimPrefix(normalizedPath, prefix), "/exec")
-		targetID, reason, err := p.targetDenyReason(r.Context(), id)
+		target, reason, err := p.targetDenyReason(r.Context(), id)
 		if reason != "" || err != nil {
 			return reason, err
 		}
-		if targetID != "" {
-			pinExecTarget(r, targetID)
+		if target.ContainerID != "" {
+			pinExecTarget(r, target.ContainerID)
 		}
 		return p.inspectCreate(logger, r)
 	case isExecStartPath(normalizedPath) || isLibpodExecStartPath(normalizedPath):
@@ -324,13 +350,38 @@ func (p execPolicy) inspectExisting(ctx context.Context, normalizedPath string) 
 	if !found {
 		return "", nil
 	}
-	if _, reason, err := p.targetDenyReason(ctx, result.ContainerID); reason != "" || err != nil {
+	target, reason, err := p.targetDenyReason(ctx, result.ContainerID)
+	if reason != "" || err != nil {
 		return reason, err
 	}
-	return p.denyReason(result), nil
+	return p.denyReasonForUser(result, p.storedAllowedUser(result.User, target.ConfigUser)), nil
+}
+
+// storedAllowedUser returns the User to compare against allowed_users on the
+// exec-start re-check. Docker fills an exec created without a User with the
+// container's configured Config.User, so a stored User equal to it is what an
+// unset User looks like on the way back. When "" is allowlisted, that value
+// is read as "" and admits nothing a create with no User would not have.
+// Anything else compares as stored. An explicit User equal to Config.User has
+// the same effect on the daemon, and the root gate still sees the stored
+// value, so this only widens the allowlist membership test.
+func (p execPolicy) storedAllowedUser(stored, configUser string) string {
+	if stored == "" || configUser == "" || stored != configUser {
+		return stored
+	}
+	if !p.allowedUsersSet || !slices.Contains(p.allowedUsers, "") || slices.Contains(p.allowedUsers, stored) {
+		return stored
+	}
+	return ""
 }
 
 func (p execPolicy) denyReason(result ExecInspectResult) string {
+	return p.denyReasonForUser(result, result.User)
+}
+
+// denyReasonForUser is denyReason with the User compared against allowed_users
+// supplied separately, so the root gate keeps seeing result.User.
+func (p execPolicy) denyReasonForUser(result ExecInspectResult, allowlistUser string) string {
 	if len(p.allowedCommands) == 0 && !p.allowBlindWrites {
 		return "exec denied: no commands are allowlisted"
 	}
@@ -339,6 +390,9 @@ func (p execPolicy) denyReason(result ExecInspectResult) string {
 	}
 	if !p.allowRootUser && isRootUser(result.User) {
 		return "exec denied: root exec user is not allowed"
+	}
+	if p.allowedUsersSet && !slices.Contains(p.allowedUsers, allowlistUser) {
+		return "exec denied: exec user is not allowlisted"
 	}
 	if reason := p.envDenyReason(result.Env); reason != "" {
 		return reason

@@ -251,6 +251,7 @@ func (c ExecRequestBodyConfig) ToFilterOptions() filter.ExecOptions {
 	return filter.ExecOptions{
 		AllowPrivileged:  c.AllowPrivileged,
 		AllowRootUser:    c.AllowRootUser,
+		AllowedUsers:     c.AllowedUsers,
 		AllowedCommands:  c.AllowedCommands,
 		AllowedEnvVars:   c.AllowedEnvVars,
 		DeniedEnvVars:    c.DeniedEnvVars,
@@ -516,6 +517,7 @@ func toFilterAllowedDeviceRequests(entries []AllowedDeviceRequest) []filter.Allo
 			MaxCount:            e.MaxCount,
 			DeviceIDs:           e.DeviceIDs,
 			Count:               e.Count,
+			Options:             e.Options,
 		})
 	}
 	return out

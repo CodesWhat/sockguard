@@ -1735,3 +1735,155 @@ func TestMiddlewareDeniesSignedRootUserOnLibpodExecCreate(t *testing.T) {
 		})
 	}
 }
+
+func TestExecDenyReasonAllowedUsers(t *testing.T) {
+	cmd := []string{"sh", "-c", "id"}
+	tests := []struct {
+		name   string
+		users  []string
+		root   bool
+		user   string
+		denied bool
+	}{
+		{"no pin admits any user", nil, true, "0", false},
+		{"unset pin admits empty", []string{""}, true, "", false},
+		{"unset pin denies whitespace-only", []string{""}, true, "  ", true},
+		{"named pin denies padded request", []string{"app"}, true, " app", true},
+		{"unset pin denies root", []string{""}, true, "root", true},
+		{"unset pin denies uid 0", []string{""}, true, "0", true},
+		{"unset pin denies 0:0", []string{""}, true, "0:0", true},
+		{"unset pin denies named user", []string{""}, true, "app", true},
+		{"unset pin denies group-only user", []string{""}, true, ":5", true},
+		{"named pin admits exact", []string{"app"}, true, "app", false},
+		{"named pin is case sensitive", []string{"app"}, true, "APP", true},
+		{"named pin denies group suffix", []string{"app"}, true, "app:wheel", true},
+		{"named pin denies padded uid", []string{"1000"}, true, "01000", true},
+		{"multi pin admits second", []string{"", "app"}, true, "app", false},
+		{"root still gated by allow_root_user", []string{"", "app"}, false, "", true},
+		{"root user pin needs allow_root_user", []string{"root"}, false, "root", true},
+		{"root user pin with allow_root_user", []string{"root"}, true, "root", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p := newExecPolicy(ExecOptions{
+				AllowRootUser:   tt.root,
+				AllowedUsers:    tt.users,
+				AllowedCommands: [][]string{cmd},
+			})
+			got := p.denyReason(ExecInspectResult{Command: cmd, User: tt.user})
+			if tt.denied && got == "" {
+				t.Fatalf("User %q admitted, want denied", tt.user)
+			}
+			if !tt.denied && got != "" {
+				t.Fatalf("User %q denied (%s), want admitted", tt.user, got)
+			}
+		})
+	}
+}
+
+func TestExecAllowedUsersCoversCreateStartAndLibpod(t *testing.T) {
+	cmd := []string{"sh", "-c", "id"}
+	stored := map[string]ExecInspectResult{
+		"unset": {Command: cmd},
+		"root":  {Command: cmd, User: "0"},
+	}
+	inspect := func(_ context.Context, id string) (ExecInspectResult, bool, error) {
+		r, ok := stored[id]
+		return r, ok, nil
+	}
+	p := newExecPolicy(ExecOptions{
+		AllowRootUser:      true,
+		AllowedUsers:       []string{""},
+		AllowedCommands:    [][]string{cmd},
+		InspectStart:       inspect,
+		InspectStartLibpod: inspect,
+	})
+
+	post := func(path, body string) string {
+		req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
+		reason, err := p.inspect(slog.New(slog.NewTextHandler(io.Discard, nil)), req, path)
+		if err != nil {
+			t.Fatalf("%s: %v", path, err)
+		}
+		return reason
+	}
+
+	for _, prefix := range []string{"", "/libpod"} {
+		if r := post(prefix+"/containers/abc/exec", `{"Cmd":["sh","-c","id"]}`); r != "" {
+			t.Fatalf("%s create without User denied: %s", prefix, r)
+		}
+		if r := post(prefix+"/containers/abc/exec", `{"Cmd":["sh","-c","id"],"User":"0"}`); r == "" {
+			t.Fatalf("%s create with User 0 admitted", prefix)
+		}
+		if r := post(prefix+"/exec/unset/start", `{}`); r != "" {
+			t.Fatalf("%s start of unset-user exec denied: %s", prefix, r)
+		}
+		if r := post(prefix+"/exec/root/start", `{}`); r == "" {
+			t.Fatalf("%s start of root exec admitted", prefix)
+		}
+	}
+}
+
+// TestExecStartRecheckConfigUserCountsAsUnset covers the exec-start re-check
+// against Docker's behavior of storing the container's configured user as
+// the User of an exec created without one.
+func TestExecStartRecheckConfigUserCountsAsUnset(t *testing.T) {
+	cmd := []string{"sh", "-c", "id"}
+	targetID := strings.Repeat("c", 64)
+	tests := []struct {
+		name          string
+		allowedUsers  []string
+		allowRoot     bool
+		storedUser    string
+		configUser    string
+		noTarget      bool
+		targetMissing bool
+		wantReason    string
+	}{
+		{name: "named config user", allowedUsers: []string{""}, allowRoot: true, storedUser: "node", configUser: "node"},
+		{name: "numeric config user", allowedUsers: []string{""}, allowRoot: true, storedUser: "1000", configUser: "1000"},
+		{name: "stored differs from config user", allowedUsers: []string{""}, allowRoot: true, storedUser: "node", configUser: "app", wantReason: "exec denied: exec user is not allowlisted"},
+		{name: "root stored with empty config user", allowedUsers: []string{""}, allowRoot: true, storedUser: "0", configUser: "", wantReason: "exec denied: exec user is not allowlisted"},
+		{name: "no target inspector", allowedUsers: []string{""}, allowRoot: true, storedUser: "node", noTarget: true, wantReason: "exec denied: exec user is not allowlisted"},
+		{name: "target not found", allowedUsers: []string{""}, allowRoot: true, storedUser: "node", targetMissing: true},
+		{name: "root config user still hits root gate", allowedUsers: []string{""}, storedUser: "0", configUser: "0", wantReason: "exec denied: root exec user is not allowed"},
+		{name: "root named config user still hits root gate", allowedUsers: []string{""}, storedUser: "root", configUser: "root", wantReason: "exec denied: root exec user is not allowed"},
+		{name: "no empty entry means no normalization", allowedUsers: []string{"app"}, allowRoot: true, storedUser: "node", configUser: "node", wantReason: "exec denied: exec user is not allowlisted"},
+		{name: "explicit entry still matches", allowedUsers: []string{"node"}, allowRoot: true, storedUser: "node", configUser: "node"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			opts := ExecOptions{
+				AllowRootUser:   tt.allowRoot,
+				AllowedUsers:    tt.allowedUsers,
+				AllowedCommands: [][]string{cmd},
+				InspectStart: func(context.Context, string) (ExecInspectResult, bool, error) {
+					return ExecInspectResult{ContainerID: targetID, Command: cmd, User: tt.storedUser}, true, nil
+				},
+			}
+			if !tt.noTarget {
+				opts.InspectTarget = func(context.Context, string) (ExecTargetInspectResult, bool, error) {
+					if tt.targetMissing {
+						return ExecTargetInspectResult{}, false, nil
+					}
+					return ExecTargetInspectResult{ContainerID: targetID, ConfigUser: tt.configUser}, true, nil
+				}
+			}
+			p := newExecPolicy(opts)
+			req := httptest.NewRequest(http.MethodPost, "/exec/abc/start", strings.NewReader(`{}`))
+			reason, err := p.inspect(slog.New(slog.NewTextHandler(io.Discard, nil)), req, "/exec/abc/start")
+			if tt.targetMissing {
+				if err == nil {
+					t.Fatal("missing target admitted, want a rejection error")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("inspect: %v", err)
+			}
+			if reason != tt.wantReason {
+				t.Fatalf("reason = %q, want %q", reason, tt.wantReason)
+			}
+		})
+	}
+}

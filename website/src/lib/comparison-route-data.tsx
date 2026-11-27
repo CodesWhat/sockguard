@@ -6,6 +6,7 @@ import { cetusguardComparisonRouteData } from "./comparison-route-data/cetusguar
 import { linuxserverComparisonRouteData } from "./comparison-route-data/linuxserver";
 import { tecnativaComparisonRouteData } from "./comparison-route-data/tecnativa";
 import { wollomaticComparisonRouteData } from "./comparison-route-data/wollomatic";
+import { yorvogateComparisonRouteData } from "./comparison-route-data/yorvogate";
 
 const comparisonRouteDataBySlug = {
   tecnativa: tecnativaComparisonRouteData,
@@ -13,6 +14,7 @@ const comparisonRouteDataBySlug = {
   wollomatic: wollomaticComparisonRouteData,
   "11notes": elevenNotesComparisonRouteData,
   cetusguard: cetusguardComparisonRouteData,
+  yorvogate: yorvogateComparisonRouteData,
 } satisfies Record<string, ComparisonRouteRawConfig>;
 
 export type ComparisonRouteSlug = keyof typeof comparisonRouteDataBySlug;

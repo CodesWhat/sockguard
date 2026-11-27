@@ -378,7 +378,7 @@ jobs:
       contents: read
     uses: CodesWhat/.github/.github/workflows/node-ci.yml@684a6b931e7802f1985e2cb4f6ea0c95861988e3  # main, 2026-11-27
     with:
-      node-version: 24
+      node-version: 26
       lockfile-path: package-lock.json
       lint-check-name: Biome Lint
       test-check-name: TS Test
@@ -432,7 +432,7 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
         with:
-          node-version: 24
+          node-version: 26
           cache: npm
           cache-dependency-path: package-lock.json
 

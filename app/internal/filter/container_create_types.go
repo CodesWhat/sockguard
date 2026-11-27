@@ -25,6 +25,10 @@ type AllowedDeviceRequestEntry struct {
 	DeviceIDs []string
 	// Count, when non-nil, requires the request Count to equal it exactly.
 	Count *int
+	// Options, when non-empty, lists the only DeviceRequest Options entries a
+	// request may carry. Each request key and value must equal a listed pair
+	// byte for byte; a request with no Options still matches.
+	Options map[string]string
 }
 
 // allowedDeviceRequestEntry is the pre-processed form stored in
@@ -33,8 +37,9 @@ type allowedDeviceRequestEntry struct {
 	driver              string     // lowercase
 	allowedCapabilities [][]string // each inner slice sorted + deduped
 	maxCount            *int
-	deviceIDs           []string // exact, case-sensitive; empty means unconstrained
-	count               *int     // exact request Count; nil means unconstrained
+	deviceIDs           []string          // exact, case-sensitive; empty means unconstrained
+	count               *int              // exact request Count; nil means unconstrained
+	options             map[string]string // exact allowed Options entries; empty means unconstrained
 }
 
 // dockerDeviceRequest mirrors the Docker API HostConfig.DeviceRequests element.
@@ -148,9 +153,9 @@ type containerCreateHostConfig struct {
 	// MaskedPaths overrides the default set of paths that Docker masks inside
 	// the container. An empty slice signals systempaths=unconfined intent
 	// delivered via the direct API path (the Docker CLI converts
-	// --security-opt systempaths=unconfined to MaskedPaths=[] client-side).
-	// The pointer distinguishes "not set" (nil) from "explicitly set to empty"
-	// (non-nil, zero length).
+	// --security-opt systempaths=unconfined to MaskedPaths=[] client-side),
+	// and a non-empty one replaces the default set just the same. The pointer
+	// distinguishes "not set" (nil) from "explicitly supplied" (non-nil).
 	MaskedPaths   *[]string `json:"MaskedPaths"`
 	ReadonlyPaths *[]string `json:"ReadonlyPaths"`
 	// LogConfig carries the log driver's options. dockerd hands them to the

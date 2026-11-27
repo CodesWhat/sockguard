@@ -307,35 +307,35 @@ Rules can cover method/path filters, body-aware write inspection, declarative ad
 <details>
 <summary><strong>How does Sockguard compare to other Docker socket proxies?</strong></summary>
 
-How we stack up against other Docker socket proxies. Versions checked 2026-11-26: Tecnativa `docker-socket-proxy` v0.6.0, LinuxServer `docker-socket-proxy` 3.4.8-r0-ls107, wollomatic `socket-proxy` 1.14.0, 11notes `docker-socket-proxy` v2.2.0, hectorm `cetusguard` v1.2.0. Each claim was read from that release's source or README on that date; later upstream releases can change it.
+How we stack up against other Docker socket proxies. Versions checked 2026-11-26: Tecnativa `docker-socket-proxy` v0.6.0, LinuxServer `docker-socket-proxy` 3.4.8-r0-ls107, wollomatic `socket-proxy` 1.14.0, 11notes `docker-socket-proxy` v2.2.0, hectorm `cetusguard` v1.2.0, `yorvolabs/yorvogate` v0.4.0. Each claim was read from that release's source or README on that date; later upstream releases can change it.
 
-| Feature | Tecnativa | LinuxServer | wollomatic | 11notes | CetusGuard | **Sockguard** |
-|---------|:---------:|:-----------:|:----------:|:-------:|:----------:|:-------------:|
-| Method + path filtering | ✅ | ✅ | ✅ (regex) | Read-only by default (opt-in containers-only mode) | ✅ (regex) | ✅ |
-| Granular container write ops | Documented only (POST gate blocks them) | Partial (ALLOW_* vars) | Via regex | Start/stop only (opt-in containers-only mode) | Via regex | ✅ |
-| Request body inspection | ❌ | ❌ | Partial (bind-mount restrictions) | ❌ | ❌ | ✅ (container, exec, image, build, volume, network, secret, config, service, swarm, node, plugin) |
-| Query-string rule matching | ❌ | ❌ | ❌ | ❌ | ✅ (regex over the sorted query, v1.2.0) | ✅ (next v3.2: match.query per key, exact or * values) |
-| Per-client policies | ❌ | ❌ | Partial (IP/hostname + labels) | ❌ | ❌ | ✅ (CIDR + labels + cert selectors incl. SPKI + unix peer) |
-| Resource owner labels | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ (workload + control plane) |
-| Remote TCP mTLS (listener) | ❌ | ❌ | ❌ | ❌ | ✅ | ✅ (TLS 1.3) |
-| Remote daemon upstream (TLS) | ❌ | ❌ | ❌ | ❌ | ✅ | ✅ (active/passive failover) |
-| Read-side visibility / redaction | ❌ | ❌ | ❌ | Partial (targets 7 risky GETs; the image-export pattern misses both real shapes; its image-inspect misfire, [11notes #12](https://github.com/11notes/docker-socket-proxy/issues/12), was fixed in v2.1.6) | ❌ | ✅ (visibility + protected JSON redaction) |
-| Structured access logs | ❌ | ❌ | ✅ (JSON option) | ❌ | ❌ | ✅ (request + trace correlation) |
-| Dedicated audit log schema | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ (opt-in, JSON schema + reason codes) |
-| Prometheus metrics | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ (opt-in, socket-proxy metrics) |
-| Active upstream watchdog | ❌ | ❌ | ✅ | ❌ | ❌ | ✅ (opt-in watchdog; /health answers by default) |
-| Trace/log correlation | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ (W3C traceparent) |
-| YAML config | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ |
-| Tecnativa env compat | N/A | ✅ | ❌ | ❌ | ❌ | ✅ |
-| Rate limits / concurrency caps | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ (per-profile token-bucket + global priority gate) |
-| Rollout modes (enforce / warn / audit) | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ (per-profile shadow + would_deny audit) |
-| Signed policy bundles | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ (cosign keyed + keyless, Rekor inclusion) |
-| Container image trust | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ (cosign keyed + keyless, enforce / warn) |
-| Podman native libpod API | ❌ | ✅ | Via manual regex | ❌ | ✅ | ✅ (default-deny /libpod coverage incl. pod lifecycle) |
-| Multiple main listeners | ❌ | ❌ | ❌ | ✅ (Unix + TCP) | ✅ | ✅ (Unix and/or TCP, listener-scoped TLS + profiles) |
-| Hot-reload + admin API | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ (opt-in, fsnotify/SIGHUP, validate endpoint, policy version) |
+| Feature | Tecnativa | LinuxServer | wollomatic | 11notes | CetusGuard | YorvoGate | **Sockguard** |
+|---------|:---------:|:-----------:|:----------:|:-------:|:----------:|:----------:|:-------------:|
+| Method + path filtering | ✅ | ✅ | ✅ (regex) | Read-only by default (opt-in containers-only mode) | ✅ (regex) | ✅ (endpoint groups on trusted listeners, per-endpoint rules per scope) | ✅ |
+| Granular container write ops | Documented only (POST gate blocks them) | Partial (ALLOW_* vars) | Via regex | Start/stop only (opt-in containers-only mode) | Via regex | ✅ (create rules; other container writes limited to the scope's own containers) | ✅ |
+| Request body inspection | ❌ | ❌ | Partial (bind-mount restrictions) | ❌ | ❌ | ✅ (bodies decoded into the Docker Engine's own types, unknown fields refused) | ✅ (container, exec, image, build, volume, network, secret, config, service, swarm, node, plugin) |
+| Query-string rule matching | ❌ | ❌ | ❌ | ❌ | ✅ (regex over the sorted query, v1.2.0) | ✅ (per-endpoint query parameter allowlist, any other refused) | ✅ (next v3.2: match.query per key, exact or * values) |
+| Per-client policies | ❌ | ❌ | Partial (IP/hostname + labels) | ❌ | ❌ | ✅ (scopes by token, client certificate or own socket, optional peer user) | ✅ (CIDR + labels + cert selectors incl. SPKI + unix peer) |
+| Resource owner labels | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ (per-scope owner label and name prefixes) | ✅ (workload + control plane) |
+| Remote TCP mTLS (listener) | ❌ | ❌ | ❌ | ❌ | ✅ | ✅ (TLS 1.3, mTLS required off loopback) | ✅ (TLS 1.3) |
+| Remote daemon upstream (TLS) | ❌ | ❌ | ❌ | ❌ | ✅ | ❌ (upstream must be a unix socket) | ✅ (active/passive failover) |
+| Read-side visibility / redaction | ❌ | ❌ | ❌ | Partial (targets 7 risky GETs; the image-export pattern misses both real shapes; its image-inspect misfire, [11notes #12](https://github.com/11notes/docker-socket-proxy/issues/12), was fixed in v2.1.6) | ❌ | Partial (lists limited to the scope's own objects; info and version are allow-lists) | ✅ (visibility + protected JSON redaction) |
+| Structured access logs | ❌ | ❌ | ✅ (JSON option) | ❌ | ❌ | ✅ (JSON decisions with request ID) | ✅ (request + trace correlation) |
+| Dedicated audit log schema | ❌ | ❌ | ❌ | ❌ | ❌ | Partial (versioned JSON log schema and reason codes, no separate audit log) | ✅ (opt-in, JSON schema + reason codes) |
+| Prometheus metrics | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ (admin listener, loopback or unix socket) | ✅ (opt-in, socket-proxy metrics) |
+| Active upstream watchdog | ❌ | ❌ | ✅ | ❌ | ❌ | Partial (readiness check pings Docker, at most once a second) | ✅ (opt-in watchdog; /health answers by default) |
+| Trace/log correlation | ❌ | ❌ | ❌ | ❌ | ❌ | Partial (forwards traceparent to Docker, logs carry a request ID) | ✅ (W3C traceparent) |
+| YAML config | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | ✅ |
+| Tecnativa env compat | N/A | ✅ | ❌ | ❌ | ❌ | ❌ | ✅ |
+| Rate limits / concurrency caps | ❌ | ❌ | ❌ | ❌ | ❌ | Partial (per-scope request and connection caps) | ✅ (per-profile token-bucket + global priority gate) |
+| Rollout modes (enforce / warn / audit) | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ (none documented at v0.4.0) | ✅ (per-profile shadow + would_deny audit) |
+| Signed policy bundles | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ (releases are cosign-signed, policy bundles are not documented) | ✅ (cosign keyed + keyless, Rekor inclusion) |
+| Container image trust | ❌ | ❌ | ❌ | ❌ | ❌ | Partial (pull registry and platform allowlists, image load name checks, no signature verification documented) | ✅ (cosign keyed + keyless, enforce / warn) |
+| Podman native libpod API | ❌ | ✅ | Via manual regex | ❌ | ✅ | ❌ (not documented, certified for Docker Engine 29 only) | ✅ (default-deny /libpod coverage incl. pod lifecycle) |
+| Multiple main listeners | ❌ | ❌ | ❌ | ✅ (Unix + TCP) | ✅ | ✅ (trusted and scoped listeners, unix or TCP) | ✅ (Unix and/or TCP, listener-scoped TLS + profiles) |
+| Hot-reload + admin API | ❌ | ❌ | ❌ | ❌ | ❌ | Partial (SIGHUP reload and scope rescan, admin listener is monitoring only) | ✅ (opt-in, fsnotify/SIGHUP, validate endpoint, policy version) |
 
-`11notes/docker-socket-proxy` takes a deliberately narrow stance: it allows most Docker API reads, targets seven sensitive GET surfaces for blocking (its image-export pattern matches neither real export shape, and the same style of pattern misfired on image inspect in [11notes #12](https://github.com/11notes/docker-socket-proxy/issues/12), fixed in v2.1.6), and refuses writes by default. Its opt-in `SOCKET_PROXY_CONTAINERS_ONLY` mode (v2.2.0) instead allows only container start and stop and refuses reads. Sockguard instead starts from a configurable default deny, offers finer-grained redaction/visibility, and can authorize inspected writes. `hectorm/cetusguard` is the closest in spirit: default-deny regex rules (matched against the path, or the path plus a sorted query when the pattern contains `\?`, since v1.2.0) plus frontend/backend mTLS, native libpod families, and multiple frontend addresses. Sockguard is stronger on request-body inspection, per-client profiles, ownership, read filtering, metrics, hot reload, and health-checked upstream failover; v1.6.0 closed the libpod and multi-listener gaps that were CetusGuard's remaining advantages. `yorvolabs/yorvogate` (v0.4.0, released 2026-11-24, Apache-2.0, repository created 2026-11-08) is a newer body-inspecting gate: it decodes request bodies into the Docker Engine's own types, scopes each client to its own Compose project by token header, dedicated socket or client certificate, and checks a per-scope query allowlist. It is not a column above because its README describes a different model (trusted and scoped listeners rather than rule lists) and we haven't tested it against Sockguard's conformance suite, so no row-by-row parity claim is made. It documents certification for Docker Engine 29 only. Source: its README and SUPPORT.md at v0.4.0, read 2026-11-26. The full evidence and resulting priorities are in the [roadmap](https://getsockguard.com/docs/roadmap).
+`11notes/docker-socket-proxy` takes a deliberately narrow stance: it allows most Docker API reads, targets seven sensitive GET surfaces for blocking (its image-export pattern matches neither real export shape, and the same style of pattern misfired on image inspect in [11notes #12](https://github.com/11notes/docker-socket-proxy/issues/12), fixed in v2.1.6), and refuses writes by default. Its opt-in `SOCKET_PROXY_CONTAINERS_ONLY` mode (v2.2.0) instead allows only container start and stop and refuses reads. Sockguard instead starts from a configurable default deny, offers finer-grained redaction/visibility, and can authorize inspected writes. `hectorm/cetusguard` is the closest in spirit: default-deny regex rules (matched against the path, or the path plus a sorted query when the pattern contains `\?`, since v1.2.0) plus frontend/backend mTLS, native libpod families, and multiple frontend addresses. Sockguard is stronger on request-body inspection, per-client profiles, ownership, read filtering, metrics, hot reload, and health-checked upstream failover; v1.6.0 closed the libpod and multi-listener gaps that were CetusGuard's remaining advantages. `yorvolabs/yorvogate` (v0.4.0, released 2026-11-24, Apache-2.0, repository created 2026-11-08) is a newer body-inspecting gate: it decodes request bodies into the Docker Engine's own types, scopes each client to its own Compose project by token header, dedicated socket or client certificate, and checks a per-scope query allowlist. Its column is read from its README, `docs/configuration.md` and `SUPPORT.md` at v0.4.0 on 2026-11-26, and a cell says "No" only where those documents don't describe the feature. It works from trusted and scoped listeners rather than rule lists, takes a unix-socket upstream only, refuses swarm and events on scoped listeners (builds go through rootless BuildKit builders), and documents certification for Docker Engine 29 only. We haven't run it against Sockguard's conformance suite, so the table is a feature inventory from its documentation, not a parity or ranking claim in either direction. The full evidence and resulting priorities are in the [roadmap](https://getsockguard.com/docs/roadmap).
 
 </details>
 
