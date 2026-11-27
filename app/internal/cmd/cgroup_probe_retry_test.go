@@ -142,12 +142,18 @@ func TestCgroupV1TrackerPersistentFailureStopsRetrying(t *testing.T) {
 	tracker.retryBase = 10 * time.Millisecond
 	tracker.retryMax = 10 * time.Millisecond
 	const interval = 100 * time.Millisecond
+	start := time.Now()
 	go tracker.run(t.Context(), interval)
 	tracker.kick()
 	time.Sleep(3*interval + 50*time.Millisecond)
+	// A starved scheduler can under-deliver probes, so wait for the floor
+	// instead of asserting it at a fixed instant.
+	waitForCgroup(t, "at least 3 probes", func() bool { return f.calls.Load() >= 3 })
 	// At most ~interval/base retries per window plus the tick probe itself.
-	if n, max := f.calls.Load(), int64(4*(interval/tracker.retryBase+2)); n < 3 || n > max {
-		t.Fatalf("probe calls = %d, want between 3 and %d", n, max)
+	// The window is the real elapsed time, which stretches under load.
+	windows := int64(time.Since(start)/interval) + 1
+	if n, max := f.calls.Load(), windows*(int64(interval/tracker.retryBase)+2); n > max {
+		t.Fatalf("probe calls = %d, want at most %d", n, max)
 	}
 	if tracker.isV1() {
 		t.Fatal("gate must stay closed while probes keep failing")
