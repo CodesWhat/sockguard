@@ -118,6 +118,7 @@ func TestArcaneWithManagementPresetConformance(t *testing.T) {
 		{"container-create-named-volume", http.MethodPost, "/containers/create", app + `,"HostConfig":{"Binds":["appdata:/data"]}}`, true},
 		{"container-start", http.MethodPost, "/containers/abc/start", "", true},
 		{"container-stop", http.MethodPost, "/containers/abc/stop", "", true},
+		{"container-stop-timeout", http.MethodPost, "/containers/abc/stop?t=10", "", true},
 		{"container-restart", http.MethodPost, "/containers/abc/restart", "", true},
 		{"container-rename", http.MethodPost, "/containers/abc/rename?name=app-backup", "", true},
 		{"container-remove", http.MethodDelete, "/containers/abc", "", true},
@@ -126,6 +127,15 @@ func TestArcaneWithManagementPresetConformance(t *testing.T) {
 		{"v-prefixed-container-create", http.MethodPost, "/v1.45/containers/create", app + `}`, true},
 		{"v-prefixed-container-start", http.MethodPost, "/v1.45/containers/abc/start", "", true},
 		{"v-prefixed-container-stop", http.MethodPost, "/v1.45/containers/abc/stop", "", true},
+
+		// ?signal= on stop or restart is arbitrary signal delivery.
+		{"container-stop-signal-denied", http.MethodPost, "/containers/abc/stop?signal=SIGUSR1&t=5", "", false},
+		{"v-prefixed-container-stop-signal-denied", http.MethodPost, "/v1.45/containers/abc/stop?signal=SIGUSR1", "", false},
+		{"container-stop-sigstop-freeze-denied", http.MethodPost, "/containers/abc/stop?signal=SIGSTOP&t=-1", "", false},
+		{"container-stop-empty-signal-denied", http.MethodPost, "/containers/abc/stop?signal=", "", false},
+		{"container-stop-cased-signal-denied", http.MethodPost, "/containers/abc/stop?Signal=SIGUSR1", "", false},
+		{"container-restart-signal-denied", http.MethodPost, "/containers/abc/restart?signal=SIGHUP", "", false},
+		{"v-prefixed-container-restart-signal-denied", http.MethodPost, "/v1.45/containers/abc/restart?signal=SIGHUP", "", false},
 		{"v-prefixed-container-restart", http.MethodPost, "/v1.45/containers/abc/restart", "", true},
 		{"v-prefixed-container-remove", http.MethodDelete, "/v1.45/containers/abc", "", true},
 		{"v-prefixed-image-pull", http.MethodPost, "/v1.45/images/create?fromImage=nginx&tag=latest", "", true},

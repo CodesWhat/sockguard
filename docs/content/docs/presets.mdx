@@ -658,6 +658,8 @@ replace it with the host paths your projects mount. The updater and redeploys
 recreate a container with its original mounts, so a container that binds a
 path outside the list can't be updated until you add it.
 
+Stop and restart requests carrying a `signal` query are denied, since Arcane sends none. The Engine API honors `?signal=` on both routes, so without the guard they would deliver arbitrary signals (a kill, or a `SIGSTOP` freeze), which the preset otherwise denies.
+
 `ownership.owner: arcane` stamps every container, network and volume Arcane
 creates and limits Arcane to resources carrying that label. Containers that
 already exist don't carry it, so Arcane's lists and actions skip them until you
@@ -910,7 +912,7 @@ Least-privilege access for the Jenkins [Docker plugin](https://plugins.jenkins.i
 # Denies: every other Docker API route
 ```
 
-Derived from jenkinsci/docker-plugin `1337.v3ca_fd1b_b_25ef`. Container create is bounded by `request_body.container_create`: the image must exactly match an entry in `allowed_images` (replace the shipped `jenkins/inbound-agent` entry with your own, fully qualified), and privileged mode, host namespaces, bind mounts, devices, capability additions, sysctls, unconfined seccomp and AppArmor, unmasked system paths, SELinux disable, published ports, and joining another container's namespaces are all refused. `ownership.owner` scopes list, inspect, stop and remove to containers created through the proxy, and force and anonymous-volume removal are allowed because the plugin uses both.
+Derived from jenkinsci/docker-plugin `1337.v3ca_fd1b_b_25ef`. Container create is bounded by `request_body.container_create`: the image must exactly match an entry in `allowed_images` (replace the shipped `jenkins/inbound-agent` entry with your own, fully qualified), and privileged mode, host namespaces, bind mounts, devices, capability additions, sysctls, unconfined seccomp and AppArmor, unmasked system paths, SELinux disable, published ports, and joining another container's namespaces are all refused. `ownership.owner` scopes list, inspect, stop and remove to containers created through the proxy, and force and anonymous-volume removal are allowed because the plugin uses both. Stop requests carrying a `signal` query are denied, since the plugin sends none and the Engine API would otherwise let them deliver arbitrary signals.
 
 Not supported, and refused: the Attach connector (exec and archive copy), the SSH connector (archive copy and published ports), the plugin's log read on disconnect, template options that need host mounts or `--volumes-from`, and docker-workflow's `docker.image().inside()` and `docker.build()`, which run the `docker` CLI with host bind mounts, exec and top. Anyone who can edit an agent template can still run the allowed image with any command and environment; pin images by digest and restrict who can configure clouds and templates. See the [compose example](https://github.com/CodesWhat/sockguard/tree/main/examples/compose/jenkins).
 
