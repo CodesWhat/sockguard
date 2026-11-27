@@ -104,13 +104,15 @@ func TestGeneralizeSuggestPath(t *testing.T) {
 		"/containers/abcdef01234/json":         "/containers/abcdef01234/json",
 		"/networks/" + strings.Repeat("a", 64): "/networks/*",
 		"/images/library:tag/json":             "/images/library:tag/json",
+		"/libpod/containers/abcdef012345/json": "/libpod/containers/*/json",
 	} {
 		got, ok := generalizeSuggestPath(in)
 		if !ok || got != want {
 			t.Errorf("%q = %q,%v want %q", in, got, ok, want)
 		}
 	}
-	for _, bad := range []string{"", "x", "/a/*", "/a/**", "/a/../b", "/a/./b", "/a b", "/a?x=1", "/a/", "/a%2fb", "/a\x00", "/[a]"} {
+	for _, bad := range []string{"", "x", "/a/*", "/a/**", "/a/../b", "/a/./b", "/a b", "/a?x=1", "/a/", "/a%2fb", "/a\x00", "/[a]",
+		"/0123456789ab", "/aaaaaaaaaaaa/bbbbbbbbbbbb", "/aaaaaaaaaaaa/containers", "/containers/aaaaaaaaaaaa/bbbbbbbbbbbb"} {
 		if got, ok := generalizeSuggestPath(bad); ok {
 			t.Errorf("%q accepted as %q", bad, got)
 		}
@@ -135,5 +137,39 @@ func TestPolicySuggestGoldenLoadsAsConfig(t *testing.T) {
 	}
 	if _, err := compileConfiguredRules(cfg.Rules); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestPolicySuggestNeverEmitsWildcardRoot(t *testing.T) {
+	in := strings.Join([]string{
+		`{"msg":"request_would_deny","method":"DELETE","normalized_path":"/aaaaaaaaaaaa/bbbbbbbbbbbb","decision":"would_deny"}`,
+		`{"msg":"request_would_deny","method":"GET","normalized_path":"/0123456789ab","decision":"would_deny"}`,
+		`{"msg":"request_would_deny","method":"POST","normalized_path":"/aaaaaaaaaaaa/bbbbbbbbbbbb/cccccccccccc","decision":"would_deny"}`,
+	}, "\n")
+	rules, stats, err := collectSuggestions(strings.NewReader(in))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rules) != 0 || stats.WouldDeny != 3 || stats.Skipped != 3 {
+		t.Fatalf("rules=%d wouldDeny=%d skipped=%d, want 0, 3, 3", len(rules), stats.WouldDeny, stats.Skipped)
+	}
+	out, err := renderSuggestions(rules, stats)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "rules: []\n") {
+		t.Fatalf("output = %q, want rules: []", out)
+	}
+}
+
+func TestPolicySuggestGoldenNeverHasWildcardRoot(t *testing.T) {
+	golden, err := os.ReadFile("testdata/suggest_access.golden.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, line := range strings.Split(string(golden), "\n") {
+		if strings.Contains(line, "path:") && (strings.Contains(line, `path: "/*"`) || strings.Contains(line, "/*/*")) {
+			t.Errorf("golden rule widens to a wildcard root: %s", line)
+		}
 	}
 }

@@ -231,7 +231,10 @@ What it will and won't include:
 - Only the method and the normalized path are read. Query strings, headers,
   bodies, client addresses and request IDs never reach the output.
 - Segments that are 12 to 64 lowercase hex characters (container, exec and
-  network IDs) become `*`. Names stay literal, since a name can't be told from
+  network IDs) become `*`, but only right after a literal resource segment
+  (`/containers/<id>/logs`). A path that starts with an ID, or has two IDs in
+  a row, is skipped, so one odd request can't turn into an allow-everything
+  rule such as `GET /*`. Names stay literal, since a name can't be told from
   a path word.
 - A path containing glob characters, `..`, encoded bytes or anything outside
   letters, digits and `-_.~:` is skipped and counted, never emitted.

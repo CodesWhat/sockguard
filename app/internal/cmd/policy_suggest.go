@@ -50,7 +50,9 @@ Every rule is a suggestion that needs operator review. Nothing is written to a
 config file and nothing activates itself. Only the method and the normalized
 path are read: query strings, headers, bodies, client addresses and request
 IDs never reach the output. Container and other resource IDs (12 to 64 hex
-characters) are generalized to "*"; names are kept literal. Input is bounded in
+characters) are generalized to "*" only after a literal resource segment, and
+paths that start with an ID or have consecutive IDs are skipped; names are kept
+literal. Input is bounded in
 line length and line count, and the output is compiled with the real rule
 compiler before it is printed.`,
 	Args: cobra.NoArgs,
@@ -228,13 +230,18 @@ func safeSuggestMethod(m string) bool {
 }
 
 // generalizeSuggestPath replaces resource IDs with "*" and refuses any path
-// that carries glob syntax or characters outside a conservative set, so a
-// logged value can never widen or break the emitted rule.
+// that carries glob syntax or characters outside a conservative set. An ID is
+// only generalized after a literal resource segment (/containers/<id>/logs),
+// so a path that starts with an ID, or has two IDs in a row, is refused
+// instead. Every emitted path therefore starts with a literal segment and
+// never has consecutive "*" segments, which keeps a crafted would-deny
+// request such as GET /0123456789ab from becoming an allow-everything rule.
 func generalizeSuggestPath(p string) (string, bool) {
 	if p == "" || len(p) > suggestMaxPathBytes || p[0] != '/' {
 		return "", false
 	}
 	segs := strings.Split(p[1:], "/")
+	prevGeneralized := false
 	for i, s := range segs {
 		if i == len(segs)-1 && s == "" && len(segs) > 1 {
 			return "", false
@@ -248,8 +255,14 @@ func generalizeSuggestPath(p string) (string, bool) {
 			return "", false
 		}
 		if isHexID(s) {
+			if i == 0 || prevGeneralized {
+				return "", false
+			}
 			segs[i] = "*"
+			prevGeneralized = true
+			continue
 		}
+		prevGeneralized = false
 	}
 	return "/" + strings.Join(segs, "/"), true
 }
