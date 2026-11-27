@@ -120,7 +120,7 @@ func printRules(out io.Writer, p *ui.Printer, cfg *config.Config, count int) {
 		if method == "" {
 			method = "*"
 		}
-		fmt.Fprintf(out, "    %s %s  %-6s %s%s\n", glyph, action, method, r.Match.Path, ruleQuerySuffix(r.Match.Query))
+		fmt.Fprintf(out, "    %s %s  %-6s %s%s%s\n", glyph, action, method, r.Match.Path, ruleQuerySuffix(r.Match.Query), ruleBodySuffix(r.Match.Body))
 	}
 	fmt.Fprintln(out)
 }
@@ -130,6 +130,15 @@ func printRules(out io.Writer, p *ui.Printer, cfg *config.Config, count int) {
 func ruleQuerySuffix(query map[string][]string) string {
 	if q := filter.FormatQuery(query); q != "" {
 		return " ?" + q
+	}
+	return ""
+}
+
+// ruleBodySuffix renders a rule's match.body as " {name=team-app-*}" for the
+// rule listings, or "" when the rule has none.
+func ruleBodySuffix(body map[string][]string) string {
+	if b := filter.FormatBody(body); b != "" {
+		return " {" + b + "}"
 	}
 	return ""
 }
@@ -157,7 +166,7 @@ func printClientProfiles(out io.Writer, p *ui.Printer, cfg *config.Config) {
 			if method == "" {
 				method = "*"
 			}
-			fmt.Fprintf(out, "      %s %s  %-6s %s%s\n", glyph, action, method, r.Match.Path, ruleQuerySuffix(r.Match.Query))
+			fmt.Fprintf(out, "      %s %s  %-6s %s%s%s\n", glyph, action, method, r.Match.Path, ruleQuerySuffix(r.Match.Query), ruleBodySuffix(r.Match.Body))
 		}
 	}
 	fmt.Fprintln(out)

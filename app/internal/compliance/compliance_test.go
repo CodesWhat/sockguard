@@ -463,6 +463,10 @@ func TestSwarmRules(t *testing.T) {
 			{Match: config.MatchConfig{Method: "POST", Path: "/services/**", Query: map[string][]string{"x": {"1"}}}, Action: "allow"}, denyAll}, nil, StatusNotConfigured},
 		{"query-constrained services deny does not shadow", []config.RuleConfig{
 			{Match: config.MatchConfig{Method: "*", Path: "/services/**", Query: map[string][]string{"x": {"1"}}}, Action: "deny"}, allow("/services/**"), denyAll}, nil, StatusNotConfigured},
+		{"body-constrained services allow is still reachable", []config.RuleConfig{
+			{Match: config.MatchConfig{Method: "POST", Path: "/services/**", Body: map[string][]string{"Name": {"keep*"}}}, Action: "allow"}, denyAll}, nil, StatusNotConfigured},
+		{"body-constrained services deny does not shadow", []config.RuleConfig{
+			{Match: config.MatchConfig{Method: "*", Path: "/services/**", Body: map[string][]string{"Name": {"drop*"}}}, Action: "deny"}, allow("/services/**"), denyAll}, nil, StatusNotConfigured},
 		{"global allows, profile denies", []config.RuleConfig{allow("/swarm/**")},
 			[]config.ClientProfileConfig{{Name: "p", Rules: []config.RuleConfig{denyAll}}}, StatusPartial},
 		{"profile allows nodes", []config.RuleConfig{denyAll},

@@ -396,6 +396,7 @@ func compileRules(rules []config.RuleConfig) ([]*filter.CompiledRule, error) {
 			Reason:  r.Reason,
 			Index:   i,
 			Query:   r.Match.Query,
+			Body:    r.Match.Body,
 		})
 		if err != nil {
 			return nil, err

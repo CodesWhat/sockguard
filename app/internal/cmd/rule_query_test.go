@@ -262,9 +262,9 @@ func TestWithoutQueryConstrainedDenies(t *testing.T) {
 		{Match: config.MatchConfig{Method: "GET", Path: "/b", Query: map[string][]string{"x": {"1"}}}, Action: "allow"},
 		{Match: config.MatchConfig{Method: "GET", Path: "/c"}, Action: "deny"},
 	}
-	got := withoutQueryConstrainedDenies(rules)
+	got := withoutConditionalDenies(rules)
 	if len(got) != 2 || got[0].Match.Path != "/b" || got[1].Match.Path != "/c" {
-		t.Fatalf("withoutQueryConstrainedDenies = %+v", got)
+		t.Fatalf("withoutConditionalDenies = %+v", got)
 	}
 }
 

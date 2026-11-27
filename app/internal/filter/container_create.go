@@ -704,6 +704,18 @@ func RejectDuplicateCaseVariantJSONKeys(body []byte) error {
 	return s.scanValue(0, false)
 }
 
+// RejectDuplicateCaseVariantJSONKeysStrict is RejectDuplicateCaseVariantJSONKeys
+// with the data-map exemption withdrawn: a data map's sibling keys are weighed
+// for repeats exactly as a struct level's are. The exemption exists for the
+// inspectors, whose engines all read a map's keys the same way whatever the
+// spelling; a body whose repeated keys sit only inside a data map forwards
+// fine. The rule matcher promises something stricter — it will not guess at
+// any body holding a repeated key — and weighs these bodies unread.
+func RejectDuplicateCaseVariantJSONKeysStrict(body []byte) error {
+	s := caseVariantKeyScanner{body: body, weighDataMaps: true}
+	return s.scanValue(0, false)
+}
+
 // RejectDuplicateCaseVariantJSONValue is RejectDuplicateCaseVariantJSONKeys
 // against a body that has already been decoded — same sibling fold-check, same
 // data-map exemption, without parsing the same bytes a second time.
@@ -781,6 +793,10 @@ type caseVariantKeyScanner struct {
 	// scanBodyKeys.
 	deferDivergent bool
 	divergent      error
+	// weighDataMaps withdraws the data-map sibling exemption: every object's
+	// keys are weighed for repeats, not only a struct level's. See
+	// RejectDuplicateCaseVariantJSONKeysStrict.
+	weighDataMaps bool
 }
 
 // scanBodyKeys is RejectDuplicateCaseVariantJSONKeys with its two refusals
@@ -887,7 +903,12 @@ func (s *caseVariantKeyScanner) scanObject(depth int, skip bool) error {
 		// Only a struct level classifies its children, so a field named like
 		// an exempt one INSIDE a data map does not inherit the exemption —
 		// see checkDuplicateCaseVariantKeys, whose childSkip this mirrors.
-		if err := s.scanValue(depth+1, !skip && s.keyIsCaseSensitiveDataMapField(key)); err != nil {
+		// weighDataMaps withdraws the exemption entirely.
+		childSkip := !skip && s.keyIsCaseSensitiveDataMapField(key)
+		if s.weighDataMaps {
+			childSkip = false
+		}
+		if err := s.scanValue(depth+1, childSkip); err != nil {
 			return err
 		}
 	}

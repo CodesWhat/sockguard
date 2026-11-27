@@ -42,6 +42,10 @@ type Rule struct {
 	// Query constrains the request query: every key must be present and every
 	// occurrence of it must match one of its patterns. See CompiledRule.matchesQuery.
 	Query map[string][]string
+	// Body constrains the request body: it must be a JSON object carrying each
+	// named top-level field with a value matching one of its patterns. See
+	// CompiledRule.matchesBody.
+	Body map[string][]string
 }
 
 type httpMethodMask uint16
@@ -80,6 +84,7 @@ type CompiledRule struct {
 	segmentPatterns []string
 	pattern         *regexp.Regexp
 	query           []queryConstraint
+	body            []bodyConstraint
 	// Action is returned when this rule matches.
 	Action Action
 	// Reason is attached to the decision metadata when this rule matches.
@@ -133,9 +138,14 @@ func CompileRule(r Rule) (*CompiledRule, error) {
 	if err != nil {
 		return nil, err
 	}
+	body, err := compileBodyConstraints(r.Body)
+	if err != nil {
+		return nil, err
+	}
 
 	cr := &CompiledRule{
 		query:           query,
+		body:            body,
 		methodMask:      methodMask,
 		unknownMethods:  unknownMethods,
 		matchAllMethods: matchAllMethods,
@@ -224,10 +234,32 @@ func (cr *CompiledRule) matchesNormalizedUpperWithBit(upperMethod string, method
 // Evaluate evaluates a request against an ordered list of compiled rules.
 // Returns the action and the matched rule index. If no rule matches, returns deny.
 func Evaluate(rules []*CompiledRule, r *http.Request) (Action, int, string) {
-	routePath, encodedScp := normalizedLibpodImageScpRoutePath(r)
-	q := &requestQuery{raw: r.URL.RawQuery}
-	action, index, reason, _ := evaluateRequestPolicyQuery(rules, r, q, NormalizePath(r.URL.Path), routePath, encodedScp)
+	action, index, reason, _ := EvaluateWithBodyState(rules, r)
 	return action, index, reason
+}
+
+// BodyState is the body witness the rule walk used for a request: whether a
+// body was read at all and whether it parsed into readable fields. Reporting
+// callers need it to tell a rule that matched its constraints from one that
+// matched fail-closed over an unread body, and they must not reach for a
+// second read to find out: the evaluation's own witness is the one that
+// decided the request.
+type BodyState struct {
+	unread bool
+}
+
+// Readable reports whether the evaluation read the body and found it a JSON
+// object whose keys the engines agree on.
+func (b BodyState) Readable() bool { return !b.unread }
+
+// EvaluateWithBodyState is Evaluate plus the body state the rule walk used.
+func EvaluateWithBodyState(rules []*CompiledRule, r *http.Request) (Action, int, string, BodyState) {
+	routePath, encodedScp := normalizedLibpodImageScpRoutePath(r)
+	normalizedPath := NormalizePath(r.URL.Path)
+	q := &requestQuery{raw: r.URL.RawQuery}
+	b := requestBodyFor(rules, r, normalizedPath, routePath, encodedScp)
+	action, index, reason, _ := evaluateRequestPolicyQuery(rules, r, q, b, normalizedPath, routePath, encodedScp)
+	return action, index, reason, BodyState{unread: b.unread}
 }
 
 // evaluateRequestPolicy evaluates the decoded canonical path used by policy
@@ -241,24 +273,42 @@ func Evaluate(rules []*CompiledRule, r *http.Request) (Action, int, string) {
 // routePath and encodedScp come from the caller's single
 // normalizedLibpodImageScpRoutePath classification of the request.
 func evaluateRequestPolicy(rules []*CompiledRule, r *http.Request, normalizedPath, routePath string, encodedScp bool) (Action, int, string, string) {
-	return evaluateRequestPolicyQuery(rules, r, &requestQuery{raw: r.URL.RawQuery}, normalizedPath, routePath, encodedScp)
+	return evaluateRequestPolicyQuery(rules, r, &requestQuery{raw: r.URL.RawQuery}, requestBodyFor(rules, r, normalizedPath, routePath, encodedScp), normalizedPath, routePath, encodedScp)
+}
+
+// emptyRequestBody is the state a request that needs no body read is evaluated
+// against. No rule with body constraints can have matched such a request, so
+// nothing reads through it, and the middleware's allocation baseline depends on
+// it not being allocated per request.
+var emptyRequestBody = &requestBody{}
+
+// requestBodyFor reads the request body for `match.body` constraints, and only
+// when some body-constrained rule's method and path already match. A policy
+// without body constraints, and a request no body constraint can act on, read
+// nothing.
+func requestBodyFor(rules []*CompiledRule, r *http.Request, normalizedPath, routePath string, encodedScp bool) *requestBody {
+	if r == nil || !rulesNeedRequestBody(rules, r.Method, normalizedPath, routePath, encodedScp) {
+		return emptyRequestBody
+	}
+	state := newRequestBody(r)
+	return &state
 }
 
 // evaluateRequestPolicyQuery is evaluateRequestPolicy with the request's query
-// state shared across both path views, so the query parses at most once.
-func evaluateRequestPolicyQuery(rules []*CompiledRule, r *http.Request, q *requestQuery, normalizedPath, routePath string, encodedScp bool) (Action, int, string, string) {
+// and body state shared across both path views, so each parses at most once.
+func evaluateRequestPolicyQuery(rules []*CompiledRule, r *http.Request, q *requestQuery, b *requestBody, normalizedPath, routePath string, encodedScp bool) (Action, int, string, string) {
 	if !encodedScp {
-		action, index, reason := evaluateNormalizedQuery(rules, r.Method, normalizedPath, q)
+		action, index, reason := evaluateNormalizedQuery(rules, r.Method, normalizedPath, q, b)
 		return action, index, reason, normalizedPath
 	}
 
 	decodedPath := NormalizePath(r.URL.Path)
-	action, index, reason := evaluateNormalizedQuery(rules, r.Method, decodedPath, q)
+	action, index, reason := evaluateNormalizedQuery(rules, r.Method, decodedPath, q, b)
 	if action != ActionAllow {
 		return action, index, reason, decodedPath
 	}
 
-	action, index, reason = evaluateNormalizedQuery(rules, r.Method, routePath, q)
+	action, index, reason = evaluateNormalizedQuery(rules, r.Method, routePath, q, b)
 	return action, index, reason, routePath
 }
 
@@ -322,14 +372,14 @@ func isLibpodImageScpRoutePath(routePath string) bool {
 }
 
 func evaluateNormalized(rules []*CompiledRule, method, normalizedPath string) (Action, int, string) {
-	return evaluateNormalizedQuery(rules, method, normalizedPath, &requestQuery{})
+	return evaluateNormalizedQuery(rules, method, normalizedPath, &requestQuery{}, &requestBody{})
 }
 
-func evaluateNormalizedQuery(rules []*CompiledRule, method, normalizedPath string, q *requestQuery) (Action, int, string) {
+func evaluateNormalizedQuery(rules []*CompiledRule, method, normalizedPath string, q *requestQuery, b *requestBody) (Action, int, string) {
 	upperMethod := upperHTTPMethodASCII(method)
 	methodBit := httpMethodBit(upperMethod)
 	for _, rule := range rules {
-		if rule.matchesNormalizedUpperWithBit(upperMethod, methodBit, normalizedPath) && rule.matchesQuery(q) {
+		if rule.matchesNormalizedUpperWithBit(upperMethod, methodBit, normalizedPath) && rule.matchesQuery(q) && rule.matchesBody(b) {
 			return rule.Action, rule.Index, rule.Reason
 		}
 	}
