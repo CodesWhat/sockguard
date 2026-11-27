@@ -47,6 +47,25 @@ func TestLookupLibpodUnscopeableWriteMatchesSystemCheck(t *testing.T) {
 	}
 }
 
+func TestLookupLibpodUnscopeableWriteMatchesAutoUpdate(t *testing.T) {
+	t.Parallel()
+	write, ok := LookupLibpodUnscopeableWrite(http.MethodPost, LibpodAutoUpdatePath)
+	if !ok {
+		t.Fatalf("LookupLibpodUnscopeableWrite(POST, %q) = no match, want the auto-update entry", LibpodAutoUpdatePath)
+	}
+	if write.ReasonCodeStem != "autoupdate" {
+		t.Fatalf("ReasonCodeStem = %q, want %q", write.ReasonCodeStem, "autoupdate")
+	}
+	if write.Reason != LibpodAutoUpdateDenyReason {
+		t.Fatalf("Reason = %q, want the shared deny reason", write.Reason)
+	}
+	for _, method := range []string{http.MethodGet, http.MethodPut, http.MethodDelete} {
+		if _, ok := LookupLibpodUnscopeableWrite(method, LibpodAutoUpdatePath); ok {
+			t.Fatalf("%s %s matched, want a POST-only entry", method, LibpodAutoUpdatePath)
+		}
+	}
+}
+
 // TestLookupLibpodUnscopeableWriteMatchesKubeDown pins both spellings of kube
 // down. Podman serves DELETE /libpod/play/kube and DELETE /libpod/kube/play
 // from one handler (pkg/api/server/register_kube.go:180-181 at v5.8.6), so a

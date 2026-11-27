@@ -149,6 +149,9 @@ type ownershipRequestReferences struct {
 	// networks, named volumes and image volumes, or the reason the body is
 	// refused for how it names one. See libpod_create_references.go.
 	libpodCreate *libpodCreateReferences
+	// lockNames are the names the request creates or takes over, for the
+	// keyed create locks. See keyed_lock.go.
+	lockNames []lockName
 }
 
 // Options configures per-proxy resource ownership labeling and enforcement.
@@ -163,6 +166,15 @@ type Options struct {
 	// is denied if the referenced container is missing or does not belong to
 	// the configured owner. Set true to restore the old unchecked behavior.
 	AllowCrossOwnerNamespaceSharing bool
+	// AllOwners lifts owner scoping for the requests these options serve
+	// (client profile ownership.scope: all). Owner is still required: creates
+	// are stamped with it. Reads are not narrowed, no owner check is made on
+	// any resource a request names or references, and the owner-scoping
+	// refusals (host-wide libpod reads and writes, the Podman compat secret
+	// list) do not apply. The build refusals stay, because a build stamps its
+	// output with Owner. Body and path policy is not this layer's concern and
+	// is untouched.
+	AllOwners bool
 	// UpstreamFlavor is the engine behind the upstream socket, resolved at
 	// startup from upstream.flavor (see internal/upstreamflavor). It changes
 	// two things here. The Docker-compat GET /secrets is refused on Podman,
@@ -200,6 +212,12 @@ type Options struct {
 	// PodmanConjunctiveVolumeFilters is true only when all upstream endpoints
 	// positively report a released Podman version with AND across volume filter keys.
 	PodmanConjunctiveVolumeFilters bool
+	// Locks serializes create-by-name routes across owners. It is set only
+	// when more than one distinct owner shares the instance; nil leaves the
+	// single-owner path untouched. Every per-owner middleware of one instance
+	// has to share the same set, or two owners would hold different locks for
+	// one name.
+	Locks *KeyedLocks
 }
 
 type upstreamInspector struct {
@@ -314,7 +332,7 @@ func middlewareWithPullCheck(
 			// serveOwnershipAllowed gives for the two disk-usage reads:
 			// nothing here has a body-filtering step HEAD could legitimately
 			// need, so gating on GET alone would forward it to the daemon.
-			if r.Method == http.MethodGet || r.Method == http.MethodHead {
+			if !opts.AllOwners && (r.Method == http.MethodGet || r.Method == http.MethodHead) {
 				if read, ok := filter.LookupLibpodUnscopeableRead(normPath); ok {
 					denyUnscopeableLibpodRead(w, r, read)
 					return
@@ -339,7 +357,7 @@ func middlewareWithPullCheck(
 			// names what it removes in a YAML body nothing parses. Like the
 			// read refusals above it is unconditional — a warn-mode
 			// measurement is worth nothing once the pods are gone.
-			if write, ok := filter.LookupLibpodUnscopeableWrite(r.Method, normPath); ok {
+			if write, ok := filter.LookupLibpodUnscopeableWrite(r.Method, normPath); ok && !opts.AllOwners {
 				denyUnscopeableLibpodWrite(w, r, write)
 				return
 			}
@@ -364,6 +382,42 @@ func middlewareWithPullCheck(
 				return
 			}
 
+			if opts.AllOwners {
+				// Stamp creates while skipping resource owner comparisons.
+				// mutateOwnershipRequest skips list filters for AllOwners.
+				adminRefs, err := mutateOwnershipRequest(r, normPath, opts)
+				if err != nil {
+					denyOwnershipMutation(w, r, err)
+					return
+				}
+				// Image writes must still expose every destination for stamping
+				// and locking. Refusals about referenced resource owners, such
+				// as service volume templates, do not apply to admin scope.
+				reason := ""
+				if adminRefs != nil {
+					imageWrite := isImageCreateRoutePath(r.Method, normPath) || isImageLoadRoutePath(r.Method, normPath) ||
+						(r.Method == http.MethodPost && (isCommitPath(normPath) || normPath == "/build" || normPath == libpodPrefix+"build"))
+					if imageWrite {
+						reason = adminRefs.denyReason
+					}
+					if reason == "" && adminRefs.imageTag != nil {
+						reason = adminRefs.imageTag.denyReason
+					}
+				}
+				if reason != "" {
+					logging.SetDeniedWithCode(w, r, reasonCodeOwnerPolicyDeniedAccess, reason, nil)
+					_ = httpjson.Write(w, http.StatusForbidden, httpjson.ErrorResponse{Message: reason})
+					return
+				}
+				release, ok := acquireCreateLocks(w, r, opts, adminRefs)
+				if !ok {
+					return
+				}
+				defer release()
+				next.ServeHTTP(w, r)
+				return
+			}
+
 			ownerFilterApplies := needsOwnerFilter(r.Method, normPath) || libpodNeedsOwnerFilter(r.Method, normPath)
 			if ownerFilterApplies && refuseInvalidFilterKeys(w, r) {
 				return
@@ -379,13 +433,7 @@ func middlewareWithPullCheck(
 
 			refs, err := mutateOwnershipRequest(r, normPath, opts)
 			if err != nil {
-				reasonCode := reasonCodeOwnerRequestInvalid
-				var ambiguous *ambiguousBodyKeyError
-				if errors.As(err, &ambiguous) {
-					reasonCode = filter.ReasonCodeRequestBodyAmbiguous
-				}
-				logging.SetDeniedWithCode(w, r, reasonCode, err.Error(), nil)
-				_ = httpjson.Write(w, http.StatusBadRequest, httpjson.ErrorResponse{Message: err.Error()})
+				denyOwnershipMutation(w, r, err)
 				return
 			}
 
@@ -407,6 +455,15 @@ func middlewareWithPullCheck(
 			// it as a push of an image named "scp". Every path whose route view
 			// is an SCP route still starts with this prefix once cleaned, so
 			// the guard stays a cheap string compare and never skips one.
+			// Hold the names this request creates from the preflight below
+			// until the upstream response is finished, so another owner's
+			// create can't take a name between the lookup and the write.
+			release, locked := acquireCreateLocks(w, r, opts, refs)
+			if !locked {
+				return
+			}
+			defer release()
+
 			routePath := normPath
 			if r.Method == http.MethodPost && strings.HasPrefix(normPath, libpodPrefix+"images/scp") {
 				routePath = filter.NormalizePodmanRoutePath(r.URL.EscapedPath())
@@ -462,15 +519,21 @@ func mutateOwnershipRequest(r *http.Request, normPath string, opts Options) (*ow
 		}
 		return &ownershipRequestReferences{imageBatch: batch}, nil
 	case r.Method == http.MethodPost && normPath == "/containers/create":
-		return mutateContainerCreateOwnershipBody(r, opts.LabelKey, opts.Owner, opts.UpstreamFlavor)
+		refs, err := mutateContainerCreateOwnershipBody(r, opts.LabelKey, opts.Owner, opts.UpstreamFlavor)
+		if refs != nil {
+			refs.addNameQueryLockNames(r, dockerresource.KindContainer)
+		}
+		return refs, err
 	case r.Method == http.MethodPost && isNetworkMembershipChangePath(normPath):
 		return extractNetworkMembershipOwnershipReferences(r)
 	case r.Method == http.MethodPost && normPath == "/secrets/create":
 		return mutateCompatSecretCreateOwnershipRequest(r, opts)
 	case r.Method == http.MethodPost && normPath == "/volumes/create":
 		return mutateVolumeCreateOwnershipBody(r, opts.LabelKey, opts.Owner, "Labels")
-	case r.Method == http.MethodPost && (normPath == "/networks/create" || normPath == "/configs/create"):
-		return nil, addOwnerLabelToBody(r, opts.LabelKey, opts.Owner)
+	case r.Method == http.MethodPost && normPath == "/networks/create":
+		return mutateNamedCreateBody(r, opts.LabelKey, opts.Owner, dockerresource.KindNetwork)
+	case r.Method == http.MethodPost && normPath == "/configs/create":
+		return mutateNamedCreateBody(r, opts.LabelKey, opts.Owner, dockerresource.KindConfig)
 	case r.Method == http.MethodPost && (normPath == "/services/create" || isServiceUpdatePath(normPath)):
 		return mutateServiceOwnershipBody(r, opts.LabelKey, opts.Owner)
 	case r.Method == http.MethodPost && (isNodeUpdatePath(normPath) || isSwarmUpdatePath(normPath)):
@@ -500,10 +563,25 @@ func mutateOwnershipRequest(r *http.Request, normPath string, opts Options) (*ow
 	case r.Method == http.MethodPost && normPath == libpodSecretCreatePath:
 		return mutateLibpodSecretCreateOwnershipRequest(r, opts)
 	case needsOwnerFilter(r.Method, normPath), libpodNeedsOwnerFilter(r.Method, normPath):
+		if opts.AllOwners {
+			return nil, nil
+		}
 		return nil, addOwnerLabelFilter(r, normPath, opts.LabelKey, opts.Owner, opts.UpstreamFlavor == upstreamflavor.Podman)
 	default:
 		return nil, nil
 	}
+}
+
+// denyOwnershipMutation writes the 400 for a request body the ownership layer
+// could not rewrite.
+func denyOwnershipMutation(w http.ResponseWriter, r *http.Request, err error) {
+	reasonCode := reasonCodeOwnerRequestInvalid
+	var ambiguous *ambiguousBodyKeyError
+	if errors.As(err, &ambiguous) {
+		reasonCode = filter.ReasonCodeRequestBodyAmbiguous
+	}
+	logging.SetDeniedWithCode(w, r, reasonCode, err.Error(), nil)
+	_ = httpjson.Write(w, http.StatusBadRequest, httpjson.ErrorResponse{Message: err.Error()})
 }
 
 func extractNetworkMembershipOwnershipReferences(r *http.Request) (*ownershipRequestReferences, error) {
@@ -937,6 +1015,37 @@ func singularResource(kind dockerresource.Kind) string {
 	}
 }
 
+// mutateNamedCreateBody stamps the owner label on a create whose body names the
+// resource in a Name field, and records the name for the create locks.
+func mutateNamedCreateBody(r *http.Request, labelKey, owner string, kind dockerresource.Kind) (*ownershipRequestReferences, error) {
+	refs := &ownershipRequestReferences{}
+	err := mutateJSONBody(r, func(decoded map[string]any) error {
+		labels, err := filter.NestedObject(decoded, "Labels")
+		if err != nil {
+			return err
+		}
+		labels[labelKey] = owner
+		for _, name := range filter.FoldedStrings(decoded, "Name") {
+			refs.addLockName(kind, name)
+		}
+		return nil
+	})
+	return refs, err
+}
+
+// addNameQueryLockNames records every `name` query value, whatever its case,
+// as a name the request creates.
+func (refs *ownershipRequestReferences) addNameQueryLockNames(r *http.Request, kind dockerresource.Kind) {
+	for key, values := range r.URL.Query() {
+		if !strings.EqualFold(key, "name") {
+			continue
+		}
+		for _, value := range values {
+			refs.addLockName(kind, value)
+		}
+	}
+}
+
 func addOwnerLabelToBody(r *http.Request, labelKey, owner string) error {
 	return mutateJSONBody(r, func(decoded map[string]any) error {
 		labels, err := filter.NestedObject(decoded, "Labels")
@@ -1318,6 +1427,9 @@ func mutateServiceOwnershipBody(r *http.Request, labelKey, owner string) (*owner
 			return err
 		}
 		serviceLabels[labelKey] = owner
+		for _, name := range filter.FoldedStrings(decoded, "Name") {
+			refs.addLockName(dockerresource.KindService, name)
+		}
 
 		containerLabels, err := filter.NestedObjectPath(decoded, "TaskTemplate", "ContainerSpec", "Labels")
 		if err != nil {

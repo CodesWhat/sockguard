@@ -1,6 +1,6 @@
 ---
 title: Presets
-description: Ready-made sockguard configs for drydock, drydock with self-update, drydock with compose, drydock with build, drydock with mediated build, Portwing, Portwing with exec, Portwing with compose, Portwing with build, Portwing with mediated build, Traefik, Portainer, Watchtower, Homepage, Homarr, Diun, Autoheal, GitHub Actions and GitLab runners, the CIS Docker Benchmark, read-only dashboards, and Podman read-only monitoring.
+description: Ready-made sockguard configs for drydock, drydock with self-update, drydock with compose, drydock with build, drydock with mediated build, Portwing, Portwing with exec, Portwing with compose, Portwing with build, Portwing with mediated build, Traefik, Portainer, Watchtower, Homepage, Homarr, Diun, Autoheal, GitHub Actions and GitLab runners, the CIS Docker Benchmark, read-only dashboards, Podman read-only monitoring, Dozzle, Dozzle with actions, Dozzle with shell, Uptime Kuma, Beszel, Arcane, Arcane with management, Dockge, Komodo, Komodo with deploy, Jenkins, and Woodpecker CI.
 ---
 
 Sockguard ships with ready-made config presets for common Docker consumers. All presets are bundled in the container image at `/etc/sockguard/`.
@@ -471,6 +471,324 @@ stay denied. Its dockerode call is `container.remove()` with no options, so the
 preset allows only bare container removal; `force`, anonymous-volume deletion,
 and legacy link deletion stay denied.
 
+## Dozzle (`dozzle.yaml`)
+
+Least-privilege access for [Dozzle](https://dozzle.dev)'s default read-only view.
+
+**Use for:** Dozzle with container list, live logs, stats and events, and nothing else.
+
+```yaml
+# Allows: GET /_ping, /version, /info, /events
+# Allows: GET container list + inspect + stats + logs
+# Denies: every other Docker API route
+```
+
+Derived from Dozzle v11.5.0 (`internal/container/docker/client.go`). Dozzle's
+purpose is reading logs, so this preset sets `insecure_allow_read_exfiltration: true`.
+Logs are the only exfiltration route it allows; archive, export, attach and top
+stay denied. Network topology redaction is off (`redact_network_topology: false`):
+Dozzle parses every container's network addresses while listing, and the
+redaction placeholder makes it exit with "Could not connect to any Docker
+Engine". Mount paths and env stay redacted, so the container details show
+placeholders for host paths. Container actions (`DOZZLE_ENABLE_ACTIONS`) and the shell
+(`DOZZLE_ENABLE_SHELL`) are not supported and sockguard refuses the calls they
+make. Dozzle's volume and disk-size readout (`GET /system/df`) is denied and
+Dozzle carries on without it. Swarm mode and agent mode are untested.
+
+## Dozzle with Actions (`dozzle-with-actions.yaml`)
+
+Extends the Dozzle preset with the buttons behind `DOZZLE_ENABLE_ACTIONS`.
+
+**Use for:** Dozzle where operators start, stop and restart containers from the UI.
+
+```yaml
+# Extends dozzle.yaml with:
+# Allows: POST /containers/{id}/start, /stop, /restart
+# Denies: container remove, kill, rename, update, create, exec, image pulls,
+#         prune and Dozzle's self-update
+```
+
+Dozzle's server route also accepts a `remove` action, but its UI only offers
+start, stop and restart, so `DELETE /containers/{id}` stays denied. The same
+flag also switches on Dozzle's image-update flow (pull, recreate, roll back),
+the host prune buttons and its self-update. Those need container create and
+remove, image pulls and prune, so they fail with a refusal under this preset.
+Anyone who can open Dozzle's UI can restart every container it lists, so put
+Dozzle behind its own authentication (`DOZZLE_AUTH_PROVIDER`).
+
+## Dozzle with Shell (`dozzle-with-shell.yaml`)
+
+Extends the Dozzle preset with the Shell tab behind `DOZZLE_ENABLE_SHELL`.
+
+**Use for:** Dozzle where operators open a terminal in a container from the UI.
+
+```yaml
+# Extends dozzle.yaml with:
+# Allows: POST /containers/{id}/exec, POST /exec/{id}/start,
+#         POST /exec/{id}/resize
+# request_body.exec:
+#   allow_privileged: false
+#   allow_root_user: true   # Dozzle sends an empty User, read as root
+#   allowed_users: [""]     # only an unset User passes; explicit users are refused
+#   allowed_commands:
+#     - ["sh", "-c", "command -v bash >/dev/null 2>&1 && exec bash || exec sh"]
+# Denies: any other exec command, container actions, the Attach tab, images
+```
+
+Dozzle sends the same argv for every shell session (`internal/web/terminal.go`
+in v11.5.0), so the preset pins it with `allowed_commands`. Sockguard matches
+the whole argv: any other command or a privileged exec is refused on create,
+and exec start re-checks the stored command before it runs. The preset does
+not set `insecure_allow_body_blind_writes`.
+
+The pin limits what starts, not what a person types afterwards. Anyone who can
+open the Shell tab has a shell in every container Dozzle lists. Dozzle's own
+tab runs as the container's default user, but sockguard cannot pin the exec
+User on its own (`allow_root_user` must be true because Dozzle sends an empty
+User, read as root), so `allowed_users: [""]` pins it: a request with any
+explicit User, root included, is refused on create and on the exec-start
+re-check. The shell then runs as the container's configured user, which is
+still root for images that default to it. Treat the grant as a shell in every
+container Dozzle lists, put Dozzle behind its own authentication and limit the
+shell role. Containers labeled `com.sockguard.exec=deny` are always
+refused, including the official sockguard image. The Attach tab
+(`POST /containers/{id}/attach`) feeds stdin to the container's main process
+and the exec allowlist does not cover it, so it stays denied and the tab fails
+with a refusal. Dozzle never calls exec inspect, so `GET /exec/{id}/json` stays
+denied.
+
+## Uptime Kuma (`uptime-kuma.yaml`)
+
+Least-privilege access for [Uptime Kuma](https://github.com/louislam/uptime-kuma)'s Docker Container monitor.
+
+**Use for:** Uptime Kuma monitoring container state and healthchecks, and nothing else.
+
+```yaml
+# Allows: GET container list, GET container inspect, GET/HEAD /_ping
+# Denies: every other Docker API route, including version, events and logs
+```
+
+Derived from Uptime Kuma 2.5.12 (`server/model/monitor.js` and `server/docker.js`).
+The monitor sends one `GET /containers/{name}/json` per check and the Docker
+Host "Test" button sends `GET /containers/json?all=true`. Uptime Kuma sends no
+ping or version call. The preset allows the harmless `/_ping` anyway, like every
+shipped preset, and denies `/version`. It reads only the inspect
+`State` block, so the default response redaction (env, mount paths, network
+addresses) doesn't affect it, and no `insecure_*` flag is set. Uptime Kuma has
+no container actions, log view or exec feature; the Docker Container monitor
+and the Host test are the supported workflows and everything else is refused.
+Only 2.5.12 was checked. 1.x and the 3.0 betas were not.
+
+## Beszel (`beszel.yaml`)
+
+Least-privilege access for the [Beszel](https://beszel.dev) agent's default container monitoring.
+
+**Use for:** the Beszel agent with container list, stats, health and image update checks, and nothing else.
+
+```yaml
+# Allows: GET /_ping, /version, /info
+# Allows: GET container list + inspect + stats
+# Allows: GET /images/**/json (image update checks)
+# Denies: every other Docker API route
+```
+
+Derived from Beszel v0.21.2 (`agent/docker.go`, `agent/docker_registry.go`). The
+agent sends no API version prefix and needs Docker 25.0.0 or newer for one-shot
+stats. The hub's container log view calls `GET /containers/{id}/logs`, which is
+not supported by this preset because logs are a read-exfiltration route; the
+hub shows an error for it. To enable it, add an allow rule for
+`GET /containers/*/logs` above the final deny and set
+`insecure_allow_read_exfiltration: true`. Set `DOCKER_IMAGE_CHECK=false` on the
+agent and drop the image rule if you don't use update checks. Podman and Swarm
+are untested.
+
+## Arcane (`arcane.yaml`)
+
+Least-privilege access for [Arcane](https://github.com/getarcaneapp/arcane)'s read-only view.
+
+**Use for:** Arcane's dashboard and its container, image, volume and network pages, container logs, stats and process list, live events and disk usage. Nothing else.
+
+```yaml
+# Allows: GET /_ping, /version, /info, /events, /system/df
+# Allows: GET container list + inspect + stats + top + logs
+# Allows: GET image list + inspect + history, volume and network list + inspect
+# Denies: every other Docker API route
+```
+
+Derived from Arcane v3.1.1 (`backend/internal/docker/service.go`,
+`backend/internal/container/`). Arcane's detail page streams logs, so this
+preset sets `insecure_allow_read_exfiltration: true`. Logs are the only
+exfiltration route it allows; archive, export, attach and image save stay
+denied. Container env, mount paths and network addresses stay redacted, so
+Arcane's detail pages show placeholders or empty values for them.
+
+Unsupported, and refused: container actions (start, stop, restart, redeploy,
+remove), the image updater and pulls, prunes, compose projects, volume and
+network create or remove, volume browsing and backups, and Swarm. Those
+buttons fail with a sockguard denial. Swarm mode and Podman are untested. For
+those, use [Arcane with management](#arcane-with-management-arcane-with-managementyaml).
+
+## Arcane with management (`arcane-with-management.yaml`)
+
+Bounded write access for [Arcane](https://github.com/getarcaneapp/arcane): everything `arcane.yaml` allows, plus container actions, image pulls, the updater and compose projects.
+
+**Use for:** Arcane starting, stopping, restarting and removing containers, pulling images, running the image updater, and deploying compose projects.
+
+```yaml
+# Allows: everything in arcane.yaml
+# Allows: container create, start, stop, restart, rename, remove
+# Allows: image pull
+# Allows: network create, connect, disconnect, remove; volume create
+# Denies: exec, attach, kill, pause, commit, archive, image remove, tag,
+#         prune, load and build, volume remove, Swarm, every other route
+```
+
+Derived from Arcane v3.1.1 (`backend/internal/container/service.go`,
+`backend/internal/image/service.go`, `backend/internal/updater/`,
+`backend/pkg/projects/`). Container create is bounded by
+`request_body.container_create`: privileged mode, host network, PID, IPC,
+user and cgroup namespaces, `container:<id>` and `ns:<path>` namespace joins,
+devices, capability additions, sysctls, unconfined seccomp and AppArmor, and
+published ports are refused. Bind mounts are refused outside
+`allowed_bind_mounts`, which ships with the placeholder `/opt/arcane/projects`;
+replace it with the host paths your projects mount. The updater and redeploys
+recreate a container with its original mounts, so a container that binds a
+path outside the list can't be updated until you add it.
+
+`ownership.owner: arcane` stamps every container, network and volume Arcane
+creates and limits Arcane to resources carrying that label. Containers that
+already exist don't carry it, so Arcane's lists and actions skip them until you
+create them through Arcane or label them with `com.sockguard.owner=arcane`.
+That's the price of isolation: Arcane can't touch Arcane's own container or
+anything it didn't make. Because published ports are refused, a compose project
+that publishes a host port fails to deploy; put a reverse proxy on a shared
+network. Image pulls accept any registry. Arcane can still run any image with
+any command, so restrict who can reach the proxy socket and who can log in to
+Arcane. Terminal and exec, kill and pause, image removal, volume removal and
+prunes are unsupported and refused. Swarm and Podman are untested.
+
+## Dockge (`dockge.yaml`)
+
+Bounded access for [Dockge](https://github.com/louislam/dockge)'s default stack workflow.
+
+**Use for:** Dockge deploying, updating, starting, stopping and removing Compose stacks and tailing their logs.
+
+```yaml
+# Allows: ping, version, info, events
+# Allows: container list + inspect + logs + stats
+# Allows: container create, start, stop, restart, kill, rename, wait, remove
+# Allows: image list + inspect + history + pull
+# Allows: network list + inspect + create + connect + disconnect + remove
+# Allows: volume list + inspect + create
+# Denies: exec, attach, build, image and volume removal, every other route
+```
+
+Dockge has no Docker client of its own. It runs `docker compose ls`, `ps`,
+`up -d`, `down`, `stop`, `restart`, `pull` and `logs -f` with `DOCKER_HOST`
+inherited, so the allowed calls are the Compose plugin's. They were derived
+from Dockge 1.5.0 (`backend/stack.ts`) and Docker Compose v5.8.0
+(`pkg/compose`). The preset needs container create, so it bounds it:
+`ownership.owner: dockge` stamps every container, network and volume Dockge
+creates and scopes Dockge to resources carrying the label, container-create
+inspection stays on its defaults (no privileged containers, host namespaces,
+extra capabilities or devices), and bind mounts are limited to `/opt/stacks`
+(match it to `DOCKGE_STACKS_DIR`). Logs are the exfiltration route Dockge
+needs, so the preset sets `insecure_allow_read_exfiltration: true`. Compose
+parses network IPs and reuses mounts from inspect data, so mount and network
+redaction are off, and container env stays redacted.
+
+Supported: stack deploy, update, start, stop, restart, down and logs. Refused,
+so the matching actions fail: the stack shell and Dockge console (exec,
+attach), `build` and `up --build`, `down --rmi` and `down -v`, inline
+`configs:`/`secrets:` `content:`, and Compose `post_start` hooks. Stacks that
+were running before the proxy don't show up and can't be adopted; run
+`docker compose down` on them and redeploy from Dockge. `external: true`
+networks and volumes must have been created through the proxy. The residual
+risk is that anyone who can edit a stack in Dockge can run any image as root
+on the host, so keep Dockge behind real authentication.
+
+## Komodo (`komodo.yaml`)
+
+Least-privilege access for the [Komodo](https://komo.do) Periphery agent's monitoring surface.
+
+**Use for:** Periphery reporting containers, images, networks, volumes, stats and logs to Komodo Core, and nothing else.
+
+```yaml
+# Allows: GET /_ping, /version
+# Allows: GET container list + inspect + stats + logs
+# Allows: GET image list + inspect + history, network and volume list + inspect
+# Denies: every other Docker API route
+```
+
+Derived from Komodo v2.3.4 (`bin/periphery/src`). Periphery reads its inventory
+through the bollard client and runs `docker stats` and `docker logs` through the
+CLI. Both honor `DOCKER_HOST`, so point Periphery at sockguard's TCP listener.
+Container logs are an exfiltration route, so this preset sets
+`insecure_allow_read_exfiltration: true`. Archive, export, attach and top stay
+denied. Response redaction stays at its defaults, so Komodo's container details
+show placeholders or empty values for env, mount paths and network addresses.
+
+Supported: monitoring. Not supported, and refused with a deny: deployments,
+Stacks (`docker compose`), Builds, container start, stop, restart, pause, remove
+and rename, image pull and remove, network and volume create and remove, every
+prune action, Swarm mode, and terminals and container exec. Set
+`PERIPHERY_DISABLE_TERMINALS` and `PERIPHERY_DISABLE_CONTAINER_EXEC` to `true`.
+A deploy-capable Periphery needs container create with a caller-defined config,
+compose and image builds, which this preset does not bound.
+
+## Komodo with deploy (`komodo-with-deploy.yaml`)
+
+Extends the Komodo preset so Periphery can deploy containers and Compose stacks through the proxy.
+
+**Use for:** Komodo Deployments (`docker run`), Stacks (`docker compose up -d`, `down`, `stop`, `restart`, `pull`) and the container, image, network and volume actions in the Komodo UI.
+
+```yaml
+# Allows: everything in komodo.yaml, plus GET /info and /events
+# Allows: container create, start, stop, restart, kill, rename, wait, remove
+# Allows: POST /images/create (pull)
+# Allows: network create, connect, disconnect, remove; volume create
+# Denies: /build, /session, /grpc, exec and attach, image and volume remove, pause, prune, Swarm
+```
+
+Derived from Komodo v2.3.4 (`bin/periphery/src`). Periphery shells out to the
+docker CLI for every write: `docker pull` and `docker run` for a Deployment,
+`docker compose` for a Stack, and `docker network create` and `docker container rm`
+for the actions. Point it at sockguard with `DOCKER_HOST`.
+
+Deploying means container create with a caller-defined config, so the writes are
+bounded two ways. `ownership.owner: komodo` stamps everything Periphery creates
+with an owner label (Komodo doesn't have to set it) and hides every other
+container from it. Container-create inspection stays at its defaults, which
+refuse privileged containers, host network, PID, IPC and user namespaces, extra
+capabilities and devices, and the preset also sets `restrict_namespace_sharing`
+to deny `container:<ref>` joins. Bind mounts are limited to `/etc/komodo`
+(Periphery's root directory), network and volume creates keep the default driver
+allowlist.
+
+Builds are denied. Periphery only builds when a Build resource runs or a Stack
+sets `run_build`, so a plain Deployment or Stack deploy never calls `/build`,
+`/session` or `/grpc`. Build on a separate builder.
+
+Things that change with the preset:
+
+- Containers that already run, including Periphery, don't show up in Komodo and
+  can't be adopted. Redeploy them from Komodo. `external: true` networks and
+  volumes must have been created through the proxy.
+- A Deployment's network defaults to `host`, which is refused. Pick a bridge or
+  user network.
+- `docker login` calls `POST /auth`, which stays denied, so registry accounts
+  don't work and only public images pull. Add an allow rule for it if you accept
+  that.
+- Terminals, container exec, image and volume removal, pause and prune are
+  refused. Set `PERIPHERY_DISABLE_TERMINALS` and
+  `PERIPHERY_DISABLE_CONTAINER_EXEC` to `true`.
+
+Residual risk: anyone who can edit a Deployment or Stack in Komodo can run any
+image with any command, as root, on this host, with `/etc/komodo` mounted. Komodo
+Core's login and permissions are the trust boundary. Periphery's own hooks
+(`pre_deploy`, `post_deploy`) run inside its container and aren't mediated by
+the proxy.
+
 ## Diun (`diun.yaml`)
 
 Minimal read-only access for [Diun](https://github.com/crazy-max/diun) (Docker Image Update Notifier).
@@ -572,6 +890,50 @@ that require a privileged build container will fail through the proxy
 until the operator either removes the flag or moves the affected
 project to a different runner. This is the secure default; widening it
 is an audit-trail-bearing edit.
+
+## Jenkins Docker Plugin (`jenkins.yaml`)
+
+Least-privilege access for the Jenkins [Docker plugin](https://plugins.jenkins.io/docker-plugin/) provisioning agent containers with the Inbound (JNLP) connector.
+
+**Use for:** Jenkins clouds that create one agent container per build from a pinned image and remove it when the agent retires.
+
+```yaml
+# Allows: GET /_ping, /version, container list + inspect, image inspect
+# Allows: POST /images/create (docker.io only)
+# Allows: POST /containers/create (body-inspected), start, stop; DELETE /containers/{id}
+# Denies: every other Docker API route
+```
+
+Derived from jenkinsci/docker-plugin `1337.v3ca_fd1b_b_25ef`. Container create is bounded by `request_body.container_create`: the image must exactly match an entry in `allowed_images` (replace the shipped `jenkins/inbound-agent` entry with your own, fully qualified), and privileged mode, host namespaces, bind mounts, devices, capability additions, sysctls, unconfined seccomp and AppArmor, published ports, and joining another container's namespaces are all refused. `ownership.owner` scopes list, inspect, stop and remove to containers created through the proxy, and force and anonymous-volume removal are allowed because the plugin uses both.
+
+Not supported, and refused: the Attach connector (exec and archive copy), the SSH connector (archive copy and published ports), the plugin's log read on disconnect, template options that need host mounts or `--volumes-from`, and docker-workflow's `docker.image().inside()` and `docker.build()`, which run the `docker` CLI with host bind mounts, exec and top. Anyone who can edit an agent template can still run the allowed image with any command and environment; pin images by digest and restrict who can configure clouds and templates. See the [compose example](https://github.com/CodesWhat/sockguard/tree/main/examples/compose/jenkins).
+
+## Woodpecker CI (`woodpecker.yaml`)
+
+Bounded access for a [Woodpecker](https://woodpecker-ci.org) agent running the docker backend (`WOODPECKER_BACKEND=docker`, the default).
+
+**Use for:** Woodpecker pipelines whose steps and services are plain containers on a per-workflow named volume and bridge network.
+
+```yaml
+# Allows: GET /_ping, /version, /info
+# Allows: container create/start/wait/inspect/logs/stop/kill/remove
+# Allows: image pull, network create/connect/remove, volume create/remove
+# Denies: exec, attach, stats, events, build, every read of images, volumes and networks
+# Bounds: create policy (no privileged, host namespaces, devices, bind mounts, capabilities, sysctls)
+#         and ownership.owner: woodpecker
+```
+
+Derived from Woodpecker v3.21.0 (`pipeline/backend/docker/docker.go` and `convert.go`). The agent injects step commands as the container entrypoint, so it never calls exec. It streams step output from the container logs endpoint, so the preset sets `insecure_allow_read_exfiltration: true`. Every container, network and volume the agent creates is stamped with an owner label, and later calls on them must resolve to the same owner. Woodpecker only labels containers with `wp_uuid` and `wp_step`, so the owner label is what scopes the agent.
+
+Unsupported, and refused by the proxy:
+
+- Privileged steps, including admin-trusted plugins that set `privileged: true` (docker-in-docker, buildx).
+- Host bind mounts from a trusted repo's `volumes:` and from `WOODPECKER_BACKEND_DOCKER_VOLUMES`, until you add narrow `allowed_bind_mounts` entries.
+- `WOODPECKER_BACKEND_DOCKER_NETWORK`, because the agent does not own a pre-existing network.
+- `extra_hosts`, devices, added capabilities, sysctls and published ports.
+- The kubernetes and local backends (they do not use the Docker socket), and Windows engines and Podman (untested).
+
+Residual risk: steps still run arbitrary images and commands from every pipeline the agent accepts, as root unless a step sets `user`, with outbound network access. Sockguard stops them reaching the host or another owner's resources, it does not make an untrusted pipeline safe. Restrict the proxy socket to the agent process.
 
 ## CIS Docker Benchmark (`cis-docker-benchmark.yaml`)
 

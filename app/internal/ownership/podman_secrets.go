@@ -62,6 +62,10 @@ func denyPodmanCompatSecretList(w http.ResponseWriter, r *http.Request) {
 // arrived, before the stamp rewrites it.
 func mutateLibpodSecretCreateOwnershipRequest(r *http.Request, opts Options) (*ownershipRequestReferences, error) {
 	refs := libpodSecretCreateOwnershipReferences(r.URL.Query())
+	if refs == nil {
+		refs = &ownershipRequestReferences{}
+	}
+	refs.addNameQueryLockNames(r, dockerresource.KindSecret)
 	if name, _, ok := queryparam.Scalar(r.URL.Query(), "name"); ok && refuseShadowableSecretName(name, opts) != "" {
 		refs = &ownershipRequestReferences{denyReason: podmanSecretCreateDenyShadowableName}
 	}
@@ -353,6 +357,7 @@ func mutateCompatSecretCreateOwnershipRequest(r *http.Request, opts Options) (*o
 		}
 		labels[opts.LabelKey] = opts.Owner
 		for _, name := range filter.FoldedStrings(decoded, "Name") {
+			refs.addLockName(dockerresource.KindSecret, name)
 			if refuseShadowableSecretName(name, opts) != "" {
 				refs.denyReason = podmanSecretCreateDenyShadowableName
 			}

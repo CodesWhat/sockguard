@@ -120,6 +120,11 @@ type LibpodContainerCreateOptions struct {
 	// the daemon host. Default false. See denyLogPathReason.
 	AllowLogPath bool
 
+	// NetworkExposure holds the opt-in published-port and network gates. They
+	// run in the resource-limit guard, which can ask the daemon what a network
+	// reference resolves to. Zero value: unrestricted.
+	NetworkExposure NetworkExposureOptions
+
 	// AllowedLogDrivers and AllowedLogEndpointOptions are the libpod
 	// spelling of the same-named ContainerCreateOptions fields, checked
 	// against log_configuration.driver and .options. Default empty: off.
@@ -145,6 +150,12 @@ type LibpodContainerCreateOptions struct {
 	AllowDeviceCgroupRules   bool
 	AllowedDeviceCgroupRules []string
 	AllowDeviceRequests      bool
+	// AllowedGPUs is the exact-match allowlist for gpus entries and
+	// AllowedCDIDevices the one for fully qualified CDI names in the
+	// top-level devices array. Both are compared byte for byte; AllowDeviceRequests
+	// and AllowAllDevices remain the blanket opt-ins that skip them.
+	AllowedGPUs       []string
+	AllowedCDIDevices []string
 
 	// DenyUnconfinedSystemPaths denies unmask, the libpod spelling of
 	// systempaths=unconfined. Mirrors ContainerCreateOptions.
@@ -217,6 +228,8 @@ type libpodContainerCreatePolicy struct {
 	allowDeviceCgroupRules    bool
 	allowedDeviceCgroupRules  []string
 	allowDeviceRequests       bool
+	allowedGPUs               []string
+	allowedCDIDevices         []string
 	denyUnconfinedSystemPaths bool
 
 	allowUnifiedCgroupSettings bool
@@ -290,6 +303,8 @@ func newLibpodContainerCreatePolicy(opts LibpodContainerCreateOptions) libpodCon
 		allowDeviceCgroupRules:            opts.AllowDeviceCgroupRules,
 		allowedDeviceCgroupRules:          canonicalDeviceCgroupAllowlist(opts.AllowedDeviceCgroupRules),
 		allowDeviceRequests:               opts.AllowDeviceRequests,
+		allowedGPUs:                       slices.Clone(opts.AllowedGPUs),
+		allowedCDIDevices:                 slices.Clone(opts.AllowedCDIDevices),
 		denyUnconfinedSystemPaths:         opts.DenyUnconfinedSystemPaths,
 
 		allowUnifiedCgroupSettings: opts.AllowUnifiedCgroupSettings,
@@ -523,7 +538,14 @@ func (p libpodContainerCreatePolicy) denyDockerParityReason(req libpodContainerC
 		}
 	}
 	if len(req.GPUs) > 0 && !p.allowDeviceRequests {
-		return "libpod container create denied: device requests are not allowed"
+		if len(p.allowedGPUs) == 0 {
+			return "libpod container create denied: device requests are not allowed"
+		}
+		for _, gpu := range req.GPUs {
+			if !slices.Contains(p.allowedGPUs, gpu) {
+				return fmt.Sprintf("libpod container create denied: gpus entry %q is not allowlisted", gpu)
+			}
+		}
 	}
 	if p.denyUnconfinedSystemPaths && len(req.Unmask) > 0 {
 		return "libpod container create denied: unmask (systempaths=unconfined equivalent) is not allowed"
@@ -660,6 +682,14 @@ func (p libpodContainerCreatePolicy) denyDeviceReason(devices []libpodDevice) st
 		return ""
 	}
 	for _, device := range devices {
+		// A fully qualified CDI name is matched whole: it can carry a colon
+		// of its own, which the host-path split below would cut in half.
+		if qualifiedCDIDevice.MatchString(device.Path) {
+			if !slices.Contains(p.allowedCDIDevices, device.Path) {
+				return fmt.Sprintf("libpod container create denied: CDI device %q is not allowlisted", device.Path)
+			}
+			continue
+		}
 		rawHostPath, ok := splitLibpodDevicePath(device.Path)
 		hostPath, normOK := normalizeContainerCreateDevicePath(rawHostPath)
 		if !ok || !normOK || !bindPathAllowed(hostPath, p.allowedDevices) {

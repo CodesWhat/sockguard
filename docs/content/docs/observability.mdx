@@ -1,6 +1,6 @@
 ---
 title: Observability
-description: Prometheus metrics, the active upstream watchdog, the Docker API readiness probe, and W3C trace correlation. Wire Sockguard into Prometheus, Grafana, and your existing tracing pipeline without an OTLP exporter.
+description: Prometheus metrics, the active upstream watchdog, the Docker API readiness probe, and W3C trace correlation. Wire Sockguard into Prometheus, Grafana, and your existing tracing pipeline, with opt-in OTLP trace export.
 ---
 
 Sockguard exposes four observability surfaces, all opt-in or always-on with zero
@@ -21,6 +21,9 @@ external dependencies:
    and tags access, audit, and upstream-error logs with `trace_id`,
    `trace_span_id`, `trace_parent_id`, and `trace_sampled`. Always on, no
    knob, no OTLP dependency.
+5. **OTLP trace export** — opt-in. Sends one span per proxied request to an
+   OTLP/HTTP collector as JSON. Opt-in via `otlp.enabled`. See
+   [Opt-in OTLP trace export](#opt-in-otlp-trace-export).
 
 ## Enable the metrics endpoint
 
@@ -97,6 +100,9 @@ all default to `false`, so existing deployments stay quiet until you opt in.
 | `sockguard_upstream_readiness_checks_total`  | counter   | `result`                                                | `result` ∈ `{ready, unreachable}`. One per readiness probe interval; `unreachable` covers transport errors and non-2xx API responses. |
 | `sockguard_throttle_requests_total`          | counter   | `profile`, `reason_code`, `mode`                        | Throttle denials. `reason_code` ∈ `{rate_limit_exceeded, concurrency_cap, stream_cap, priority_floor}`. `mode` ∈ `{enforce, warn, audit}`. |
 | `sockguard_inflight_requests`                | gauge     | `profile`                                               | In-flight count for profiles with `max_inflight` configured. Reflects real concurrency, including `warn`/`audit`-mode requests that would have been denied. |
+| `sockguard_otlp_spans_exported_total`        | counter   | —                                                       | Spans the collector accepted. Only emitted when `otlp.enabled` and `metrics.enabled` are both true. |
+| `sockguard_otlp_spans_dropped_total`         | counter   | `reason`                                                | `reason` ∈ `{queue_full, export_failed, shutdown}`. Only emitted with the OTLP exporter on.        |
+| `sockguard_otlp_export_requests_total`       | counter   | `result`                                                | `result` ∈ `{success, retryable_error, permanent_error}`. One per HTTP attempt, retries included.  |
 | `sockguard_policy_version`                   | gauge     | —                                                       | Monotonic policy generation counter. Ticks once at startup and once per successful hot reload. Matches the `version` field in `GET /admin/policy/version`. |
 | `sockguard_config_reload_total`              | counter   | `result`                                                | Hot-reload outcomes. `result` ∈ `{ok, reject_load, reject_validation, reject_immutable, reject_signature, reject_compat}`. |
 | `sockguard_config_reload_last_success_timestamp_seconds` | gauge | —                                          | Unix timestamp of the last successful reload. Omitted from scrape output until the first successful reload. |
@@ -321,6 +327,29 @@ State-change semantics are once-per-edge: the watchdog logs only when the
 reachability flips, not on every interval, so log volume scales with outages
 rather than with the configured interval.
 
+## systemd notifications
+
+Under systemd, sockguard speaks the `sd_notify` protocol with no setup beyond the unit. It needs nothing from the config file. When `NOTIFY_SOCKET` is unset (anywhere but a `Type=notify` unit) all of it is a no-op.
+
+| Message | When |
+|---|---|
+| `READY=1` | Every listener is bound and serving. |
+| `WATCHDOG=1` | Every half of `WatchdogSec=` (read from `WATCHDOG_USEC`), while the upstream is healthy. |
+| `STOPPING=1` | A shutdown signal, a listener failure or the `health.watchdog.exit_after` exit begins the drain. |
+
+The ping follows the active upstream watchdog above. While `health.watchdog.enabled` has the upstream marked unreachable, sockguard stops pinging, so systemd restarts the unit once `WatchdogSec=` runs out. That is the systemd-side counterpart of `health.watchdog.exit_after`, and the two work together or alone. Without `health.watchdog.enabled` there is no upstream verdict, so the pings only show that the process is alive. `NOTIFY_SOCKET` may be a filesystem path or an abstract socket (a leading `@`). If `WATCHDOG_PID` is set and names another process, the pings are off.
+
+A ready-to-use unit is in `examples/systemd/sockguard.service`:
+
+```ini
+[Service]
+Type=notify
+ExecStart=/usr/local/bin/sockguard serve --config /etc/sockguard/sockguard.yaml
+WatchdogSec=30s
+Restart=on-failure
+NotifyAccess=main
+```
+
 ## Readiness probe
 
 The watchdog *dials* the upstream socket — a liveness signal that only proves
@@ -356,8 +385,9 @@ changing the probe path, interval, or timeout requires a restart.
 Sockguard implements just enough of the W3C
 [Trace Context](https://www.w3.org/TR/trace-context/) spec to correlate logs
 with whatever upstream tracing system you already run. There is no config
-knob, no OTLP exporter, and no required dependency — Sockguard reads the
-`traceparent` header on the way in and writes one on the way out.
+knob and no required dependency — Sockguard reads the `traceparent` header on
+the way in and writes one on the way out. Exporting spans is a separate,
+opt-in feature: see [Opt-in OTLP trace export](#opt-in-otlp-trace-export).
 
 ### Field reference
 
@@ -418,6 +448,82 @@ generates a fresh local trace:
 ```
 
 `trace_parent_id` is omitted in this case because there is no parent span.
+
+## Opt-in OTLP trace export
+
+Sockguard can send one span per proxied request to an OTLP/HTTP collector. It
+is off by default and uses a small stdlib-only JSON exporter, so enabling it
+adds no third-party code to the request path.
+
+```yaml
+otlp:
+  enabled: true
+  endpoint: https://collector.internal:4318/v1/traces
+  headers:
+    authorization: Bearer <collector credential>
+  sample_ratio: 0.1
+```
+
+`endpoint` is the full URL including the path. Plain `http` is allowed, but
+`headers` then travel in cleartext, so use it only on a trusted network. Export
+requests honor `HTTPS_PROXY` and `NO_PROXY` like any Go HTTP client. The
+`otlp.*` block is immutable across hot reload: changing it requires a restart.
+Every field is in the [configuration reference](./configuration).
+
+### What is exported
+
+Each span is `SERVER` kind, named `<METHOD> <route category>` with the same
+bounded route categories the metrics use, and parented to the caller's span
+when the request had a valid `traceparent`. The status is `ERROR` for 5xx
+responses; a policy deny is not an error. Attributes are an allowlist:
+`http.request.method`, `http.response.status_code`, `http.route`,
+`sockguard.normalized_path`, `sockguard.decision`, `sockguard.reason_code`,
+`sockguard.rule`, `sockguard.profile`, `sockguard.rollout_mode`,
+`sockguard.listener`, `network.peer.address` (host only), and
+`sockguard.request_id`. Resource attributes are `service.name` and
+`service.version`.
+
+### What is never exported
+
+Query strings, the raw path when it differs from the normalized one, any
+request or response header, request or response bodies, free-text deny
+reasons (only the `reason_code`), client-supplied request IDs, mutation
+details, environment, and labels. The collector `headers` values are secrets:
+they are never logged, never returned in validation errors, and never shown in
+the policy diff.
+
+### Sampling
+
+A request with a valid incoming `traceparent` is exported if and only if its
+sampled flag is set. For a new root trace, `sample_ratio` decides, and the
+`traceparent` forwarded to Docker and returned to the caller carries the same
+sampled flag. With the exporter off, new roots stay unsampled as before.
+
+### Failure and drop behavior
+
+A slow or dead collector never delays a request. Spans enter a bounded queue
+(`queue_size`) without blocking, and one worker batches them (`batch_size`,
+`flush_interval`) and does all the network I/O. A full queue drops the span.
+`429`, `502`, `503`, `504` and network errors are retried up to three attempts
+with 200 ms then 400 ms backoff (a `Retry-After` header is honored, capped at 5
+seconds); any other non-2xx response drops the batch without a retry, and
+redirects are not followed. Drops log a WARN at most once a minute and show up
+in the `sockguard_otlp_*` metrics above. On shutdown the queue is flushed after
+the listeners drain, for at most the shorter of 5 seconds and
+`server.shutdown_grace`; whatever is left after that is dropped.
+
+### Admin listener spans
+
+The dedicated admin listener (`admin.listen`) exports spans through the same
+exporter, queue and metrics as the main listener. The span layer sits outside
+the admin client CIDR gate, so a request refused at the access boundary is
+exported with its `deny` decision and 403 status. `http.route` is the
+configured admin path the request addressed (`admin.path`,
+`admin.policy_version_path` or `admin.policy_diff_path`), or `unknown` for
+anything else, so a client-chosen path never reaches a span name or attribute.
+Candidate YAML bodies, query strings and headers are never exported, same as
+the main chain. Admin endpoints mounted in-band on the main listener are
+covered by the main chain's spans.
 
 ## Production checklist
 

@@ -9,6 +9,7 @@ import { readFileSync, statSync } from "node:fs";
 import { createServer } from "node:http";
 import { extname, join, normalize, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
+import { gzipSync } from "node:zlib";
 
 const here = fileURLToPath(new URL(".", import.meta.url));
 const root = resolve(here, "../out");
@@ -28,6 +29,8 @@ const TYPES = {
   ".woff2": "font/woff2",
   ".webmanifest": "application/manifest+json",
 };
+
+const COMPRESSIBLE = new Set([".html", ".js", ".css", ".json", ".txt", ".xml", ".svg"]);
 
 // Vercel source patterns used in vercel.json: a literal path or "/(.*)".
 const rules = vercel.headers.map((rule) => ({
@@ -87,12 +90,25 @@ const server = createServer((req, res) => {
     for (const { key, value } of rule.headers) headers[key] = plainHttp(key, value);
   }
 
+  // Vercel compresses text assets and serves hashed build output as immutable.
+  // Mirror both so a Lighthouse run against this server measures the source,
+  // not a bare file server.
+  if (pathname.startsWith("/_next/static/")) {
+    headers["Cache-Control"] = "public, max-age=31536000, immutable";
+  }
+  let body = readFileSync(file);
+  if (COMPRESSIBLE.has(extname(file)) && /\bgzip\b/.test(req.headers["accept-encoding"] ?? "")) {
+    body = gzipSync(body);
+    headers["Content-Encoding"] = "gzip";
+    headers.Vary = "Accept-Encoding";
+  }
+
   res.writeHead(status, headers);
   if (req.method === "HEAD") {
     res.end();
     return;
   }
-  res.end(readFileSync(file));
+  res.end(body);
 });
 
 const port = Number(process.env.E2E_PORT ?? 4317);

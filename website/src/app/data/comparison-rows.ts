@@ -5,6 +5,7 @@ export interface ComparisonRow {
   wollomatic: string;
   elevenNotes: string;
   cetusguard: string;
+  yorvogate: string;
   sockguard: string;
   planned?: boolean;
 }
@@ -17,6 +18,7 @@ export const comparisonRows: ComparisonRow[] = [
     wollomatic: "Yes (regex)",
     elevenNotes: "Read-only by default (opt-in containers-only mode)",
     cetusguard: "Yes (regex)",
+    yorvogate: "Yes (endpoint groups on trusted listeners, per-endpoint rules per scope)",
     sockguard: "Yes",
   },
   {
@@ -26,6 +28,7 @@ export const comparisonRows: ComparisonRow[] = [
     wollomatic: "Via regex",
     elevenNotes: "Start/stop only (opt-in containers-only mode)",
     cetusguard: "Via regex",
+    yorvogate: "Yes (create rules; other container writes limited to the scope's own containers)",
     sockguard: "Yes",
   },
   {
@@ -35,8 +38,19 @@ export const comparisonRows: ComparisonRow[] = [
     wollomatic: "Partial (bind-mount restrictions)",
     elevenNotes: "No",
     cetusguard: "No",
+    yorvogate: "Yes (bodies decoded into the Docker Engine's own types, unknown fields refused)",
     sockguard:
       "Yes (container, exec, image, build, volume, network, secret, config, service, swarm, node, plugin)",
+  },
+  {
+    feature: "Query-string rule matching",
+    tecnativa: "No",
+    linuxserver: "No",
+    wollomatic: "No",
+    elevenNotes: "No",
+    cetusguard: "Yes (regex over the sorted query, v1.2.0)",
+    yorvogate: "Yes (per-endpoint query parameter allowlist, any other refused)",
+    sockguard: "Yes (next v3.2: match.query per key, exact or * values)",
   },
   {
     feature: "Per-client policies",
@@ -45,6 +59,7 @@ export const comparisonRows: ComparisonRow[] = [
     wollomatic: "Partial (IP/hostname + labels)",
     elevenNotes: "No",
     cetusguard: "No",
+    yorvogate: "Yes (scopes by token, client certificate or own socket, optional peer user)",
     sockguard: "Yes (CIDR + labels + cert selectors incl. SPKI + unix peer)",
   },
   {
@@ -54,6 +69,7 @@ export const comparisonRows: ComparisonRow[] = [
     wollomatic: "No",
     elevenNotes: "No",
     cetusguard: "No",
+    yorvogate: "Yes (per-scope owner label and name prefixes)",
     sockguard: "Yes (workload + control plane)",
   },
   {
@@ -63,6 +79,7 @@ export const comparisonRows: ComparisonRow[] = [
     wollomatic: "No",
     elevenNotes: "No",
     cetusguard: "Yes",
+    yorvogate: "Yes (TLS 1.3, mTLS required off loopback)",
     sockguard: "Yes (TLS 1.3)",
   },
   {
@@ -72,6 +89,7 @@ export const comparisonRows: ComparisonRow[] = [
     wollomatic: "No",
     elevenNotes: "No",
     cetusguard: "Yes",
+    yorvogate: "No (upstream must be a unix socket)",
     sockguard: "Yes (active/passive failover)",
   },
   {
@@ -82,6 +100,8 @@ export const comparisonRows: ComparisonRow[] = [
     elevenNotes:
       "Partial (targets 7 risky GETs; the image-export pattern misses both real shapes; its image-inspect misfire, 11notes #12, was fixed in v2.1.6)",
     cetusguard: "No",
+    yorvogate:
+      "Partial (lists limited to the scope's own objects; info and version are allow-lists)",
     sockguard: "Yes (visibility + protected JSON redaction)",
   },
   {
@@ -91,6 +111,7 @@ export const comparisonRows: ComparisonRow[] = [
     wollomatic: "Yes (JSON option)",
     elevenNotes: "No",
     cetusguard: "No",
+    yorvogate: "Yes (JSON decisions with request ID)",
     sockguard: "Yes (request + trace correlation)",
   },
   {
@@ -100,6 +121,7 @@ export const comparisonRows: ComparisonRow[] = [
     wollomatic: "No",
     elevenNotes: "No",
     cetusguard: "No",
+    yorvogate: "Partial (versioned JSON log schema and reason codes, no separate audit log)",
     sockguard: "Yes (opt-in, JSON schema + reason codes)",
   },
   {
@@ -109,6 +131,7 @@ export const comparisonRows: ComparisonRow[] = [
     wollomatic: "No",
     elevenNotes: "No",
     cetusguard: "No",
+    yorvogate: "Yes (admin listener, loopback or unix socket)",
     sockguard: "Yes (opt-in, socket-proxy metrics)",
   },
   {
@@ -118,6 +141,7 @@ export const comparisonRows: ComparisonRow[] = [
     wollomatic: "Yes",
     elevenNotes: "No",
     cetusguard: "No",
+    yorvogate: "Partial (readiness check pings Docker, at most once a second)",
     sockguard: "Yes (opt-in watchdog; /health answers by default)",
   },
   {
@@ -127,6 +151,7 @@ export const comparisonRows: ComparisonRow[] = [
     wollomatic: "No",
     elevenNotes: "No",
     cetusguard: "No",
+    yorvogate: "Partial (forwards traceparent to Docker, logs carry a request ID)",
     sockguard: "Yes (W3C traceparent)",
   },
   {
@@ -136,6 +161,7 @@ export const comparisonRows: ComparisonRow[] = [
     wollomatic: "No",
     elevenNotes: "No",
     cetusguard: "No",
+    yorvogate: "Yes",
     sockguard: "Yes",
   },
   {
@@ -145,6 +171,7 @@ export const comparisonRows: ComparisonRow[] = [
     wollomatic: "No",
     elevenNotes: "No",
     cetusguard: "No",
+    yorvogate: "No",
     sockguard: "Yes",
   },
   {
@@ -154,6 +181,7 @@ export const comparisonRows: ComparisonRow[] = [
     wollomatic: "No",
     elevenNotes: "No",
     cetusguard: "No",
+    yorvogate: "Partial (per-scope request and connection caps)",
     sockguard: "Yes (per-profile token-bucket + global priority gate)",
   },
   {
@@ -163,6 +191,7 @@ export const comparisonRows: ComparisonRow[] = [
     wollomatic: "No",
     elevenNotes: "No",
     cetusguard: "No",
+    yorvogate: "No (none documented at v0.4.0)",
     sockguard: "Yes (per-profile shadow + would_deny audit)",
   },
   {
@@ -172,6 +201,7 @@ export const comparisonRows: ComparisonRow[] = [
     wollomatic: "No",
     elevenNotes: "No",
     cetusguard: "No",
+    yorvogate: "No (releases are cosign-signed, policy bundles are not documented)",
     sockguard: "Yes (cosign keyed + keyless, Rekor inclusion)",
   },
   {
@@ -181,6 +211,8 @@ export const comparisonRows: ComparisonRow[] = [
     wollomatic: "No",
     elevenNotes: "No",
     cetusguard: "No",
+    yorvogate:
+      "Partial (pull registry and platform allowlists, image load name checks, no signature verification documented)",
     sockguard: "Yes (cosign keyed + keyless, enforce / warn)",
   },
   {
@@ -190,6 +222,7 @@ export const comparisonRows: ComparisonRow[] = [
     wollomatic: "Via manual regex",
     elevenNotes: "No",
     cetusguard: "Yes",
+    yorvogate: "No (not documented, certified for Docker Engine 29 only)",
     sockguard: "Yes (default-deny /libpod coverage incl. pod lifecycle)",
   },
   {
@@ -199,6 +232,7 @@ export const comparisonRows: ComparisonRow[] = [
     wollomatic: "No",
     elevenNotes: "Yes (Unix + TCP)",
     cetusguard: "Yes",
+    yorvogate: "Yes (trusted and scoped listeners, unix or TCP)",
     sockguard: "Yes (Unix and/or TCP, listener-scoped TLS + profiles)",
   },
   {
@@ -208,6 +242,7 @@ export const comparisonRows: ComparisonRow[] = [
     wollomatic: "No",
     elevenNotes: "No",
     cetusguard: "No",
+    yorvogate: "Partial (SIGHUP reload and scope rescan, admin listener is monitoring only)",
     sockguard: "Yes (opt-in, fsnotify/SIGHUP, validate endpoint, policy version)",
   },
 ];
@@ -228,7 +263,8 @@ export type ComparisonTool =
   | "linuxserver"
   | "wollomatic"
   | "elevenNotes"
-  | "cetusguard";
+  | "cetusguard"
+  | "yorvogate";
 
 // A row's cell is free text so it can carry the qualifier that makes the claim
 // honest ("Yes (regex)", "Partial (bind-mount restrictions)", "Via manual
@@ -288,24 +324,26 @@ export const PROJECT_HEALTH: Record<
   wollomatic: { maintained: "yes", openSource: "yes" },
   elevenNotes: { maintained: "yes", openSource: "yes" },
   cetusguard: { maintained: "yes", openSource: "yes" },
+  yorvogate: { maintained: "yes", openSource: "yes" },
 };
 
 // The upstream version (or, for a project with no tagged release, the
 // default-branch commit date) each competitor's claims above were checked
-// against. Re-check at every release cut (DOC-10) so a "cannot do X" claim is
-// never more than one release stale.
+// against. Re-check at every release cut (DOC-10). Upstreams release between our
+// cuts, so the checked date, not a promise of freshness, is what a reader gets.
 //
 // This is the one "versions checked" date the site shows. README.md carries
 // the same line for the same check; page-data.test.mjs fails if the two stop
 // agreeing, so bump this and the README together.
-export const COMPETITOR_VERSIONS_CHECKED_AT = "2026-11-01";
+export const COMPETITOR_VERSIONS_CHECKED_AT = "2026-11-26";
 
 export const COMPETITOR_VERSIONS: Record<Exclude<ComparisonTool, "sockguard">, string> = {
-  tecnativa: "v0.5.0",
-  linuxserver: "3.4.7-r0-ls104",
-  wollomatic: "1.13.2",
+  tecnativa: "v0.6.0",
+  linuxserver: "3.4.8-r0-ls107",
+  wollomatic: "1.14.0",
   elevenNotes: "v2.2.0",
-  cetusguard: "v1.1.4",
+  cetusguard: "v1.2.0",
+  yorvogate: "v0.4.0",
 };
 
 // The landing-page teaser: six rows, three rivals. `label` is the shorter

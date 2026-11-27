@@ -46,13 +46,16 @@ func FuzzVolume(f *testing.F) {
 	f.Fuzz(func(t *testing.T, body []byte) {
 		body = truncateParserFuzzBytes(body, maxJSONInspectorFuzzBytes)
 
-		req := newJSONInspectorFuzzRequest(http.MethodPost, "/volumes/create", "", body)
-		_, _ = policy.inspect(nil, req, "/volumes/create")
-		drainFuzzRequestBody(req)
-
-		update := newJSONInspectorFuzzRequest(http.MethodPut, "/volumes/csi-data", "version=7", body)
-		_, _ = policy.inspectUpdate(nil, update, "/volumes/csi-data")
-		drainFuzzRequestBody(update)
+		fuzzVerdictOracle(t, "volume create", body, func(b []byte) (string, error) {
+			req := newJSONInspectorFuzzRequest(http.MethodPost, "/volumes/create", "", b)
+			defer drainFuzzRequestBody(req)
+			return policy.inspect(nil, req, "/volumes/create")
+		})
+		fuzzVerdictOracle(t, "volume update", body, func(b []byte) (string, error) {
+			update := newJSONInspectorFuzzRequest(http.MethodPut, "/volumes/csi-data", "version=7", b)
+			defer drainFuzzRequestBody(update)
+			return policy.inspectUpdate(nil, update, "/volumes/csi-data")
+		})
 	})
 }
 
@@ -72,9 +75,11 @@ func FuzzSecret(f *testing.F) {
 	f.Fuzz(func(t *testing.T, body []byte) {
 		body = truncateParserFuzzBytes(body, maxJSONInspectorFuzzBytes)
 
-		req := newJSONInspectorFuzzRequest(http.MethodPost, "/secrets/create", "", body)
-		_, _ = policy.inspect(nil, req, "/secrets/create")
-		drainFuzzRequestBody(req)
+		fuzzVerdictOracle(t, "secret create", body, func(b []byte) (string, error) {
+			req := newJSONInspectorFuzzRequest(http.MethodPost, "/secrets/create", "", b)
+			defer drainFuzzRequestBody(req)
+			return policy.inspect(nil, req, "/secrets/create")
+		})
 	})
 }
 
@@ -94,9 +99,11 @@ func FuzzConfigWrite(f *testing.F) {
 	f.Fuzz(func(t *testing.T, body []byte) {
 		body = truncateParserFuzzBytes(body, maxJSONInspectorFuzzBytes)
 
-		req := newJSONInspectorFuzzRequest(http.MethodPost, "/configs/create", "", body)
-		_, _ = policy.inspect(nil, req, "/configs/create")
-		drainFuzzRequestBody(req)
+		fuzzVerdictOracle(t, "config create", body, func(b []byte) (string, error) {
+			req := newJSONInspectorFuzzRequest(http.MethodPost, "/configs/create", "", b)
+			defer drainFuzzRequestBody(req)
+			return policy.inspect(nil, req, "/configs/create")
+		})
 	})
 }
 
@@ -145,10 +152,12 @@ func FuzzService(f *testing.F) {
 	f.Fuzz(func(t *testing.T, path string, body []byte) {
 		body = truncateParserFuzzBytes(body, maxJSONInspectorFuzzBytes)
 
-		for _, policy := range []servicePolicy{lenient, strict} {
-			req := newJSONInspectorFuzzRequest(http.MethodPost, path, "", body)
-			_, _ = policy.inspect(nil, req, NormalizePath(path))
-			drainFuzzRequestBody(req)
+		for name, policy := range map[string]servicePolicy{"lenient": lenient, "strict": strict} {
+			fuzzVerdictOracle(t, "service "+name, body, func(b []byte) (string, error) {
+				req := newJSONInspectorFuzzRequest(http.MethodPost, path, "", b)
+				defer drainFuzzRequestBody(req)
+				return policy.inspect(nil, req, NormalizePath(path))
+			})
 		}
 	})
 }
@@ -171,9 +180,11 @@ func FuzzSwarm(f *testing.F) {
 	f.Fuzz(func(t *testing.T, path, rawQuery string, body []byte) {
 		body = truncateParserFuzzBytes(body, maxSwarmInspectorFuzzBytes)
 
-		req := newJSONInspectorFuzzRequest(http.MethodPost, path, rawQuery, body)
-		_, _ = policy.inspect(nil, req, NormalizePath(path))
-		drainFuzzRequestBody(req)
+		fuzzVerdictOracle(t, "swarm", body, func(b []byte) (string, error) {
+			req := newJSONInspectorFuzzRequest(http.MethodPost, path, rawQuery, b)
+			defer drainFuzzRequestBody(req)
+			return policy.inspect(nil, req, NormalizePath(path))
+		})
 	})
 }
 
@@ -196,9 +207,11 @@ func FuzzPlugin(f *testing.F) {
 	f.Fuzz(func(t *testing.T, path, rawQuery string, body []byte) {
 		body = truncateParserFuzzBytes(body, maxPluginInspectorFuzzBytes)
 
-		req := newJSONInspectorFuzzRequest(http.MethodPost, path, rawQuery, body)
-		_, _ = policy.inspect(nil, req, NormalizePath(path))
-		drainFuzzRequestBody(req)
+		fuzzVerdictOracle(t, "plugin", body, func(b []byte) (string, error) {
+			req := newJSONInspectorFuzzRequest(http.MethodPost, path, rawQuery, b)
+			defer drainFuzzRequestBody(req)
+			return policy.inspect(nil, req, NormalizePath(path))
+		})
 	})
 }
 
@@ -228,9 +241,11 @@ func FuzzNetwork(f *testing.F) {
 	f.Fuzz(func(t *testing.T, path string, body []byte) {
 		body = truncateParserFuzzBytes(body, maxNetworkInspectorFuzzBytes)
 
-		req := newJSONInspectorFuzzRequest(http.MethodPost, path, "", body)
-		_, _ = policy.inspect(nil, req, NormalizePath(path))
-		drainFuzzRequestBody(req)
+		fuzzVerdictOracle(t, "network", body, func(b []byte) (string, error) {
+			req := newJSONInspectorFuzzRequest(http.MethodPost, path, "", b)
+			defer drainFuzzRequestBody(req)
+			return policy.inspect(nil, req, NormalizePath(path))
+		})
 	})
 }
 

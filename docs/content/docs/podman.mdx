@@ -590,6 +590,17 @@ every Docker-compat exfiltration surface, plus the libpod-only entries below:
   `POST /libpod/manifests/*/push` — writes at the API layer, but they push
   local manifest content to a caller-selected registry, the same
   exfiltration shape as an image push
+
+`request_body.image_push.allowed_registries` narrows all of these pushes to an
+allowlisted registry set without removing the acknowledgment. Podman's native
+routes take the destination from the `destination` query parameter (the image
+name when it is absent) or, for `.../registry/{destination}`, from a URL-escaped
+path segment. Only the `docker://` transport is accepted, so `oci:`, `dir:`,
+`docker-archive:` and the like are denied, and a destination with no registry is
+denied because Podman resolves it through `registries.conf`, which sockguard
+cannot read. Podman's Docker-compatible `POST /images/*/push` on a Podman
+upstream is held to the same rule for an unqualified name.
+
 - `POST /libpod/images/scp/*` — transfers a local image to another host
   over SSH, to a destination the caller picks. It is also in the blind-write
   catalog because the same call can pull an image *in* from a remote host;
@@ -1169,6 +1180,8 @@ mode the socket it's proxying is running in, and the safer assumption is
 the rootful one — so don't read an `allow_privileged: true` rootless
 deployment as equivalently risky to the same setting against a rootful one,
 or vice versa; the setting name is the same, the ceiling it grants is not.
+
+For a rootless systemd setup, see [Rootless Podman and Quadlet](/docs/rootless-quadlet).
 
 ## Starting Point: `podman-readonly.yaml`
 

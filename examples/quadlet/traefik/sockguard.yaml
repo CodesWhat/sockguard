@@ -1,0 +1,74 @@
+# Sockguard config for the rootless Quadlet kit with Traefik as the consumer.
+#
+# This is app/configs/traefik.yaml with the upstream pointed at the user's
+# Podman socket (as sockguard.container mounts it) and the listener moved into
+# the kit's socket volume. The Swarm-only rules (networks, services, tasks,
+# nodes) are dropped: Podman has no Swarm and the Docker provider doesn't
+# call them outside Swarm mode, so admitting them would be access beyond need.
+# Copy it over ~/.config/sockguard/sockguard.yaml and restart sockguard.
+#
+# Original preset header follows.
+#
+# Minimal read-only access for Traefik's Docker provider.
+#
+# Allows exactly the endpoints Traefik calls on Podman: container list + inspect,
+# the event stream, and ping/version. Verified against traefik
+# v3.7.12 pkg/provider/docker — pdocker.go (ServerVersion, Events,
+# ContainerList), shared.go (ContainerInspect), pswarm.go (ServiceList,
+# NetworkList, TaskList, NodeInspect).
+#
+# Deliberately does NOT allow the read-exfiltration paths that a
+# "/containers/**" glob would swallow: /containers/{id}/archive,
+# /containers/{id}/export, /containers/{id}/logs, /containers/{id}/attach.
+# Traefik needs none of them, so this preset needs no
+# insecure_allow_read_exfiltration acknowledgment. A client that genuinely
+# needs container logs or archive has to add that rule AND set
+# insecure_allow_read_exfiltration: true itself.
+
+upstream:
+  socket: /run/podman/podman.sock
+  flavor: podman
+
+listen:
+  socket: /var/run/sockguard/sockguard.sock
+
+log:
+  level: info
+  format: json
+  access_log: true
+
+health:
+  enabled: true
+  path: /health
+
+# Traefik routes to container IP addresses, so it needs the real values from
+# /containers/json and /containers/{id}/json. Network-topology redaction would
+# blank them (and moby-typed clients cannot route to an empty address anyway),
+# so turn it off for this preset. Mount, env and sensitive-data redaction stay
+# at their defaults.
+response:
+  redact_network_topology: false
+
+rules:
+  # Health and metadata
+  - match: { method: GET, path: "/_ping" }
+    action: allow
+  - match: { method: HEAD, path: "/_ping" }
+    action: allow
+  - match: { method: GET, path: "/version" }
+    action: allow
+  - match: { method: GET, path: "/events" }
+    action: allow
+
+  # Container reads — list + inspect only. A single "*" matches one path
+  # segment, so the container-ID position cannot absorb a trailing
+  # /archive, /export, /logs or /attach.
+  - match: { method: GET, path: "/containers/json" }
+    action: allow
+  - match: { method: GET, path: "/containers/*/json" }
+    action: allow
+
+  # Deny everything else
+  - match: { method: "*", path: "/**" }
+    action: deny
+    reason: "not allowed by traefik preset — read-only access only"

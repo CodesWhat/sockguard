@@ -41,13 +41,16 @@ func FuzzImageLoad(f *testing.F) {
 	f.Fuzz(func(t *testing.T, body []byte) {
 		body = truncateParserFuzzBytes(body, maxImageLoadBodyBytes+1024)
 
-		req := httptest.NewRequest(http.MethodPost, "/images/load", bytes.NewReader(body))
-		_, _ = policy.inspect(nil, req, "/images/load")
-
-		if req.Body != nil {
-			_, _ = io.Copy(io.Discard, req.Body)
-			_ = req.Body.Close()
-		}
+		fuzzVerdictOracle(t, "image load", body, func(b []byte) (string, error) {
+			req := httptest.NewRequest(http.MethodPost, "/images/load", bytes.NewReader(b))
+			defer func() {
+				if req.Body != nil {
+					_, _ = io.Copy(io.Discard, req.Body)
+					_ = req.Body.Close()
+				}
+			}()
+			return policy.inspect(nil, req, "/images/load")
+		})
 	})
 }
 
@@ -84,14 +87,17 @@ func FuzzContainerArchive(f *testing.F) {
 	f.Fuzz(func(t *testing.T, queryPath string, body []byte) {
 		body = truncateParserFuzzBytes(body, maxContainerArchiveBodyBytes+1024)
 
-		req := httptest.NewRequest(http.MethodPut, "/containers/abc/archive", bytes.NewReader(body))
-		req.URL = &url.URL{Path: "/containers/abc/archive", RawQuery: "path=" + queryPath}
-		_, _ = policy.inspect(nil, req, "/containers/abc/archive")
-
-		if req.Body != nil {
-			_, _ = io.Copy(io.Discard, req.Body)
-			_ = req.Body.Close()
-		}
+		fuzzVerdictOracle(t, "container archive", body, func(b []byte) (string, error) {
+			req := httptest.NewRequest(http.MethodPut, "/containers/abc/archive", bytes.NewReader(b))
+			req.URL = &url.URL{Path: "/containers/abc/archive", RawQuery: "path=" + queryPath}
+			defer func() {
+				if req.Body != nil {
+					_, _ = io.Copy(io.Discard, req.Body)
+					_ = req.Body.Close()
+				}
+			}()
+			return policy.inspect(nil, req, "/containers/abc/archive")
+		})
 	})
 }
 
@@ -120,9 +126,11 @@ func FuzzContainerUpdate(f *testing.F) {
 	f.Fuzz(func(t *testing.T, body []byte) {
 		body = truncateParserFuzzBytes(body, maxContainerUpdateBodyBytes+1024)
 
-		req := newJSONInspectorFuzzRequest(http.MethodPost, "/containers/abc123/update", "", body)
-		_, _ = policy.inspect(nil, req, "/containers/abc123/update")
-		drainFuzzRequestBody(req)
+		fuzzVerdictOracle(t, "container update", body, func(b []byte) (string, error) {
+			req := newJSONInspectorFuzzRequest(http.MethodPost, "/containers/abc123/update", "", b)
+			defer drainFuzzRequestBody(req)
+			return policy.inspect(nil, req, "/containers/abc123/update")
+		})
 	})
 }
 
@@ -150,9 +158,11 @@ func FuzzNode(f *testing.F) {
 	f.Fuzz(func(t *testing.T, path string, body []byte) {
 		body = truncateParserFuzzBytes(body, maxNodeBodyBytes+1024)
 
-		req := newJSONInspectorFuzzRequest(http.MethodPost, path, "", body)
-		_, _ = policy.inspect(nil, req, NormalizePath(path))
-		drainFuzzRequestBody(req)
+		fuzzVerdictOracle(t, "node", body, func(b []byte) (string, error) {
+			req := newJSONInspectorFuzzRequest(http.MethodPost, path, "", b)
+			defer drainFuzzRequestBody(req)
+			return policy.inspect(nil, req, NormalizePath(path))
+		})
 	})
 }
 

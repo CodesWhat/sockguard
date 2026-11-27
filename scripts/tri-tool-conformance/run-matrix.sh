@@ -1602,6 +1602,11 @@ assert_exec() {
 # documented unconfigured-trigger refusal, identical on every row
 # ---------------------------------------------------------------------------
 
+# Clock and sleep for the store poll below. Production reads bash's SECONDS and
+# sleeps for real; the deadline test redefines both to drive virtual time.
+store_poll_now() { printf '%s' "$SECONDS"; }
+store_poll_sleep() { sleep "$1"; }
+
 assert_remote_update_trigger() {
   local name="remote-update-trigger"
 
@@ -1670,21 +1675,21 @@ assert_remote_update_trigger() {
   local doc="" dd_id="" dd_agent="" remaining
   local containers_body="${SCRATCH_DIR}/containers-response.json"
   local containers_status containers_jq_err
-  local deadline=$((SECONDS + STORE_SYNC_TIMEOUT))
-  while ((SECONDS < deadline)); do
-    remaining=$((deadline - SECONDS))
+  local deadline=$(($(store_poll_now) + STORE_SYNC_TIMEOUT))
+  while (($(store_poll_now) < deadline)); do
+    remaining=$((deadline - $(store_poll_now)))
     ((remaining <= 0)) && break
     if ! containers_status="$(curl --silent --max-time "$((remaining < 10 ? remaining : 10))" --output "$containers_body" \
       --write-out '%{http_code}' "http://127.0.0.1:3000/api/v1/containers?limit=500" 2>"${SCRATCH_DIR}/containers-curl-err.log")"; then
       # curl itself failed to get a response at all (connection refused,
       # timeout, etc) -- transient, keep polling like before rather than
       # failing on the first hiccup.
-      remaining=$((deadline - SECONDS))
+      remaining=$((deadline - $(store_poll_now)))
       ((remaining <= 0)) && break
-      sleep $((remaining < 5 ? remaining : 5))
+      store_poll_sleep $((remaining < 5 ? remaining : 5))
       continue
     fi
-    ((SECONDS >= deadline)) && break
+    (($(store_poll_now) >= deadline)) && break
     case "$containers_status" in
       2??) ;;
       *)
@@ -1722,16 +1727,16 @@ assert_remote_update_trigger() {
       record_result "$name" FAIL "harness bug, not a conformance failure -- jq could not read the /api/v1/containers response (${containers_jq_err}): $(head -c 300 "$containers_body" 2>/dev/null)"
       return 1
     fi
-    if ((SECONDS >= deadline)); then
+    if (($(store_poll_now) >= deadline)); then
       doc=""
       break
     fi
     if [ -n "$doc" ]; then
       break
     fi
-    remaining=$((deadline - SECONDS))
+    remaining=$((deadline - $(store_poll_now)))
     ((remaining <= 0)) && break
-    sleep $((remaining < 5 ? remaining : 5))
+    store_poll_sleep $((remaining < 5 ? remaining : 5))
   done
   if [ -z "$doc" ]; then
     record_result "$name" FAIL "sentinel never appeared in drydock's /api/v1/containers store within ${STORE_SYNC_TIMEOUT}s"

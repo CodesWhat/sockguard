@@ -903,6 +903,107 @@ func TestLibpodImageLoadRejectsArchiveLinkAliases(t *testing.T) {
 	}
 }
 
+// TestLibpodImageLoadRejectsControlFileShapes covers the control-file rejects
+// that the shared link-alias test does not reach: a link or other non-regular
+// entry at manifest.json, index.json or oci-layout, and a duplicate oci-layout.
+func TestLibpodImageLoadRejectsControlFileShapes(t *testing.T) {
+	tests := []struct {
+		name    string
+		entries func(*testing.T) []containerArchiveTestEntry
+		want    string
+	}{
+		{
+			name: "symlink at manifest.json",
+			entries: func(*testing.T) []containerArchiveTestEntry {
+				return []containerArchiveTestEntry{{name: "manifest.json", typ: tar.TypeSymlink, link: "elsewhere.json"}}
+			},
+			want: "manifest.json is not a regular file",
+		},
+		{
+			name: "hardlink at manifest.json",
+			entries: func(*testing.T) []containerArchiveTestEntry {
+				return []containerArchiveTestEntry{
+					{name: "elsewhere.json", body: `[{"RepoTags":["ghcr.io/acme/app:v1"]}]`},
+					{name: "manifest.json", typ: tar.TypeLink, link: "elsewhere.json"},
+				}
+			},
+			want: "manifest.json is not a regular file",
+		},
+		{
+			name: "directory at index.json",
+			entries: func(*testing.T) []containerArchiveTestEntry {
+				return []containerArchiveTestEntry{{name: "index.json", typ: tar.TypeDir}}
+			},
+			want: "index.json is not a regular file",
+		},
+		{
+			name: "directory at oci-layout",
+			entries: func(*testing.T) []containerArchiveTestEntry {
+				return []containerArchiveTestEntry{{name: "oci-layout", typ: tar.TypeDir}}
+			},
+			want: "oci-layout is not a regular file",
+		},
+		{
+			name: "duplicate oci-layout",
+			entries: func(t *testing.T) []containerArchiveTestEntry {
+				return append(mustOCIImageLoadEntries(t, "ghcr.io/acme/app:v1"),
+					containerArchiveTestEntry{name: "./oci-layout", body: `{"imageLayoutVersion":"1.0.0"}`})
+			},
+			want: "duplicate oci-layout",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			payload := mustContainerArchiveTar(t, tt.entries(t)...)
+			req := httptest.NewRequest(http.MethodPost, "/libpod/images/load", bytes.NewReader(payload))
+
+			reason, err := newImageLoadPolicy(libpodImageLoadAllowlist()).inspect(nil, req, NormalizePath(req.URL.Path))
+			if reason != "" {
+				t.Fatalf("reason = %q, want an inspection error", reason)
+			}
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("inspect() error = %v, want %q", err, tt.want)
+			}
+		})
+	}
+}
+
+// TestLibpodImageLoadRejectsOCIBlobDigestMismatch ships an OCI archive whose
+// manifest blob is stored under a digest it does not hash to. The allowlisted
+// ref must not carry it through.
+func TestLibpodImageLoadRejectsOCIBlobDigestMismatch(t *testing.T) {
+	entries := mustOCIImageLoadEntries(t, "ghcr.io/acme/app:v1")
+	// entries[3] is the manifest blob; keep its path but change its bytes.
+	entries[3].body += " "
+	req := httptest.NewRequest(http.MethodPost, "/libpod/images/load", bytes.NewReader(mustContainerArchiveTar(t, entries...)))
+
+	reason, err := newImageLoadPolicy(libpodImageLoadAllowlist()).inspect(nil, req, NormalizePath(req.URL.Path))
+	if reason == "" && err == nil {
+		t.Fatal("inspect() allowed an OCI archive whose manifest blob does not match its digest")
+	}
+	if got := reason + fmt.Sprint(err); !strings.Contains(got, "does not match") {
+		t.Fatalf("reason = %q, err = %v, want a digest-mismatch denial", reason, err)
+	}
+}
+
+// TestOCIManifestGraphRejectsCycle builds an index whose child descriptor names
+// the index itself and expects the ancestor check to refuse it.
+func TestOCIManifestGraphRejectsCycle(t *testing.T) {
+	const digest = "sha256:" + "0000000000000000000000000000000000000000000000000000000000000001"
+	index := []byte(fmt.Sprintf(`{"schemaVersion":2,"manifests":[{"mediaType":"application/vnd.oci.image.index.v1+json","digest":%q,"size":0}]}`, digest))
+	// The ancestor check runs before the child's size is compared, so the
+	// placeholder size above is never consulted.
+	descriptor := imageLoadOCIIndexDescriptor{MediaType: "application/vnd.oci.image.index.v1+json", Digest: digest, Size: int64(len(index))}
+	blobs := map[string]imageLoadOCIBlob{
+		"blobs/sha256/0000000000000000000000000000000000000000000000000000000000000001": {size: int64(len(index)), digestMatch: true, body: index},
+	}
+	err := validateImageLoadOCIManifestGraph(descriptor, blobs)
+	if err == nil || !strings.Contains(err.Error(), "cycle") {
+		t.Fatalf("validateImageLoadOCIManifestGraph() error = %v, want a cycle rejection", err)
+	}
+}
+
 func TestOCIManifestGraphBoundsRepeatedDescriptorVisits(t *testing.T) {
 	repeatedGraph := func(depth int) (imageLoadOCIIndexDescriptor, map[string]imageLoadOCIBlob) {
 		config := []byte(`{"architecture":"amd64","os":"linux","rootfs":{"type":"layers","diff_ids":[]},"config":{}}`)

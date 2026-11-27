@@ -16,9 +16,8 @@ export function MobileDocsBar() {
 
   return (
     <header id="nd-subnav" className="docs-bar">
-      <Trigger className="docs-bar-btn" aria-label={`Docs ${label}, open sidebar`}>
-        <span className="docs-bar-lb">Docs</span>
-        <span className="docs-bar-cur">{label}</span>
+      <Trigger className="docs-bar-btn">
+        <span className="docs-bar-lb">Docs</span> <span className="docs-bar-cur">{label}</span>
         <ChevronDown className="docs-bar-cv" aria-hidden="true" />
       </Trigger>
       <SearchButton />

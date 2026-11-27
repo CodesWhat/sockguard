@@ -428,3 +428,62 @@ func TestIsCommitPath(t *testing.T) {
 		})
 	}
 }
+
+func TestAllOwnersCommitPreservesStampRefusals(t *testing.T) {
+	t.Parallel()
+	for _, spelling := range commitSpellings {
+		for _, mode := range []string{"enforce", "warn", "audit"} {
+			for _, tc := range []struct {
+				name, query string
+				wantStatus  int
+			}{
+				{"valid foreign source", "container=foreign&repo=result&tag=1", http.StatusCreated},
+				{"unrelated label", "container=foreign&repo=result&tag=1&changes=LABEL%20note=x", http.StatusForbidden},
+				{"owner override", "container=foreign&repo=result&tag=1&changes=LABEL%20com.sockguard.owner=foreign", http.StatusForbidden},
+				{"ambiguous source", "container=foreign&container=other&repo=result&tag=1", http.StatusForbidden},
+				{"ambiguous destination", "container=foreign&repo=result&repo=other&tag=1", http.StatusForbidden},
+			} {
+				t.Run(spelling.name+"/"+mode+"/"+tc.name, func(t *testing.T) {
+					locks := NewKeyedLocks(0, 0)
+					forwarded := false
+					next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+						forwarded = true
+						if tc.wantStatus != http.StatusCreated {
+							w.WriteHeader(http.StatusCreated)
+							return
+						}
+						var body struct{ Labels map[string]string }
+						if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+							t.Fatal(err)
+						}
+						if body.Labels["com.sockguard.owner"] != "adm" {
+							t.Errorf("commit labels = %v, want admin stamp", body.Labels)
+						}
+						if locks.size() == 0 {
+							t.Error("commit destination is not locked")
+						}
+						w.WriteHeader(http.StatusCreated)
+					})
+					inspect := func(context.Context, dockerresource.Kind, string) (map[string]string, bool, error) {
+						t.Error("admin commit must not authorize source ownership")
+						return nil, false, nil
+					}
+					handler := middlewareWithDeps(testLogger(), Options{Owner: "adm", LabelKey: "com.sockguard.owner", AllOwners: true, Locks: locks}, inspect, nil)(next)
+					req := httptest.NewRequest(http.MethodPost, spelling.path+"?"+tc.query, nil)
+					req = req.WithContext(logging.WithMeta(req.Context(), &logging.RequestMeta{RolloutMode: mode}))
+					rec := httptest.NewRecorder()
+					handler.ServeHTTP(rec, req)
+					if rec.Code != tc.wantStatus {
+						t.Errorf("status = %d %s, want %d", rec.Code, rec.Body.String(), tc.wantStatus)
+					}
+					if forwarded != (tc.wantStatus == http.StatusCreated) {
+						t.Errorf("forwarded = %v", forwarded)
+					}
+					if locks.size() != 0 {
+						t.Error("commit lock was not released")
+					}
+				})
+			}
+		}
+	}
+}

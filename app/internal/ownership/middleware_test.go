@@ -2796,7 +2796,7 @@ func TestIdentifierHelpers(t *testing.T) {
 	if id, ok := imageIdentifier(http.MethodGet, "/images/registry.io/team/app/get"); !ok || id != "registry.io/team/app" {
 		t.Fatalf("imageIdentifier(namespaced get) = (%q, %v), want (registry.io/team/app, true)", id, ok)
 	}
-	// Attestation listing (Engine API 1.53+) must resolve to {name} so the
+	// Attestation listing (Engine API 1.55+) must resolve to {name} so the
 	// owner-isolation check applies to the referenced image. Without the
 	// "/attestations" suffix, imageIdentifier returns the whole
 	// "{name}/attestations" remainder and denies even an owned image because

@@ -1232,6 +1232,9 @@ func TestDockerServiceInspectorBoundsAndDecodesState(t *testing.T) {
 		if want := []string{"legacy", "abc123"}; !reflect.DeepEqual(got.PreviousSpecNetworkTargets, want) {
 			t.Fatalf("PreviousSpecNetworkTargets = %v, want %v", got.PreviousSpecNetworkTargets, want)
 		}
+		if want := []string{"current"}; !reflect.DeepEqual(got.SpecNetworkTargets, want) {
+			t.Fatalf("SpecNetworkTargets = %v, want %v", got.SpecNetworkTargets, want)
+		}
 	})
 
 	t.Run("one byte over response cap fails", func(t *testing.T) {
@@ -1779,6 +1782,48 @@ func TestResourceLimitReportSaturatesUnsignedValues(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := boundedUint64AsInt64(tt.value); got != tt.want {
 				t.Fatalf("reported limit for %d = %d, want %d", tt.value, got, tt.want)
+			}
+		})
+	}
+}
+
+// With a resource requirement configured, guardServiceWrite owns the automatic
+// rollback check, and it resolves the current spec's networks too.
+func TestResourceLimitGuardAutomaticRollbackResolvesHostNetwork(t *testing.T) {
+	body := `{"TaskTemplate":{"Resources":{"Limits":{"NanoCPUs":1000000000}}},"UpdateConfig":{"FailureAction":"rollback"}}`
+	hostNetwork := func(_ context.Context, target string) (NetworkInspectResult, bool, error) {
+		if target == "abc123" {
+			return NetworkInspectResult{Name: "host", Driver: "host"}, true, nil
+		}
+		return NetworkInspectResult{Name: target, Driver: "overlay"}, true, nil
+	}
+	tests := []struct {
+		name        string
+		allowHost   bool
+		spec        ServiceInspectResult
+		wantStatus  int
+		wantForward int
+	}{
+		{name: "host ID in the current spec is denied", spec: ServiceInspectResult{Version: 7, SpecNanoCPUs: 1, SpecNetworkTargets: []string{"abc123"}}, wantStatus: http.StatusForbidden},
+		{name: "overlay current spec passes", spec: ServiceInspectResult{Version: 7, SpecNanoCPUs: 1, SpecNetworkTargets: []string{"tenant"}}, wantStatus: guardedRequestAllowedStatus, wantForward: 1},
+		{name: "allow_host_network skips the resolution", allowHost: true, spec: ServiceInspectResult{Version: 7, SpecNanoCPUs: 1, SpecNetworkTargets: []string{"abc123"}}, wantStatus: guardedRequestAllowedStatus, wantForward: 1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			inspectCalls := 0
+			out := runResourceGuardRequest(t, ResourceLimitGuardOptions{
+				PolicyConfig: PolicyConfig{Service: ServiceOptions{RequireCPULimit: true, AllowHostNetwork: tt.allowHost}},
+				InspectService: func(context.Context, string) (ServiceInspectResult, bool, error) {
+					inspectCalls++
+					return tt.spec, true, nil
+				},
+				InspectNetwork: hostNetwork,
+			}, http.MethodPost, "/services/svc/update?version=7", body, "")
+			if out.status != tt.wantStatus || out.forwarded != tt.wantForward {
+				t.Fatalf("status=%d forwarded=%d, want %d/%d; body: %s", out.status, out.forwarded, tt.wantStatus, tt.wantForward, out.body)
+			}
+			if inspectCalls > 1 {
+				t.Fatalf("service inspected %d times, want at most one snapshot", inspectCalls)
 			}
 		})
 	}

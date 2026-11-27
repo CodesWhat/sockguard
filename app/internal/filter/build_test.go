@@ -624,6 +624,67 @@ func TestMiddlewareAppliesNativeLibpodBuildControlAcknowledgements(t *testing.T)
 	}
 }
 
+// TestMiddlewareDeniesLocalAdditionalBuildContextsWithoutBlindWrites pins the
+// deny for Podman localpath: additional contexts (native and compat build
+// routes, plus the legacy JSON form) when insecure_allow_body_blind_writes is
+// off. The acknowledged-allow counterpart is in
+// TestMiddlewareAppliesNativeLibpodBuildControlAcknowledgements.
+func TestMiddlewareDeniesLocalAdditionalBuildContextsWithoutBlindWrites(t *testing.T) {
+	allowed, err := CompileRule(Rule{Methods: []string{http.MethodPost}, Pattern: "/**", Action: ActionAllow, Index: 0})
+	if err != nil {
+		t.Fatalf("compile allow rule: %v", err)
+	}
+
+	const wantReason = "uninspectable additional build context requires insecure_allow_body_blind_writes"
+	tests := []struct {
+		name   string
+		target string
+	}{
+		{"native libpod localpath", "/libpod/build?additionalbuildcontexts=docs%3Dlocalpath%3A%2Fsrv%2Fdocs"},
+		{"version-prefixed native libpod localpath", "/v5.5.2/libpod/build?additionalbuildcontexts=docs%3Dlocalpath%3A%2Fsrv%2Fdocs"},
+		{"compat build localpath", "/build?additionalbuildcontexts=docs%3Dlocalpath%3A%2Fsrv%2Fdocs"},
+		{"version-prefixed compat build localpath", "/v1.45/build?additionalbuildcontexts=docs%3Dlocalpath%3A%2Fsrv%2Fdocs"},
+		{"legacy JSON local context", "/libpod/build?additionalbuildcontexts=%7B%22base%22%3A%7B%22IsURL%22%3Afalse%2C%22IsImage%22%3Afalse%2C%22Value%22%3A%22%2Fsrv%2Fbase%22%2C%22DownloadedCache%22%3A%22%22%7D%7D"},
+		{"legacy JSON local context on compat build", "/build?additionalbuildcontexts=%7B%22base%22%3A%7B%22IsURL%22%3Afalse%2C%22IsImage%22%3Afalse%2C%22Value%22%3A%22%2Fsrv%2Fbase%22%2C%22DownloadedCache%22%3A%22%22%7D%7D"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			payload := mustBuildContextTar(t, "Dockerfile", "FROM busybox\nCOPY . /app\n")
+			req := httptest.NewRequest(http.MethodPost, tt.target, bytes.NewReader(payload))
+			rec := httptest.NewRecorder()
+			upstreamCalls := 0
+			handler := MiddlewareWithOptions([]*CompiledRule{allowed}, testLogger(), Options{
+				PolicyConfig: PolicyConfig{
+					DenyResponseVerbosity: DenyResponseVerbosityVerbose,
+					// Remote contexts are acknowledged so only the blind-write
+					// requirement can be the cause of the denial.
+					Build: BuildOptions{AllowRemoteContext: true, AllowBlindWrites: false},
+				},
+			})(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				upstreamCalls++
+				w.WriteHeader(http.StatusNoContent)
+			}))
+
+			handler.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusForbidden {
+				t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusForbidden, rec.Body.String())
+			}
+			if upstreamCalls != 0 {
+				t.Fatalf("upstream calls = %d, want 0", upstreamCalls)
+			}
+			var response DenialResponse
+			if err := json.NewDecoder(rec.Body).Decode(&response); err != nil {
+				t.Fatalf("decode response: %v", err)
+			}
+			if !strings.Contains(response.Reason, wantReason) {
+				t.Fatalf("reason = %q, want substring %q", response.Reason, wantReason)
+			}
+		})
+	}
+}
+
 func TestMiddlewareRejectsMalformedLibpodAdditionalContextDespiteAcknowledgements(t *testing.T) {
 	allowed, err := CompileRule(Rule{Methods: []string{http.MethodPost}, Pattern: "/libpod/build", Action: ActionAllow, Index: 0})
 	if err != nil {

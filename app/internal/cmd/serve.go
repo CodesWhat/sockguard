@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -31,12 +32,14 @@ import (
 	"github.com/codeswhat/sockguard/v3/app/internal/inbound"
 	"github.com/codeswhat/sockguard/v3/app/internal/logging"
 	"github.com/codeswhat/sockguard/v3/app/internal/metrics"
+	"github.com/codeswhat/sockguard/v3/app/internal/otlp"
 	"github.com/codeswhat/sockguard/v3/app/internal/ownership"
 	"github.com/codeswhat/sockguard/v3/app/internal/policybundle"
 	"github.com/codeswhat/sockguard/v3/app/internal/proxy"
 	"github.com/codeswhat/sockguard/v3/app/internal/ratelimit"
 	"github.com/codeswhat/sockguard/v3/app/internal/reload"
 	"github.com/codeswhat/sockguard/v3/app/internal/responsefilter"
+	"github.com/codeswhat/sockguard/v3/app/internal/sdnotify"
 	"github.com/codeswhat/sockguard/v3/app/internal/upstream"
 	"github.com/codeswhat/sockguard/v3/app/internal/upstreamflavor"
 	"github.com/codeswhat/sockguard/v3/app/internal/version"
@@ -202,12 +205,18 @@ func runServeWithDeps(cmd *cobra.Command, args []string, deps *serveDeps) error 
 	warnIfDefaultProfileExcluded(cfg, logger)
 	warnIfRulesMatchNoKnownRoute(cfg, logger)
 	warnIfCreateAllowedWithResponseRedaction(cfg, logger)
+	warnIfProfileDisablesRedaction(cfg, logger)
+	warnIfQueryDenyRules(cfg, logger)
 	warnIfPingNotAllowed(cfg, logger)
 	warnIfMainListenerPlaintext(cfg, logger)
 	runtime, err := newServeRuntime(cfg, logger, deps)
 	if err != nil {
 		return fmt.Errorf("upstream: %w", err)
 	}
+	// Deferred so it runs after shutdownServers has drained the listeners
+	// (spans from in-flight requests are already enqueued by then) and on
+	// every early error return below.
+	defer runtime.closeOTLP(deps.shutdownGracePeriod)
 	if err := verifyUpstreamReachableForRuntime(cmd.Context(), deps, runtime, cfg, logger); err != nil {
 		return err
 	}
@@ -280,7 +289,7 @@ func runServeWithDeps(cmd *cobra.Command, args []string, deps *serveDeps) error 
 	if err != nil {
 		return err
 	}
-	adminMember, err := bindAdminServer(cfg, logger, auditLogger, versioner, deps, board)
+	adminMember, err := bindAdminServer(cfg, logger, auditLogger, versioner, deps, board, runtime.otlp)
 	if err != nil {
 		closeMembersReverse(deps, members)
 		return err
@@ -362,11 +371,18 @@ func runServeWithDeps(cmd *cobra.Command, args []string, deps *serveDeps) error 
 	stopReload := startConfigReload(cmd.Context(), cfg, cfgFile, coordinator, logger)
 	defer stopReload()
 
+	notifier := sdnotify.New(os.Getenv)
+	stopNotify := startSystemdNotify(cmd.Context(), notifier, runtime, logger)
+	defer stopNotify()
+
 	sigCh := make(chan os.Signal, 1)
 	deps.notifySignals(sigCh, syscall.SIGTERM, syscall.SIGINT)
 
 	var serveFailure error
 	select {
+	case cause := <-runtime.watchdogExit:
+		logger.Error("upstream watchdog exit threshold reached, shutting down", "error", cause)
+		serveFailure = fmt.Errorf("watchdog: %w", cause)
 	case sig := <-sigCh:
 		logger.Info("shutdown signal received", "signal", sig.String())
 	case result := <-fanIn:
@@ -388,6 +404,9 @@ func runServeWithDeps(cmd *cobra.Command, args []string, deps *serveDeps) error 
 		}
 	}
 	stopWatchdog()
+	if err := notifier.Stopping(); err != nil {
+		logger.Warn("systemd STOPPING notification failed", "error", err)
+	}
 
 	shutdownServers(cmd.Context(), deps, cfg, members, adminMember, runtime.metrics, board, logger)
 	logger.Info("sockguard stopped")
@@ -404,6 +423,7 @@ func bindAdminServer(
 	versioner *admin.PolicyVersioner,
 	deps *serveDeps,
 	board *listenerStatusBoard,
+	exporter *otlp.Exporter,
 ) (*listenerMember, error) {
 	if !cfg.Admin.Enabled || !cfg.Admin.Listen.Configured() {
 		return nil, nil
@@ -414,7 +434,7 @@ func bindAdminServer(
 	}
 	warnIfAdminListenerWideOpen(cfg, logger)
 	identity := inbound.Identity{Name: config.AdminListenerName, Role: inbound.RoleAdmin, Network: networkFor(cfg.Admin.Listen.ListenConfig)}
-	adminSwappable := reload.NewSwappableHandler(buildAdminHandlerChain(cfg, logger, auditLogger, versioner))
+	adminSwappable := reload.NewSwappableHandler(buildAdminHandlerChain(cfg, logger, auditLogger, versioner, exporter))
 	server := newAdminHTTPServer(adminSwappable)
 	server.ConnContext = inbound.ConnContext(identity, server.ConnContext)
 	member := &listenerMember{
@@ -492,6 +512,7 @@ func shutdownServers(ctx context.Context, deps *serveDeps, cfg *config.Config, m
 // operators. Bundle fields stay zero unless verification succeeded.
 func buildInitialPolicySnapshot(deps *serveDeps, cfg *config.Config, rules []*filter.CompiledRule, compatActive bool, bundleResult *policybundle.VerifyResult) admin.PolicySnapshot {
 	snap := admin.PolicySnapshot{
+		Config:       cfg,
 		LoadedAt:     deps.now(),
 		Rules:        len(rules),
 		Profiles:     len(cfg.Clients.Profiles),
@@ -615,9 +636,13 @@ func buildServeHandlerChainWithRuntime(b serveHandlerBuild) (http.Handler, func(
 // rebuild happens. Chain-scoped goroutines (rate-limit sampler, per-profile
 // Limiter eviction) are tracked separately by reloadCoordinator.
 type serveRuntime struct {
-	metrics   *metrics.Registry
-	health    *health.Monitor
-	readiness *health.Monitor
+	ownerNameLocks *ownership.KeyedLocks
+	metrics        *metrics.Registry
+	health         *health.Monitor
+	readiness      *health.Monitor
+	// watchdogExit receives one error when health.watchdog.exit_after trips.
+	// serve selects on it alongside the signal and listener-failure cases.
+	watchdogExit chan error
 	// resolver is the shared upstream dial seam (endpoint selection, pooling,
 	// TLS, failover). All request paths and side channels route through it so
 	// failover is coherent across the proxy, hijack, and inspect calls.
@@ -640,16 +665,29 @@ type serveRuntime struct {
 	// periodically and on upstream health changes. Process-scoped like the
 	// flavor.
 	cgroupV1 *cgroupV1Tracker
+	// otlp is the opt-in trace exporter (nil unless otlp.enabled). Process-
+	// scoped like the metrics registry: otlp.* is reload-immutable, so every
+	// reloaded chain shares the one exporter.
+	otlp *otlp.Exporter
 }
 
 func newServeRuntime(cfg *config.Config, logger *slog.Logger, deps *serveDeps) (*serveRuntime, error) {
-	runtime := &serveRuntime{}
+	runtime := &serveRuntime{ownerNameLocks: ownership.NewKeyedLocks(0, 0), watchdogExit: make(chan error, 1)}
 	if cfg.Metrics.Enabled {
 		runtime.metrics = metrics.NewRegistry()
+	}
+	if cfg.OTLP.Enabled {
+		exporter, err := newOTLPExporter(cfg.OTLP)
+		if err != nil {
+			return nil, fmt.Errorf("otlp: %w", err)
+		}
+		runtime.otlp = exporter
+		runtime.metrics.SetOTLPStats(func() metrics.OTLPStats { return metrics.OTLPStats(exporter.Stats()) })
 	}
 
 	resolver, legacy, err := buildUpstreamResolver(cfg, logger, os.LookupEnv)
 	if err != nil {
+		runtime.closeOTLP(0)
 		return nil, err
 	}
 	runtime.resolver = resolver
@@ -688,13 +726,53 @@ func (r *serveRuntime) startWatchdog(ctx context.Context, cfg *config.Config) fu
 		return func() {}
 	}
 
+	var tracker *health.DownTracker
+	if exitAfter, err := time.ParseDuration(cfg.Health.Watchdog.ExitAfter); err == nil && exitAfter > 0 {
+		tracker = health.NewDownTracker(exitAfter)
+	}
+
 	watchdogCtx, cancel := context.WithCancel(ctx)
 	r.health.StartWatchdog(watchdogCtx, interval, func(state health.WatchdogState) {
+		if down, tripped := tracker.Observe(state); tripped && r.watchdogExit != nil {
+			select {
+			case r.watchdogExit <- fmt.Errorf("upstream unreachable for %s (health.watchdog.exit_after=%s)", down.Round(time.Millisecond), cfg.Health.Watchdog.ExitAfter):
+			default:
+			}
+		}
 		if r.metrics == nil {
 			return
 		}
 		r.metrics.ObserveUpstreamWatchdog(state.Up)
 		r.metrics.SetUpstreamSocketState(state.Up)
+	})
+	return cancel
+}
+
+// startSystemdNotify sends READY=1 and, when the unit sets WatchdogSec=, starts
+// WATCHDOG=1 pings at half WATCHDOG_USEC. Pings stop while the active upstream
+// watchdog reports the upstream down, so systemd times the service out and
+// restarts it. It is a no-op without NOTIFY_SOCKET.
+func startSystemdNotify(ctx context.Context, n *sdnotify.Notifier, r *serveRuntime, logger *slog.Logger) func() {
+	if n == nil {
+		return func() {}
+	}
+	if err := n.Ready(); err != nil {
+		logger.Warn("systemd READY notification failed", "error", err)
+	}
+	interval, ok := sdnotify.WatchdogInterval(os.Getenv, os.Getpid())
+	if !ok {
+		return func() {}
+	}
+	pingCtx, cancel := context.WithCancel(ctx)
+	healthy := func() bool {
+		if r == nil || r.health == nil {
+			return true
+		}
+		state, known := r.health.State()
+		return !known || state.Up
+	}
+	go n.KeepAlive(pingCtx, interval, healthy, func(err error) {
+		logger.Warn("systemd WATCHDOG notification failed", "error", err)
 	})
 	return cancel
 }
@@ -773,7 +851,7 @@ func attachRuntimeInspectors(cfg *config.Config, res *upstream.Resolver, policy 
 	// image config in the archive, for the ownership layer to refuse a load
 	// carrying another owner's label. The key is ownership's, not a profile's.
 	policy.ImageLoad.OwnerLabelKey = ""
-	if cfg.Ownership.Owner != "" {
+	if cfg.OwnershipActive() {
 		policy.ImageLoad.OwnerLabelKey = cfg.Ownership.LabelKey
 		if policy.ImageLoad.OwnerLabelKey == "" {
 			policy.ImageLoad.OwnerLabelKey = ownership.DefaultLabelKey
@@ -785,7 +863,7 @@ func attachRuntimeInspectors(cfg *config.Config, res *upstream.Resolver, policy 
 
 func newServeUpstreamHandler(cfg *config.Config, res *upstream.Resolver, logger *slog.Logger, runtime *serveRuntime) http.Handler {
 	rp := proxy.NewWithTransport(upstreamResolverFor(res, cfg), logger, proxy.Options{
-		ModifyResponse: responsefilter.New(serveResponseFilterOptions(cfg)).ModifyResponse,
+		ModifyResponse: serveResponseFilter(cfg).ModifyResponse,
 	})
 	// Bound finite upstream requests with a total deadline when configured.
 	// Wrapping the proxy itself (rather than adding a chain layer) keeps the
@@ -861,7 +939,7 @@ func buildServeHandlerLayersWithRuntime(b serveHandlerBuild) ([]serveHandlerLaye
 		// lookup, and the guard still runs before hijack/proxy for every
 		// request ownership allowed.
 		namedServeHandlerLayer("withResourceLimitGuard", withResourceLimitGuard(cfg, resolver, logger, clientProfiles)),
-		namedServeHandlerLayer("withOwnership", withOwnership(cfg, resolver, logger, runtimeUpstreamCapabilities(runtime))),
+		namedServeHandlerLayer("withOwnership", withOwnership(cfg, resolver, logger, runtimeUpstreamCapabilities(runtime), runtime.ownerNameLocks)),
 		namedServeHandlerLayer("withVisibility", withVisibility(cfg, resolver, logger, runtimeUpstreamCapabilities(runtime))),
 		namedServeHandlerLayer("withFilter", withFilter(cfg, resolver, logger, rules, clientProfiles, runtimeUpstreamFlavor(runtime), runtimeCgroupV1Func(runtime), runtimeUpstreamCapabilities(runtime).ProbedDocker)),
 		// withFormBodyGuard is appended right AFTER withFilter so it executes
@@ -893,6 +971,7 @@ func buildServeHandlerLayersWithRuntime(b serveHandlerBuild) ([]serveHandlerLaye
 	// them, otherwise the same path resolves on both listeners and operators
 	// lose the isolation they explicitly opted in to.
 	if cfg.Admin.Enabled && !cfg.Admin.Listen.Configured() {
+		layers = append(layers, namedServeHandlerLayer("withPolicyDiffEndpoint", mountOnGate(cfg, withPolicyDiffEndpoint(cfg, logger, versioner))))
 		if versioner != nil {
 			layers = append(layers, namedServeHandlerLayer("withPolicyVersionEndpoint", mountOnGate(cfg, withPolicyVersionEndpoint(cfg, logger, versioner))))
 		}
@@ -942,8 +1021,18 @@ func buildServeHandlerLayersWithRuntime(b serveHandlerBuild) ([]serveHandlerLaye
 	if runtime.metrics != nil {
 		layers = append(layers, namedServeHandlerLayer("withMetrics", withMetrics(runtime.metrics)))
 	}
+	// withOTLP sits inside withTraceContext and withRequestID (it reads their
+	// IDs) and outside withMetrics, so it sees the final decision and status.
+	// The dedicated admin chain has its own otlp.AdminMiddleware layer.
+	if runtime.otlp != nil {
+		layers = append(layers, namedServeHandlerLayer("withOTLP", otlp.Middleware(runtime.otlp)))
+	}
+	traceContext := withTraceContext()
+	if runtime.otlp != nil {
+		traceContext = logging.TraceContextMiddlewareWithRootSampler(otlp.RootSampler(cfg.OTLP.SampleRatio))
+	}
 	layers = append(layers,
-		namedServeHandlerLayer("withTraceContext", withTraceContext()),
+		namedServeHandlerLayer("withTraceContext", traceContext),
 		namedServeHandlerLayer("withRequestID", withRequestID()),
 	)
 	if cfg.Log.Audit.Enabled && auditLogger != nil {
@@ -1084,19 +1173,21 @@ func effectiveShutdownGracePeriod(cfg *config.Config) time.Duration {
 func withBuildkitMediator(cfg *config.Config, res *upstream.Resolver, logger *slog.Logger, flavor upstreamflavor.Flavor) func(http.Handler) http.Handler {
 	warnIfOpaqueBuildkitTunnelDeprecated(cfg, logger)
 	defaultPolicy := cfg.RequestBody.Buildkit.ToPolicy(cfg.RequestBody.Build)
-	ownerPolicy := buildkitproxy.ImageOwnershipPolicy{
-		Owner: cfg.Ownership.Owner, LabelKey: cfg.Ownership.LabelKey,
-		Authorize: ownership.NewBuildkitImageAuthorizer(upstreamResolverFor(res, cfg), ownership.Options{
-			Owner: cfg.Ownership.Owner, LabelKey: cfg.Ownership.LabelKey,
-			AllowUnownedImages: cfg.Ownership.AllowUnownedImages, UpstreamFlavor: flavor,
-		}),
+	scopes := newOwnerScopes(cfg)
+	ownerPolicyFor := func(key ownerScopeKey) buildkitproxy.ImageOwnershipPolicy {
+		return buildkitproxy.ImageOwnershipPolicy{
+			Owner: key.owner, LabelKey: cfg.Ownership.LabelKey,
+			Authorize: ownership.NewBuildkitImageAuthorizer(upstreamResolverFor(res, cfg), ownership.Options{
+				Owner: key.owner, LabelKey: cfg.Ownership.LabelKey,
+				AllowUnownedImages: key.allowUnownedImages, AllOwners: key.allOwners, UpstreamFlavor: flavor,
+			}),
+		}
 	}
-	defaultPolicy.ImageOwnership = ownerPolicy
+	defaultPolicy.ImageOwnership = ownerPolicyFor(scopes.root)
 	profilePolicies := make(map[string]buildkitproxy.Policy, len(cfg.Clients.Profiles))
 	for _, profile := range cfg.Clients.Profiles {
-		profilePolicies[profile.Name] = profile.RequestBody.Buildkit.ToPolicy(profile.RequestBody.Build)
-		policy := profilePolicies[profile.Name]
-		policy.ImageOwnership = ownerPolicy
+		policy := profile.RequestBody.Buildkit.ToPolicy(profile.RequestBody.Build)
+		policy.ImageOwnership = ownerPolicyFor(scopes.keyFor(profile.Name, true))
 		profilePolicies[profile.Name] = policy
 	}
 	mediator := buildkitproxy.NewMediator(res, logger)
@@ -1175,23 +1266,12 @@ func warnOpaqueBuildkitTunnelDeprecatedOnce(cfg *config.Config, logger *slog.Log
 	})
 }
 
-func withOwnership(cfg *config.Config, res *upstream.Resolver, logger *slog.Logger, capabilities upstreamflavor.Capabilities) func(http.Handler) http.Handler {
-	return ownership.MiddlewareWithRoundTripper(res, logger, ownership.Options{
-		Owner:                           cfg.Ownership.Owner,
-		LabelKey:                        cfg.Ownership.LabelKey,
-		AllowUnownedImages:              cfg.Ownership.AllowUnownedImages,
-		AllowCrossOwnerNamespaceSharing: cfg.Ownership.AllowCrossOwnerNamespaceSharing,
-		UpstreamFlavor:                  capabilities.Flavor,
-		UpstreamProbedDocker:            capabilities.ProbedDocker,
-		PodmanConjunctiveVolumeFilters:  capabilities.PodmanConjunctiveVolumeFilters,
-	})
-}
-
 func withVisibility(cfg *config.Config, res *upstream.Resolver, logger *slog.Logger, capabilities upstreamflavor.Capabilities) func(http.Handler) http.Handler {
 	return visibility.MiddlewareWithRoundTripper(res, logger, visibility.Options{
 		VisibleResourceLabels:          cfg.Response.VisibleResourceLabels,
 		NamePatterns:                   cfg.Response.NamePatterns,
 		ImagePatterns:                  cfg.Response.ImagePatterns,
+		Networks:                       cfg.Response.VisibleNetworks,
 		Profiles:                       clientVisibilityProfiles(cfg.Clients.Profiles),
 		ResolveProfile:                 clientacl.RequestProfile,
 		UpstreamFlavor:                 capabilities.Flavor,
@@ -1204,12 +1284,14 @@ func withFilter(cfg *config.Config, res *upstream.Resolver, logger *slog.Logger,
 	warnIfReadExfiltrationEnabled(cfg, rules, clientProfiles, logger)
 	opts := serveFilterOptions(cfg, res, clientProfiles)
 	opts.Build.PodmanUpstream = flavor == upstreamflavor.Podman
+	opts.ImagePush.PodmanUpstream = flavor == upstreamflavor.Podman
 	opts.ContainerCreate.UpstreamCgroupV1Func = upstreamCgroupV1
 	opts.ContainerCreate.PodmanUpstream = flavor == upstreamflavor.Podman
 	opts.ContainerCreate.DockerUpstream = probedDocker
 	profiles := make(map[string]filter.Policy, len(opts.Profiles))
 	for name, profile := range opts.Profiles {
 		profile.Build.PodmanUpstream = flavor == upstreamflavor.Podman
+		profile.ImagePush.PodmanUpstream = flavor == upstreamflavor.Podman
 		profile.ContainerCreate.UpstreamCgroupV1Func = upstreamCgroupV1
 		profile.ContainerCreate.PodmanUpstream = flavor == upstreamflavor.Podman
 		profile.ContainerCreate.DockerUpstream = probedDocker
@@ -1417,7 +1499,7 @@ func warnReadExfiltrationOnce(cfg *config.Config, rules []*filter.CompiledRule, 
 	exposed := allowedSensitiveExfilEndpoints(cfg.Rules, rules)
 	profileExposed := allowedSensitiveExfilEndpointsByProfile(cfg.Clients.Profiles, clientProfiles)
 	once.Do(func() {
-		logger.Warn("insecure_allow_read_exfiltration is enabled: rules matching raw archive/export, log/attach streaming, checkpoint export, container rootfs mount, or registry push endpoints are admitted instead of refused at startup, and process-list reads allowed by policy are admitted instead of denied at request time. The exposed endpoint fields name one reachable path per cataloged endpoint, not every path the rules admit. An entry spelled as a concrete path was confirmed allowed by the request evaluator; an entry still carrying the catalog's placeholder identifier is either that exact path being allowed or a conservative stand-in for an endpoint whose concrete path could not be confirmed. A caller allowed those paths can read container files, container memory, images, plugins, process arguments, environment variables, secrets, and daemon-host filesystem paths, or push local artifacts to a registry it chooses",
+		logger.Warn("insecure_allow_read_exfiltration is enabled: rules matching raw archive/export, log/attach streaming, checkpoint export, container rootfs mount, daemon debug/profiling, or registry push endpoints are admitted instead of refused at startup, and process-list reads allowed by policy are admitted instead of denied at request time. The exposed endpoint fields name one reachable path per cataloged endpoint, not every path the rules admit. An entry spelled as a concrete path was confirmed allowed by the request evaluator; an entry still carrying the catalog's placeholder identifier is either that exact path being allowed or a conservative stand-in for an endpoint whose concrete path could not be confirmed. A caller allowed those paths can read container files, container memory, images, plugins, process arguments, environment variables, secrets, daemon command line and runtime profiles, and daemon-host filesystem paths, or push local artifacts to a registry it chooses",
 			"exposed_endpoints", exposed,
 			"exposed_profile_endpoints", profileExposed,
 		)
@@ -1792,6 +1874,42 @@ func splitValidationError(err error) []string {
 	return []string{err.Error()}
 }
 
+// newOTLPExporter converts the validated otlp.* block into exporter options.
+func newOTLPExporter(c config.OTLPConfig) (*otlp.Exporter, error) {
+	timeout, err := time.ParseDuration(c.Timeout)
+	if err != nil {
+		return nil, errors.New("invalid otlp.timeout")
+	}
+	flush, err := time.ParseDuration(c.FlushInterval)
+	if err != nil {
+		return nil, errors.New("invalid otlp.flush_interval")
+	}
+	return otlp.New(otlp.Options{
+		Endpoint:           c.Endpoint,
+		Headers:            c.Headers,
+		Timeout:            timeout,
+		FlushInterval:      flush,
+		QueueSize:          int(c.QueueSize),
+		BatchSize:          int(c.BatchSize),
+		ServiceName:        c.ServiceName,
+		ServiceVersion:     version.Version,
+		CAFile:             c.TLS.CAFile,
+		InsecureSkipVerify: c.TLS.InsecureSkipVerify,
+	})
+}
+
+// closeOTLP flushes and stops the exporter, bounded by min(5s, grace). A
+// non-positive grace gives the exporter no time to flush, which is what the
+// startup-failure path wants.
+func (r *serveRuntime) closeOTLP(grace time.Duration) {
+	if r == nil || r.otlp == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), min(5*time.Second, max(grace, 0)))
+	defer cancel()
+	_ = r.otlp.Close(ctx)
+}
+
 func withRequestID() func(http.Handler) http.Handler {
 	return logging.RequestIDMiddleware()
 }
@@ -1809,6 +1927,7 @@ func withAuditLog(auditLogger *logging.AuditLogger, cfg *config.Config) func(htt
 		Listener:          auditListener(cfg),
 		OwnershipOwner:    cfg.Ownership.Owner,
 		OwnershipLabelKey: cfg.Ownership.LabelKey,
+		ProfileOwnership:  auditOwnershipFor(cfg),
 	})
 }
 
@@ -1820,14 +1939,34 @@ func auditListener(cfg *config.Config) string {
 }
 
 func serveResponseFilterOptions(cfg *config.Config) responsefilter.Options {
+	return responseFilterOptions(cfg, cfg.Response.RedactionSettings())
+}
+
+func responseFilterOptions(cfg *config.Config, redaction config.RedactionSettings) responsefilter.Options {
 	return responsefilter.Options{
-		RedactContainerEnv:         cfg.Response.RedactContainerEnv,
-		RedactMountPaths:           cfg.Response.RedactMountPaths,
-		RedactNetworkTopology:      cfg.Response.RedactNetworkTopology,
-		RedactSensitiveData:        cfg.Response.RedactSensitiveData,
-		RedactHostTopology:         cfg.Response.RedactHostTopology,
+		RedactContainerEnv:         redaction.ContainerEnv,
+		RedactMountPaths:           redaction.MountPaths,
+		RedactNetworkTopology:      redaction.NetworkTopology,
+		RedactSensitiveData:        redaction.SensitiveData,
+		RedactHostTopology:         redaction.HostTopology,
 		AllowAttestationStatements: cfg.Response.AllowAttestationStatements,
 	}
+}
+
+// serveResponseFilter builds the response filter with each client profile's
+// effective redaction (root merged with the profile's overrides) precomputed,
+// resolved per request through the same clientacl profile selection the
+// visibility layer uses. Profiles without overrides are skipped: they equal
+// root, which is also what an unmatched request gets.
+func serveResponseFilter(cfg *config.Config) *responsefilter.Filter {
+	root := cfg.Response.RedactionSettings()
+	profiles := make(map[string]responsefilter.Options)
+	for _, profile := range cfg.Clients.Profiles {
+		if effective := profile.Response.ApplyRedaction(root); effective != root {
+			profiles[profile.Name] = responseFilterOptions(cfg, effective)
+		}
+	}
+	return responsefilter.NewWithProfiles(serveResponseFilterOptions(cfg), profiles, clientacl.RequestProfile)
 }
 
 func serveFilterOptions(cfg *config.Config, res *upstream.Resolver, clientProfiles map[string]filter.Policy) filter.Options {
@@ -1991,6 +2130,7 @@ func clientVisibilityProfiles(values []config.ClientProfileConfig) map[string]vi
 			VisibleResourceLabels: value.Response.VisibleResourceLabels,
 			NamePatterns:          value.Response.NamePatterns,
 			ImagePatterns:         value.Response.ImagePatterns,
+			Networks:              value.Response.VisibleNetworks,
 		}
 	}
 	return profiles
@@ -2008,7 +2148,7 @@ func clientVisibilityProfiles(values []config.ClientProfileConfig) map[string]vi
 // distinct trust boundary whose access control is the bind target plus
 // admin.listen.tls, not the per-profile policy that gates Docker-API
 // traffic on the main listener.
-func buildAdminHandlerChain(cfg *config.Config, logger *slog.Logger, auditLogger *logging.AuditLogger, versioner *admin.PolicyVersioner) http.Handler {
+func buildAdminHandlerChain(cfg *config.Config, logger *slog.Logger, auditLogger *logging.AuditLogger, versioner *admin.PolicyVersioner, exporter *otlp.Exporter) http.Handler {
 	terminal := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Any request on the dedicated admin listener that did not match an
 		// admin path lands here. We surface it as a 404 with the same
@@ -2019,6 +2159,7 @@ func buildAdminHandlerChain(cfg *config.Config, logger *slog.Logger, auditLogger
 	})
 
 	var h http.Handler = terminal
+	h = withPolicyDiffEndpoint(cfg, logger, versioner)(h)
 	h = withAdminEndpoint(cfg, logger)(h)
 	if versioner != nil {
 		h = withPolicyVersionEndpoint(cfg, logger, versioner)(h)
@@ -2037,12 +2178,43 @@ func buildAdminHandlerChain(cfg *config.Config, logger *slog.Logger, auditLogger
 	if cfg.Log.Audit.Enabled && auditLogger != nil {
 		h = withAuditLog(auditLogger, cfg)(h)
 	}
+	// The OTLP layer sits inside request-ID/trace context (it reads their IDs)
+	// and outside the CIDR guard, so a denied admin request is exported with
+	// its final decision. The exporter is the process-scoped one the main
+	// chain uses; nil when otlp.enabled is false.
+	h = otlp.AdminMiddleware(exporter, adminRouteClassifier(cfg))(h)
 	h = withRequestID()(h)
-	h = withTraceContext()(h)
+	if exporter != nil {
+		h = logging.TraceContextMiddlewareWithRootSampler(otlp.RootSampler(cfg.OTLP.SampleRatio))(h)
+	} else {
+		h = withTraceContext()(h)
+	}
 	if cfg.Log.AccessLog {
 		h = withAccessLog(logger)(h)
 	}
 	return h
+}
+
+// adminRouteClassifier maps a request on the admin listener to the configured
+// admin path it addresses, or "unknown". Matching mirrors the interceptors
+// (path.Clean on both sides), and the returned value is always operator
+// configuration, never client input, so span names stay low-cardinality.
+func adminRouteClassifier(cfg *config.Config) func(*http.Request) string {
+	routes := make([]string, 0, 3)
+	for _, p := range []string{cfg.Admin.Path, cfg.Admin.PolicyVersionPath, cfg.Admin.PolicyDiffPath} {
+		if p != "" {
+			routes = append(routes, path.Clean(p))
+		}
+	}
+	return func(r *http.Request) string {
+		cleaned := path.Clean(r.URL.Path)
+		for _, route := range routes {
+			if cleaned == route {
+				return route
+			}
+		}
+		return "unknown"
+	}
 }
 
 // newAdminHTTPServer returns the http.Server for the dedicated admin

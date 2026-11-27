@@ -89,11 +89,13 @@ jobs:
           - { name: FuzzContainerCreate,           pkg: ./internal/filter/ }
           - { name: FuzzExec,                      pkg: ./internal/filter/ }
           - { name: FuzzImagePull,                 pkg: ./internal/filter/ }
+          - { name: FuzzImagePush,                 pkg: ./internal/filter/ }
           - { name: FuzzVolume,                    pkg: ./internal/filter/ }
           - { name: FuzzSecret,                    pkg: ./internal/filter/ }
           - { name: FuzzConfigWrite,               pkg: ./internal/filter/ }
           - { name: FuzzService,                   pkg: ./internal/filter/ }
           - { name: FuzzLogDriverPolicy,           pkg: ./internal/filter/ }
+          - { name: FuzzNetworkExposure,           pkg: ./internal/filter/ }
           - { name: FuzzSwarm,                     pkg: ./internal/filter/ }
           - { name: FuzzPlugin,                    pkg: ./internal/filter/ }
           - { name: FuzzNetwork,                   pkg: ./internal/filter/ }

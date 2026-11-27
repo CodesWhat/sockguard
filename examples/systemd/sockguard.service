@@ -1,0 +1,27 @@
+# Sockguard as a Type=notify systemd service with a watchdog.
+#
+# Sockguard sends READY=1 once it is serving, WATCHDOG=1 every WatchdogSec/2
+# while the upstream Docker socket is reachable, and STOPPING=1 on shutdown.
+# When the upstream is down it stops pinging, so systemd restarts the service
+# after WatchdogSec. The pings follow the active upstream watchdog, so set
+# health.watchdog.enabled: true in sockguard.yaml.
+#
+# Install: copy to /etc/systemd/system/sockguard.service, then
+#   systemctl daemon-reload && systemctl enable --now sockguard
+[Unit]
+Description=Sockguard Docker socket proxy
+Documentation=https://getsockguard.com/docs
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=notify
+ExecStart=/usr/local/bin/sockguard serve --config /etc/sockguard/sockguard.yaml
+WatchdogSec=30s
+Restart=on-failure
+RestartSec=2s
+# Sockguard sends its own notifications; the default NotifyAccess=main is enough.
+NotifyAccess=main
+
+[Install]
+WantedBy=multi-user.target

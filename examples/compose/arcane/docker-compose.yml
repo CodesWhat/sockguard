@@ -1,0 +1,54 @@
+# examples/compose/arcane/docker-compose.yml
+#
+# Sockguard + Arcane, TCP mode (plain, private Docker network only).
+# Arcane reaches Docker through DOCKER_HOST, which takes a TCP URL, so
+# sockguard listens on plaintext TCP :2375 restricted to the compose-internal
+# network. A non-loopback plaintext listener needs two insecure
+# acknowledgments, SOCKGUARD_LISTEN_INSECURE_ALLOW_PLAIN_TCP and
+# SOCKGUARD_LISTEN_INSECURE_ALLOW_UNAUTHENTICATED_CLIENTS, set here only
+# because the listener is bound to the Docker compose bridge. Never publish
+# port 2375 to the host or the Internet.
+#
+# Arcane's default read-only view needs container, image, volume and network
+# list and inspect, container logs, stats and top, disk usage and events. The
+# arcane preset allows exactly those (plus ping, version and info) and
+# nothing that creates, execs or removes. Container actions, the updater,
+# compose projects, prunes and Swarm are refused, so those buttons fail.
+
+services:
+  sockguard:
+    image: codeswhat/sockguard:latest
+    restart: unless-stopped
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    group_add:
+      - "${DOCKER_SOCK_GID:?set to the GID of /var/run/docker.sock}"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./sockguard.yaml:/etc/sockguard/sockguard.yaml:ro
+    environment:
+      - SOCKGUARD_LISTEN_ADDRESS=:2375
+      - SOCKGUARD_LISTEN_INSECURE_ALLOW_PLAIN_TCP=true
+      - SOCKGUARD_LISTEN_INSECURE_ALLOW_UNAUTHENTICATED_CLIENTS=true
+  # Do NOT expose port 2375 to the host, Arcane reaches sockguard
+  # over the private compose network by service name.
+
+  arcane:
+    image: getarcaneapp/manager:v3.1.1
+    restart: unless-stopped
+    depends_on:
+      - sockguard
+    ports:
+      - "3552:3552"
+    environment:
+      - DOCKER_HOST=tcp://sockguard:2375
+      # Generate with: openssl rand -hex 16
+      - ARCANE_ENCRYPTION_KEY=${ARCANE_ENCRYPTION_KEY:?set ARCANE_ENCRYPTION_KEY}
+    volumes:
+      - arcane-data:/app/data
+
+volumes:
+  arcane-data:

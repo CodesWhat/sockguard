@@ -349,10 +349,12 @@ func (c *reloadCoordinator) reload() {
 	// enforcing a stale clients.allowed_cidrs.
 	var newAdminHandler http.Handler
 	if c.adminSwappable != nil {
-		newAdminHandler = buildAdminHandlerChain(newCfg, c.logger, c.auditLogger, c.versioner)
+		newAdminHandler = buildAdminHandlerChain(newCfg, c.logger, c.auditLogger, c.versioner, c.runtime.otlp)
 	}
 
 	warnIfCreateAllowedWithResponseRedaction(newCfg, c.logger)
+	warnIfProfileDisablesRedaction(newCfg, c.logger)
+	warnIfQueryDenyRules(newCfg, c.logger)
 
 	// buildRateLimitMiddleware constructs a brand-new sampler and Limiter
 	// set on every call — there is no carry-over of consumed quota or
@@ -418,6 +420,7 @@ func (c *reloadCoordinator) reload() {
 	var newVersion int64
 	if c.versioner != nil {
 		snap := admin.PolicySnapshot{
+			Config:       newCfg,
 			LoadedAt:     c.deps.now(),
 			Rules:        len(newRules),
 			Profiles:     len(newCfg.Clients.Profiles),

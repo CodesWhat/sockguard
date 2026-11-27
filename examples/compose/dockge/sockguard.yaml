@@ -1,0 +1,189 @@
+# Sockguard config for Dockge, mirrors the shipped dockge preset.
+# Copy of app/configs/dockge.yaml; embedded here so the compose stack
+# is self-contained. Update both files together if you change rules.
+#
+#
+# Bounded access for Dockge's default workflow: managing Compose stacks from
+# its stacks directory (list, deploy, start, stop, restart, update, down) and
+# tailing stack logs.
+#
+# Dockge never speaks the Docker API itself. It shells out to the `docker`
+# CLI and the Compose plugin (`docker compose ls|ps|up -d|down|stop|restart|
+# pull|logs -f`, plus `docker network ls`) with DOCKER_HOST inherited from its
+# environment, so the API surface below is the Compose plugin's, not Dockge's.
+#
+# Allows: ping, version, info, events; container list, inspect, logs, stats;
+#         container create, start, stop, restart, kill, rename, wait, remove;
+#         image list, inspect, history and pull; network and volume list,
+#         inspect and create; network connect, disconnect and remove.
+# Denies: exec and attach (the stack shell, `docker compose exec`, and the
+# Dockge console), image build and remove, volume remove, container update,
+# pause, unpause and archive copies, plus Swarm, secrets, configs and plugins.
+#
+# How the writes are bounded, because deploying a stack means container create:
+#   - ownership.owner stamps every container, network and volume Dockge
+#     creates with an owner label, and scopes reads, mutations and prune to
+#     resources carrying it. Containers that Dockge did not create through this
+#     proxy are invisible to it and cannot be touched.
+#   - container_create inspection stays at its defaults: no privileged
+#     containers, no host network/PID/IPC/user namespaces, no extra
+#     capabilities, no devices, no sysctls. Bind mounts are limited to the
+#     stacks directory below.
+#   - network and volume creates keep the default driver allowlist.
+# Residual risk: anyone who can edit a stack's compose.yaml in Dockge can run
+# any image with any command, as root, on this host, with network access and
+# the stacks directory mounted. Dockge's UI login is the trust boundary, so
+# put real authentication in front of it.
+#
+# Consequences of owner isolation:
+#   - Stacks that already run (created without the proxy) do not show up and
+#     cannot be adopted. Run `docker compose down` on them first, then deploy
+#     them from Dockge.
+#   - `external: true` networks and volumes must have been created through this
+#     proxy, otherwise they read as foreign and Compose fails.
+#   - Dockge's network picker only lists networks it owns.
+#
+# Not supported (refused, the UI action fails): the stack shell and console
+# (exec, attach), `docker compose build` and `up --build` (BuildKit /session
+# and /grpc, plus POST /build), `down --rmi` and `down -v`, inline `configs:`
+# and `secrets:` with `content:` (copied in through PUT /containers/*/archive),
+# and Compose `post_start`/`pre_stop` hooks (exec).
+#
+# Derived from Dockge 1.5.0 (backend/stack.ts, backend/dockge-server.ts) and
+# the Docker Compose v5.8.0 Engine client calls in pkg/compose.
+#
+# Stacks directory: allowed_bind_mounts must match DOCKGE_STACKS_DIR
+# (/opt/stacks by default). Dockge requires it to be mounted at the same path
+# inside and outside its container.
+
+upstream:
+  socket: /var/run/docker.sock
+
+log:
+  level: info
+  format: json
+  access_log: true
+
+health:
+  enabled: true
+  path: /health
+
+# Dockge tails stack logs (`docker compose logs -f`), which is an explicit
+# read-exfiltration route.
+insecure_allow_read_exfiltration: true
+
+ownership:
+  owner: dockge
+  label_key: com.sockguard.owner
+
+# Compose reads container inspect data back: it parses each network
+# endpoint's IP addresses, and it reuses a previous container's mounts (volume
+# name and source) when it recreates a service. With the default redactions
+# on, `compose up` fails with `ParseAddr("<redacted>")`. Mount and network
+# redaction are off for that reason. Container env stays redacted, Compose
+# keys recreation off its config-hash label and never reads it.
+response:
+  redact_mount_paths: false
+  redact_network_topology: false
+
+request_body:
+  container_remove:
+    # `docker compose down` removes containers with force and, for anonymous
+    # volumes, v=1.
+    allow_force: true
+    allow_remove_volumes: true
+  container_create:
+    allowed_bind_mounts:
+      - /opt/stacks
+  network:
+    # Compose detaches containers with Force: true (pkg/compose/executor_ops.go)
+    # before it recreates or removes them, and force disconnect is denied by
+    # default. Static IPs, MACs and custom drivers stay denied.
+    allow_disconnect_force: true
+  image_pull:
+    # Stacks pull whatever images their compose.yaml names.
+    allow_all_registries: true
+
+rules:
+  # Compose pings the daemon to negotiate the API version.
+  - match: { method: GET, path: "/_ping" }
+    action: allow
+  - match: { method: HEAD, path: "/_ping" }
+    action: allow
+  - match: { method: GET, path: "/version" }
+    action: allow
+  - match: { method: GET, path: "/info" }
+    action: allow
+  - match: { method: GET, path: "/events" }
+    action: allow
+
+  # Container reads. `compose ls` and `ps` list by project label, `up` and
+  # `down` inspect, `logs -f` streams the log endpoint.
+  - match: { method: GET, path: "/containers/json" }
+    action: allow
+  - match: { method: GET, path: "/containers/*/json" }
+    action: allow
+  - match: { method: GET, path: "/containers/*/logs" }
+    action: allow
+  - match: { method: GET, path: "/containers/*/stats" }
+    action: allow
+
+  # Container lifecycle. Compose renames the old container while recreating
+  # it, and waits on one-shot dependencies.
+  - match: { method: POST, path: "/containers/create" }
+    action: allow
+  - match: { method: POST, path: "/containers/*/start" }
+    action: allow
+  - match: { method: POST, path: "/containers/*/stop" }
+    action: allow
+  - match: { method: POST, path: "/containers/*/restart" }
+    action: allow
+  - match: { method: POST, path: "/containers/*/kill" }
+    action: allow
+  - match: { method: POST, path: "/containers/*/rename" }
+    action: allow
+  - match: { method: POST, path: "/containers/*/wait" }
+    action: allow
+  - match: { method: DELETE, path: "/containers/*" }
+    action: allow
+
+  # Images: `up` inspects before it pulls, `pull` and `up` pull. Image names
+  # can contain slashes, so the middle uses `**`. /images/get and
+  # /images/*/get (tarball export) are not matched.
+  - match: { method: GET, path: "/images/json" }
+    action: allow
+  - match: { method: GET, path: "/images/**/json" }
+    action: allow
+  - match: { method: GET, path: "/images/**/history" }
+    action: allow
+  - match: { method: POST, path: "/images/create" }
+    action: allow
+
+  # Networks: the stack network lifecycle, multi-network attach, and the
+  # `docker network ls` Dockge's editor runs.
+  - match: { method: GET, path: "/networks" }
+    action: allow
+  - match: { method: GET, path: "/networks/*" }
+    action: allow
+  - match: { method: POST, path: "/networks/create" }
+    action: allow
+  - match: { method: POST, path: "/networks/*/connect" }
+    action: allow
+  - match: { method: POST, path: "/networks/*/disconnect" }
+    action: allow
+  - match: { method: DELETE, path: "/networks/*" }
+    action: allow
+
+  # Volumes: named volumes are created and inspected. Removal is not allowed
+  # because Dockge never runs `down -v`.
+  - match: { method: GET, path: "/volumes" }
+    action: allow
+  - match: { method: GET, path: "/volumes/*" }
+    action: allow
+  - match: { method: POST, path: "/volumes/create" }
+    action: allow
+
+  # Deny everything else
+  - match: { method: "*", path: "/**" }
+    action: deny
+    reason: "not allowed by dockge preset"

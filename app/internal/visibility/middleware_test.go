@@ -798,7 +798,7 @@ func TestImageReadIdentifierBranches(t *testing.T) {
 	if id, ok := imageReadIdentifier("/images/registry.io/team/app/json"); !ok || id != "registry.io/team/app" {
 		t.Fatalf("namespaced: expected registry.io/team/app, got id=%q ok=%v", id, ok)
 	}
-	// Attestation listing (Engine API 1.53+) must gate too, so a hidden image's
+	// Attestation listing (Engine API 1.55+) must gate too, so a hidden image's
 	// signer/predicate metadata isn't disclosed through this unrecognized path.
 	if id, ok := imageReadIdentifier("/images/sha256:abc/attestations"); !ok || id != "sha256:abc" {
 		t.Fatalf("attestations: expected sha256:abc, got id=%q ok=%v", id, ok)

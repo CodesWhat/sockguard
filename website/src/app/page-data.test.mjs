@@ -49,7 +49,7 @@ test("website features live in extracted data modules", () => {
 });
 
 test("website comparison rows live in extracted data modules", () => {
-  assert.equal(comparisonRows.length, 22);
+  assert.equal(comparisonRows.length, 23);
 
   const requestBodyRow = comparisonRows.find((row) => row.feature === "Request body inspection");
   assert.ok(requestBodyRow);
@@ -266,6 +266,7 @@ test("the README comparison table carries the same rows and cells as the site", 
         row.wollomatic,
         row.elevenNotes,
         row.cetusguard,
+        row.yorvogate,
         row.sockguard,
       ],
       `README row "${row.feature}" differs from comparison-rows.ts`,
@@ -276,7 +277,7 @@ test("the README comparison table carries the same rows and cells as the site", 
 test("each compare page names itself an alternative in its title, H1 and lead", () => {
   const dir = new URL("../lib/comparison-route-data/", import.meta.url);
   const routeFiles = readdirSync(dir).filter((name) => name.endsWith(".tsx"));
-  assert.equal(routeFiles.length, 5);
+  assert.equal(routeFiles.length, 6);
   for (const name of routeFiles) {
     const source = readFileSync(new URL(name, dir), "utf8");
     assert.match(source, /metadataTitle: "[^"]*alternative/, `${name} title`);
@@ -399,4 +400,23 @@ test("theme provider follows the system preference until a stored choice exists"
   assert.doesNotMatch(provider, /storageKey/u);
   const layout = readFileSync(new URL("./layout.tsx", import.meta.url), "utf8");
   assert.match(layout, /suppressHydrationWarning/u);
+});
+
+test("the codeswhat.com backlink is in the site footers, the README and the hero install CTA", () => {
+  const LINE = "small, sharp tools from one developer and a lot of agents";
+  const read = (path) => readFileSync(new URL(path, import.meta.url), "utf8");
+  for (const path of ["../components/footer.tsx", "../../../docs/src/components/footer.tsx"]) {
+    const source = read(path);
+    assert.ok(
+      source.includes('"https://codeswhat.com"'),
+      `${path} must define the codeswhat.com URL`,
+    );
+    assert.ok(source.includes("href={CODESWHAT_SITE}"), `${path} must link CODESWHAT_SITE`);
+    assert.ok(source.includes(LINE), `${path} must carry the backlink text`);
+  }
+  assert.ok(read("../../../README.md").includes(`[${LINE}](https://codeswhat.com)`));
+
+  // The hero install CTA targets the get-started section, which must exist.
+  assert.ok(read("../components/hero.tsx").includes('href="#get-started"'));
+  assert.ok(read("./page.tsx").includes('id="get-started"'));
 });

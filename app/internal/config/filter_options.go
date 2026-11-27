@@ -44,6 +44,7 @@ func (c RequestBodyConfig) ToFilterOptions() filter.PolicyConfig {
 		LibpodContainerCreate: c.LibpodContainerCreate.ToFilterOptions(),
 		Exec:                  c.Exec.ToFilterOptions(),
 		ImagePull:             c.ImagePull.ToFilterOptions(),
+		ImagePush:             c.ImagePush.ToFilterOptions(),
 		Build:                 c.Build.ToFilterOptions(),
 		ContainerUpdate:       c.ContainerUpdate.ToFilterOptions(),
 		ContainerRemove:       c.ContainerRemove.ToFilterOptions(),
@@ -155,6 +156,7 @@ func (c ContainerCreateRequestBodyConfig) ToFilterOptions() filter.ContainerCrea
 		AllowRuntimeAnnotations:           c.AllowRuntimeAnnotations,
 		AllowedLogDrivers:                 c.AllowedLogDrivers,
 		AllowedLogEndpointOptions:         c.AllowedLogEndpointOptions,
+		NetworkExposure:                   filter.NetworkExposureOptions{DenyPublishedPorts: c.DenyPublishedPorts, AllowedPortHostIPs: c.AllowedPortHostIPs, AllowedNetworks: c.AllowedNetworks},
 	}
 }
 
@@ -200,10 +202,13 @@ func (c LibpodContainerCreateRequestBodyConfig) ToFilterOptions() filter.LibpodC
 		AllowLogPath:                      c.AllowLogPath,
 		AllowedLogDrivers:                 c.AllowedLogDrivers,
 		AllowedLogEndpointOptions:         c.AllowedLogEndpointOptions,
+		NetworkExposure:                   filter.NetworkExposureOptions{DenyPublishedPorts: c.DenyPublishedPorts, AllowedPortHostIPs: c.AllowedPortHostIPs, AllowedNetworks: c.AllowedNetworks},
 		AllowedRuntimes:                   c.AllowedRuntimes,
 		AllowDeviceCgroupRules:            c.AllowDeviceCgroupRules,
 		AllowedDeviceCgroupRules:          c.AllowedDeviceCgroupRules,
 		AllowDeviceRequests:               c.AllowDeviceRequests,
+		AllowedGPUs:                       c.AllowedGPUs,
+		AllowedCDIDevices:                 c.AllowedCDIDevices,
 		DenyUnconfinedSystemPaths:         c.DenyUnconfinedSystemPaths,
 		AllowUnifiedCgroupSettings:        c.AllowUnifiedCgroupSettings,
 		AllowEnvHost:                      c.AllowEnvHost,
@@ -246,6 +251,7 @@ func (c ExecRequestBodyConfig) ToFilterOptions() filter.ExecOptions {
 	return filter.ExecOptions{
 		AllowPrivileged:  c.AllowPrivileged,
 		AllowRootUser:    c.AllowRootUser,
+		AllowedUsers:     c.AllowedUsers,
 		AllowedCommands:  c.AllowedCommands,
 		AllowedEnvVars:   c.AllowedEnvVars,
 		DeniedEnvVars:    c.DeniedEnvVars,
@@ -259,6 +265,24 @@ func (c ImagePullRequestBodyConfig) ToFilterOptions() filter.ImagePullOptions {
 		AllowAllRegistries: c.AllowAllRegistries,
 		AllowOfficial:      c.AllowOfficial,
 		AllowedRegistries:  c.AllowedRegistries,
+	}
+}
+
+func (c ImagePushRequestBodyConfig) ToFilterOptions() filter.ImagePushOptions {
+	var aliases map[string]string
+	if len(c.RegistryAliases) > 0 {
+		aliases = make(map[string]string, len(c.RegistryAliases))
+		for _, alias := range c.RegistryAliases {
+			// Validation refuses a repeated key; keeping the first is only a
+			// guard for a config that skipped it.
+			if _, dup := aliases[alias.From]; !dup {
+				aliases[alias.From] = alias.To
+			}
+		}
+	}
+	return filter.ImagePushOptions{
+		AllowedRegistries: c.AllowedRegistries,
+		RegistryAliases:   aliases,
 	}
 }
 
@@ -388,6 +412,7 @@ func (c ServiceRequestBodyConfig) ToFilterOptions() filter.ServiceOptions {
 		RequireCPULimitHard:        c.RequireCPULimitHard,
 		AllowedLogDrivers:          c.AllowedLogDrivers,
 		AllowedLogEndpointOptions:  c.AllowedLogEndpointOptions,
+		NetworkExposure:            filter.NetworkExposureOptions{DenyPublishedPorts: c.DenyPublishedPorts, AllowedPortHostIPs: c.AllowedPortHostIPs, AllowedNetworks: c.AllowedNetworks},
 	}
 }
 
@@ -465,6 +490,12 @@ func (c MutationsConfig) ToFilterOptions() filter.MutationOptions {
 				To:    r.RemapImage.To,
 			}
 		}
+		if r.RemapBindSource != nil {
+			opt.RemapBindSource = &filter.BindSourceRemapMutationOptions{
+				From: r.RemapBindSource.From,
+				To:   r.RemapBindSource.To,
+			}
+		}
 		rules = append(rules, opt)
 	}
 	return filter.MutationOptions{Rules: rules}
@@ -484,6 +515,9 @@ func toFilterAllowedDeviceRequests(entries []AllowedDeviceRequest) []filter.Allo
 			Driver:              e.Driver,
 			AllowedCapabilities: e.AllowedCapabilities,
 			MaxCount:            e.MaxCount,
+			DeviceIDs:           e.DeviceIDs,
+			Count:               e.Count,
+			Options:             e.Options,
 		})
 	}
 	return out

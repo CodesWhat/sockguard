@@ -7,13 +7,14 @@ export const metadata: Metadata = {
   // absolute: this title already carries the brand; opt out of the root template.
   title: { absolute: "Sockguard vs Alternatives: Docker Socket Proxy Comparisons" },
   description:
-    "Compare Sockguard to Tecnativa, LinuxServer, wollomatic, 11notes, and CetusGuard. Feature-by-feature breakdowns for Docker socket proxy tools.",
+    "Compare Sockguard to Tecnativa, LinuxServer, wollomatic, 11notes, CetusGuard, and YorvoGate. Feature-by-feature breakdowns for Docker socket proxy tools.",
   keywords: [
     "docker-socket-proxy alternative",
     "tecnativa alternative",
     "linuxserver alternative",
     "wollomatic alternative",
     "cetusguard alternative",
+    "yorvogate alternative",
     "11notes alternative",
     "docker socket proxy comparison",
     "docker socket proxy body inspection",
@@ -22,7 +23,7 @@ export const metadata: Metadata = {
   openGraph: {
     title: "Sockguard vs Alternatives: Docker Socket Proxy Comparisons",
     description:
-      "Compare Sockguard to Tecnativa, LinuxServer, wollomatic, 11notes, and CetusGuard. Feature-by-feature breakdowns.",
+      "Compare Sockguard to Tecnativa, LinuxServer, wollomatic, 11notes, CetusGuard, and YorvoGate. Feature-by-feature breakdowns.",
     url: `${BASE_URL}/compare`,
     siteName: SITE_CONFIG.name,
     locale: SITE_CONFIG.locale,
@@ -33,7 +34,7 @@ export const metadata: Metadata = {
     card: "summary_large_image",
     title: "Sockguard vs Alternatives: Docker Socket Proxy Comparisons",
     description:
-      "Compare Sockguard to Tecnativa, LinuxServer, wollomatic, 11notes, and CetusGuard.",
+      "Compare Sockguard to Tecnativa, LinuxServer, wollomatic, 11notes, CetusGuard, and YorvoGate.",
     creator: SITE_CONFIG.twitterCreator,
     images: [SITE_CONFIG.ogImage],
   },
@@ -48,6 +49,7 @@ const tools = [
   { name: "wollomatic", slug: "wollomatic" },
   { name: "11notes", slug: "11notes" },
   { name: "CetusGuard", slug: "cetusguard" },
+  { name: "YorvoGate", slug: "yorvogate" },
 ];
 
 export default function ComparePage() {
@@ -58,7 +60,7 @@ export default function ComparePage() {
         "@type": "CollectionPage",
         name: "Sockguard vs Alternatives: Docker Socket Proxy Comparisons",
         description:
-          "Compare Sockguard to Tecnativa, LinuxServer, wollomatic, 11notes, and CetusGuard.",
+          "Compare Sockguard to Tecnativa, LinuxServer, wollomatic, 11notes, CetusGuard, and YorvoGate.",
         url: `${BASE_URL}/compare`,
         mainEntity: {
           "@type": "ItemList",
