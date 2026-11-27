@@ -19,7 +19,11 @@ import (
 //
 // Anything the raw document does not describe in the expected shape is left as
 // Viper decoded it; validation then sees the same value it always would.
-func restoreRuleQueryKeys(cfg *Config, data []byte) {
+//
+// restoreCaseSensitiveKeys parses the YAML once and restores every map whose
+// keys are data rather than schema: match.query keys and
+// allowed_device_requests[].options keys.
+func restoreCaseSensitiveKeys(cfg *Config, data []byte) {
 	if len(data) == 0 {
 		return
 	}
@@ -31,7 +35,11 @@ func restoreRuleQueryKeys(cfg *Config, data []byte) {
 	if err := codec.Decode(data, raw); err != nil {
 		return
 	}
+	restoreRuleQueryKeys(cfg, raw)
+	restoreDeviceRequestOptionKeys(cfg, raw)
+}
 
+func restoreRuleQueryKeys(cfg *Config, raw map[string]any) {
 	restoreRuleListQueryKeys(cfg.Rules, rawKey(raw, "rules"))
 	clients, _ := rawKey(raw, "clients").(map[string]any)
 	profiles, _ := rawKey(clients, "profiles").([]any)
