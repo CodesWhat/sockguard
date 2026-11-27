@@ -20,8 +20,9 @@
 #
 # Bounding the writes:
 #   - Privileged mode, host network, PID, IPC, user and cgroup namespaces,
-#     devices, capability additions, sysctls, unconfined seccomp and AppArmor
-#     and published ports are refused. Joining another container's
+#     devices, capability additions, sysctls, unconfined seccomp and AppArmor,
+#     unmasked system paths (systempaths=unconfined, MaskedPaths and
+#     ReadonlyPaths overrides), SELinux disable and published ports are refused. Joining another container's
 #     namespaces (container:<id>) is refused too.
 #   - Bind mounts are refused outside allowed_bind_mounts. The shipped entry
 #     is a placeholder for Arcane's compose projects directory; replace it
@@ -56,8 +57,10 @@ health:
   enabled: true
   path: /health
 
-# Arcane's container detail page streams container logs, which are an
-# explicit read-exfiltration route.
+# Arcane's container detail page streams container logs and lists processes
+# through top. Both are read-exfiltration routes, so the flag is needed for
+# each. top returns process command lines unredacted, which is why ps_args
+# is pinned below.
 insecure_allow_read_exfiltration: true
 
 ownership:
@@ -90,6 +93,8 @@ request_body:
 
     deny_unconfined_seccomp: true
     deny_unconfined_apparmor: true
+    deny_unconfined_system_paths: true
+    deny_selinux_disable: true
     allow_sysctls: false
 
     deny_published_ports: true
@@ -132,8 +137,20 @@ rules:
     action: allow
   - match: { method: GET, path: "/containers/*/stats" }
     action: allow
-  - match: { method: GET, path: "/containers/*/top" }
+  # ps_args reaches the daemon host's ps, and its `e` flag prints each
+  # process's environment, which would undo env redaction. Arcane sends one
+  # of two fixed values (containerProcessesPsArgs in v3.1.1), so only those
+  # are allowed; any other ps_args, a duplicate key or an unparseable query
+  # falls through to the deny.
+  - match:
+      method: GET
+      path: "/containers/*/top"
+      query:
+        ps_args: ["-eo pid,user,%cpu,%mem,etime,cmd", "-o pid,user,etime,args"]
     action: allow
+  - match: { method: GET, path: "/containers/*/top", query: { ps_args: ["*"] } }
+    action: deny
+    reason: "caller-selected ps_args are not allowed by the arcane preset"
   - match: { method: GET, path: "/containers/*/logs" }
     action: allow
 
@@ -162,6 +179,16 @@ rules:
   # request_body.container_create above and scoped by ownership.
   - match: { method: POST, path: "/containers/create" }
     action: allow
+  # Arcane sends no signal query on stop or restart (ContainerStop and
+  # ContainerRestart pass empty options in v3.1.1). The Engine API honors
+  # ?signal= on both, which would make them arbitrary signal delivery (kill is
+  # denied below), so any request carrying a signal is refused first.
+  - match: { method: POST, path: "/containers/*/stop", query: { signal: ["*"] } }
+    action: deny
+    reason: "stop with a signal is not allowed by arcane-with-management preset"
+  - match: { method: POST, path: "/containers/*/restart", query: { signal: ["*"] } }
+    action: deny
+    reason: "restart with a signal is not allowed by arcane-with-management preset"
   - match: { method: POST, path: "/containers/*/start" }
     action: allow
   - match: { method: POST, path: "/containers/*/stop" }

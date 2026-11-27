@@ -41,7 +41,7 @@ func TestArcaneWithManagementPresetConformance(t *testing.T) {
 		t.Fatalf("load preset arcane-with-management.yaml: %v", err)
 	}
 	if !cfg.InsecureAllowReadExfiltration {
-		t.Fatal("arcane-with-management.yaml must acknowledge read exfiltration because Arcane reads container logs")
+		t.Fatal("arcane-with-management.yaml must acknowledge read exfiltration because Arcane reads container logs and the process list")
 	}
 	if cfg.InsecureAllowBodyBlindWrites {
 		t.Fatal("arcane-with-management.yaml must not set insecure_allow_body_blind_writes")
@@ -72,7 +72,8 @@ func TestArcaneWithManagementPresetConformance(t *testing.T) {
 		{"containers-list", http.MethodGet, "/containers/json?all=1", "", true},
 		{"container-inspect", http.MethodGet, "/containers/abc/json", "", true},
 		{"container-stats", http.MethodGet, "/containers/abc/stats?stream=0", "", true},
-		{"container-top", http.MethodGet, "/containers/abc/top?ps_args=aux", "", true},
+		{"container-top", http.MethodGet, "/containers/abc/top?ps_args=-eo+pid%2Cuser%2C%25cpu%2C%25mem%2Cetime%2Ccmd", "", true},
+		{"container-top-fallback-args", http.MethodGet, "/containers/abc/top?ps_args=-o+pid%2Cuser%2Cetime%2Cargs", "", true},
 		{"container-logs", http.MethodGet, "/containers/abc/logs?follow=1&stdout=1&stderr=1&tail=100&timestamps=1", "", true},
 		{"images-list", http.MethodGet, "/images/json?all=1", "", true},
 		{"image-inspect-bare", http.MethodGet, "/images/nginx/json", "", true},
@@ -93,7 +94,17 @@ func TestArcaneWithManagementPresetConformance(t *testing.T) {
 		{"v-prefixed-containers-list", http.MethodGet, "/v1.45/containers/json?all=1", "", true},
 		{"v-prefixed-container-inspect", http.MethodGet, "/v1.45/containers/abc/json", "", true},
 		{"v-prefixed-container-stats", http.MethodGet, "/v1.45/containers/abc/stats", "", true},
-		{"v-prefixed-container-top", http.MethodGet, "/v1.45/containers/abc/top", "", true},
+		{"v-prefixed-container-top", http.MethodGet, "/v1.45/containers/abc/top?ps_args=-eo+pid%2Cuser%2C%25cpu%2C%25mem%2Cetime%2Ccmd", "", true},
+		{"top-ps-args-e-denied", http.MethodGet, "/containers/abc/top?ps_args=e", "", false},
+		{"top-ps-args-auxeww-denied", http.MethodGet, "/containers/abc/top?ps_args=auxeww", "", false},
+		{"top-ps-args-aux-denied", http.MethodGet, "/containers/abc/top?ps_args=aux", "", false},
+		{"top-ps-args-empty-denied", http.MethodGet, "/containers/abc/top?ps_args=", "", false},
+		{"top-bare-denied", http.MethodGet, "/containers/abc/top", "", false},
+		{"v-prefixed-top-ps-args-e-denied", http.MethodGet, "/v1.45/containers/abc/top?ps_args=e", "", false},
+		{"top-ps-args-duplicate-denied", http.MethodGet, "/containers/abc/top?ps_args=-ef&ps_args=e", "", false},
+		{"top-ps-args-duplicate-pinned-then-e-denied", http.MethodGet, "/containers/abc/top?ps_args=-eo+pid%2Cuser%2C%25cpu%2C%25mem%2Cetime%2Ccmd&ps_args=e", "", false},
+		{"top-ps-args-encoded-key-denied", http.MethodGet, "/containers/abc/top?ps%5Fargs=e", "", false},
+		{"top-ps-args-unparseable-denied", http.MethodGet, "/containers/abc/top?ps_args=e;x", "", false},
 		{"v-prefixed-container-logs", http.MethodGet, "/v1.45/containers/abc/logs?follow=1", "", true},
 		{"v-prefixed-images-list", http.MethodGet, "/v1.45/images/json", "", true},
 		{"v-prefixed-image-inspect", http.MethodGet, "/v1.45/images/docker.io/library/nginx/json", "", true},
@@ -107,6 +118,7 @@ func TestArcaneWithManagementPresetConformance(t *testing.T) {
 		{"container-create-named-volume", http.MethodPost, "/containers/create", app + `,"HostConfig":{"Binds":["appdata:/data"]}}`, true},
 		{"container-start", http.MethodPost, "/containers/abc/start", "", true},
 		{"container-stop", http.MethodPost, "/containers/abc/stop", "", true},
+		{"container-stop-timeout", http.MethodPost, "/containers/abc/stop?t=10", "", true},
 		{"container-restart", http.MethodPost, "/containers/abc/restart", "", true},
 		{"container-rename", http.MethodPost, "/containers/abc/rename?name=app-backup", "", true},
 		{"container-remove", http.MethodDelete, "/containers/abc", "", true},
@@ -115,6 +127,15 @@ func TestArcaneWithManagementPresetConformance(t *testing.T) {
 		{"v-prefixed-container-create", http.MethodPost, "/v1.45/containers/create", app + `}`, true},
 		{"v-prefixed-container-start", http.MethodPost, "/v1.45/containers/abc/start", "", true},
 		{"v-prefixed-container-stop", http.MethodPost, "/v1.45/containers/abc/stop", "", true},
+
+		// ?signal= on stop or restart is arbitrary signal delivery.
+		{"container-stop-signal-denied", http.MethodPost, "/containers/abc/stop?signal=SIGUSR1&t=5", "", false},
+		{"v-prefixed-container-stop-signal-denied", http.MethodPost, "/v1.45/containers/abc/stop?signal=SIGUSR1", "", false},
+		{"container-stop-sigstop-freeze-denied", http.MethodPost, "/containers/abc/stop?signal=SIGSTOP&t=-1", "", false},
+		{"container-stop-empty-signal-denied", http.MethodPost, "/containers/abc/stop?signal=", "", false},
+		{"container-stop-cased-signal-denied", http.MethodPost, "/containers/abc/stop?Signal=SIGUSR1", "", false},
+		{"container-restart-signal-denied", http.MethodPost, "/containers/abc/restart?signal=SIGHUP", "", false},
+		{"v-prefixed-container-restart-signal-denied", http.MethodPost, "/v1.45/containers/abc/restart?signal=SIGHUP", "", false},
 		{"v-prefixed-container-restart", http.MethodPost, "/v1.45/containers/abc/restart", "", true},
 		{"v-prefixed-container-remove", http.MethodDelete, "/v1.45/containers/abc", "", true},
 		{"v-prefixed-image-pull", http.MethodPost, "/v1.45/images/create?fromImage=nginx&tag=latest", "", true},
@@ -195,8 +216,10 @@ func TestArcaneWithManagementPresetConformance(t *testing.T) {
 		{"auth-denied", http.MethodPost, "/auth", `{}`, false},
 	}
 
-	// Logs are the sole read-exfiltration route Arcane needs. Reuse the #379
+	// Logs and the pinned process list are the read-exfiltration routes Arcane needs. Reuse the #379
 	// catalog for every other Docker-compat exfiltration path.
+	cases = append(cases, systemPathsDeniedCases(app, true)...)
+
 	for _, c := range exfilDenialCases {
 		if c.name == "logs-denied" || c.name == "v-prefixed-logs-denied" {
 			continue

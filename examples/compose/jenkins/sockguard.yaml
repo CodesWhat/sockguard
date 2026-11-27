@@ -25,7 +25,8 @@
 #   - Networks, volumes, build, swarm, plugins, everything else
 #   - On create: privileged, host namespaces, bind mounts, devices,
 #     capability additions, published ports, unconfined seccomp and AppArmor,
-#     sysctls, and any image outside allowed_images
+#     unmasked system paths (systempaths=unconfined, MaskedPaths and
+#     ReadonlyPaths overrides), SELinux disable, sysctls, and any image outside allowed_images
 #
 # Derived from jenkinsci/docker-plugin 1337.v3ca_fd1b_b_25ef (the Jenkins
 # docker-java-api client calls in DockerTemplate, DockerCloud,
@@ -102,6 +103,8 @@ request_body:
 
     deny_unconfined_seccomp: true
     deny_unconfined_apparmor: true
+    deny_unconfined_system_paths: true
+    deny_selinux_disable: true
     allow_sysctls: false
 
     # The Inbound connector needs no published ports. The SSH connector does,
@@ -145,6 +148,12 @@ rules:
     action: allow
   - match: { method: POST, path: "/containers/*/start" }
     action: allow
+  # The Docker plugin sends no signal query on stop. The Engine API honors
+  # ?signal=, which would make stop arbitrary signal delivery (a kill, or a
+  # SIGSTOP freeze), so any request carrying a signal is refused first.
+  - match: { method: POST, path: "/containers/*/stop", query: { signal: ["*"] } }
+    action: deny
+    reason: "stop with a signal is not allowed by jenkins preset"
   - match: { method: POST, path: "/containers/*/stop" }
     action: allow
   - match: { method: DELETE, path: "/containers/*" }

@@ -83,11 +83,14 @@ func writeTLSBootstrapSnippet(w io.Writer, res *tlsbootstrap.Result) {
 	fmt.Fprintf(&b, "    cert_file: %s\n    key_file: %s\n    client_ca_file: %s\n", res.ServerCert, res.ServerKey, res.CAFile)
 	b.WriteString("clients:\n  client_certificate_profiles:\n")
 	for _, name := range res.ClientNames {
-		fmt.Fprintf(&b, "    - profile: %s\n      common_names: [%s]\n", name, name)
+		// Quoted so YAML cannot read 007, 1e3, true or null as another scalar.
+		// Client names are limited to [a-z0-9.-], so %q is a valid YAML
+		// double-quoted scalar with no escapes.
+		fmt.Fprintf(&b, "    - profile: %q\n      common_names: [%q]\n", name, name)
 	}
 	b.WriteString("  profiles:\n")
 	for _, name := range res.ClientNames {
-		fmt.Fprintf(&b, "    - name: %s\n      ownership:\n        owner: %s\n      # add rules for this profile\n", name, name)
+		fmt.Fprintf(&b, "    - name: %q\n      ownership:\n        owner: %q\n      # add rules for this profile\n", name, name)
 	}
 	fmt.Fprint(w, b.String())
 }

@@ -9,7 +9,7 @@ import { fileURLToPath } from "node:url";
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const WORKFLOW = path.join(ROOT, ".github", "workflows", "ci-verify.yml");
 const LEFTHOOK = path.join(ROOT, "lefthook.yml");
-const SHARED_SHA = "5094cf2f723fe22303b8944658e972bc9ec898a6";
+const SHARED_SHA = "684a6b931e7802f1985e2cb4f6ea0c95861988e3";
 
 // Every fixed adapter the reusable go-ci/node-ci jobs invoke by convention
 // (./scripts/ci/<name>.sh). Markers are substrings that must survive in the
@@ -123,7 +123,7 @@ const GO_INPUTS = [
 ];
 
 const NODE_INPUTS = [
-  "node-version: 24",
+  "node-version: 26",
   "lockfile-path: package-lock.json",
   "lint-check-name: Biome Lint",
   "test-check-name: TS Test",

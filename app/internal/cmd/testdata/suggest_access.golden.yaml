@@ -1,6 +1,8 @@
 # SUGGESTION ONLY. Generated from warn/audit access-log traffic.
 # Review every rule before use. Nothing here is active until you copy it into your config.
 # Only method and normalized path were read; query values, headers and bodies are never included.
+# 1 would-deny request(s) matched an explicit deny rule and were not suggested.
+# 4 would-deny request(s) came from body inspection, ownership, visibility or rate limiting; an allow rule cannot fix these.
 rules:
   # Suggestion, requires review: seen 2 time(s) as would-deny.
   - match: { method: GET, path: "/containers/*/json" }
