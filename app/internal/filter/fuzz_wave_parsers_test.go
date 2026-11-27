@@ -145,7 +145,7 @@ func (g fuzzDeviceGrantEntry) option() AllowedDeviceRequestEntry {
 // requires one entry to satisfy driver, IDs, options and count together so a
 // request cannot take its IDs from one grant and its options from another.
 func (g fuzzDeviceGrantEntry) grants(req dockerDeviceRequest) bool {
-	if strings.ToLower(strings.TrimSpace(req.Driver)) != strings.ToLower(strings.TrimSpace(g.driver)) {
+	if !strings.EqualFold(strings.TrimSpace(req.Driver), strings.TrimSpace(g.driver)) {
 		return false
 	}
 	if g.count != nil && req.Count != *g.count {
