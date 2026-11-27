@@ -3,10 +3,11 @@ title: Roadmap
 description: Sockguard's shipped v1.7, v2.0, v2.1, v2.2, v2.3, and v2.4 work and later direction.
 ---
 
-Sockguard v2.4 is the current stable feature line, with v2.4.7 the latest
-release. It updates OpenTelemetry to 1.47.0 for GHSA-q7gw-24fr-5p69 and
-builds with Go 1.27.4 for GO-2026-6859. It carries v2.4.6, including the
-malformed zstd frame fix, and all earlier v2.4 work.
+Sockguard v2.4 is the current stable feature line, with v2.4.9 the latest
+release. v2.4.9 refuses libpod manifest list writes and
+`POST /libpod/volumes/{name}/rename` (Podman 6.2) under owner isolation. It
+carries v2.4.8, v2.4.7 and v2.4.6, including the malformed zstd frame fix, and
+all earlier v2.4 work.
 
 The v2.3 line shipped as follows. v2.3.0 promotes `2.3.0-rc.9` unchanged in behavior and is the first
 release under the MIT license; 2.2.x and earlier remain Apache-2.0. v2.3.1 is a
@@ -158,6 +159,27 @@ from source and a client-only request capture, not a live-daemon reproduction.
 | Proxy hardening | Socket cleanup is inode-owned, method-aware resource routing covers keyword names, generated response errors clear stale representation headers, inspected bodies retain deadlines through logging and metrics, and request metric labels have finite cardinality |
 | Release surfaces | README, docs, website, Helm metadata, verification assets, and migration guidance agree on v2.0.0; release blobs use sigstore bundles only and published metadata is read back before the release succeeds |
 
+## Shipped in v2.4.9
+
+- Owner isolation refuses the libpod manifest list writes (`POST /libpod/manifests/create`, and `POST`, `PUT` and `DELETE /libpod/manifests/{name}` with `/add`, `/push` and `/registry/{destination}`) and `POST /libpod/volumes/{name}/rename` (Podman 6.2). They had no owner check.
+
+## Shipped in v2.4.8
+
+v2.4.8 backports security fixes and a Buildx fix to the v2.4 line.
+
+- A reloaded `clients.allowed_cidrs` now applies to the dedicated admin listener.
+- Container create refuses the `writable-cgroups` security option, and inline seccomp profiles are gated under `deny_unconfined_seccomp`.
+- Service create and update resolve host-network targets by ID, prefix or name, and refuse Go template expressions (`{{`) in bind sources and volume driver options.
+- Container create refuses top-level `HostConfig` and `Resources` fields, `HostConfig.Links`, and runtime annotations unless `allow_runtime_annotations` is set.
+- Network connect and disconnect match the whole name. Builds are refused under `ownership.owner`, and owner checks cover `swarm/leave`, `swarm/unlockkey`, `Type: image` mounts, `TaskTemplate.Networks` and volume create.
+- Shutdown waits for hijacked exec and attach handlers before closing the audit sinks.
+- A mediated Buildx build no longer fails at random with "this ref does not belong to an admitted Solve".
+
+## Shipped in v2.4.7
+
+- OpenTelemetry 1.47.0 fixes the attribute value length limit bypass in GHSA-q7gw-24fr-5p69 / CVE-2026-128085. The affected tracing path has not been demonstrated in Sockguard.
+- Go 1.27.4 fixes GO-2026-6859 / CVE-2026-97054, a net/http header race that can crash an HTTP/1 server.
+
 ## Shipped in v2.4.6
 
 The application and Docker client compatibility modules use
@@ -252,6 +274,21 @@ surviving mutants. The report also records 2,219 uncovered mutants and 62
 timeouts; timeouts are separate from kills. This is development-branch evidence,
 not a published v3.1 release or a statement-coverage score.
 
+## v3.2 development (unreleased)
+
+None of this is in a published release. It is merged on the v3.2 development line.
+
+| Track | What landed |
+| --- | --- |
+| Client presets | Dozzle, Dozzle with actions, Dozzle with shell, Uptime Kuma, Beszel, Arcane, Arcane with management, Dockge, Komodo, Komodo with deploy, Jenkins and Woodpecker. |
+| GPU and CDI grants | Exact device grants with `device_ids`, `count`, `max_count` and `options`. |
+| Mutations | `mutations.rules[].remap_bind_source`. |
+| Exec | `exec.allowed_users`. |
+| Health and systemd | `health.watchdog.exit_after` and `sd_notify`. |
+| CLI | `sockguard tls bootstrap`, `sockguard match --profile/--source-ip/--body-file`, and `sockguard policy suggest --from`. |
+| Rootless Podman | The Quadlet kit with a Traefik example. |
+| Distribution | Homebrew cask retired. macOS binaries stay in the release archives. |
+
 ## Twelve-month direction
 
 Beyond the next planned line, work remains risk- and demand-driven:
@@ -331,8 +368,3 @@ until the corresponding published images pass the real-daemon conformance
 matrix. New write transports stay denied when Sockguard cannot inspect them or
 require a narrowly named operator acknowledgement that makes the limitation
 visible.
-
-## Shipped in v2.4.7
-
-- OpenTelemetry 1.47.0 fixes the attribute value length limit bypass in GHSA-q7gw-24fr-5p69 / CVE-2026-128085. The affected tracing path has not been demonstrated in Sockguard.
-- Go 1.27.4 fixes GO-2026-6859 / CVE-2026-97054, a net/http header race that can crash an HTTP/1 server.
