@@ -82,6 +82,13 @@ func TestJenkinsPresetConformance(t *testing.T) {
 		{"v-prefixed-container-create", http.MethodPost, "/v1.45/containers/create", agent + `}`, true},
 		{"v-prefixed-container-start", http.MethodPost, "/v1.45/containers/abc/start", "", true},
 		{"v-prefixed-container-stop", http.MethodPost, "/v1.45/containers/abc/stop", "", true},
+
+		// ?signal= on stop or restart is arbitrary signal delivery.
+		{"container-stop-signal-denied", http.MethodPost, "/containers/abc/stop?signal=SIGUSR1&t=5", "", false},
+		{"v-prefixed-container-stop-signal-denied", http.MethodPost, "/v1.45/containers/abc/stop?signal=SIGUSR1", "", false},
+		{"container-stop-sigstop-freeze-denied", http.MethodPost, "/containers/abc/stop?signal=SIGSTOP&t=-1", "", false},
+		{"container-stop-empty-signal-denied", http.MethodPost, "/containers/abc/stop?signal=", "", false},
+		{"container-stop-cased-signal-denied", http.MethodPost, "/containers/abc/stop?Signal=SIGUSR1", "", false},
 		{"v-prefixed-container-remove", http.MethodDelete, "/v1.45/containers/abc", "", true},
 
 		// Create policy: the body is inspected.
@@ -170,6 +177,8 @@ func TestJenkinsPresetConformance(t *testing.T) {
 	// The preset does not acknowledge read exfiltration, so logs, archive,
 	// export and attach must stay denied.
 	cases = append(cases, exfilDenialCases...)
+
+	cases = append(cases, systemPathsDeniedCases(agent, true)...)
 
 	for _, c := range cases {
 		fireDrydockCase(t, handler, c)

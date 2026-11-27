@@ -183,8 +183,8 @@ type ContainerCreateOptions struct {
 	DenySelinuxLabelOverride bool
 
 	// DenyUnconfinedSystemPaths prevents systempaths=unconfined in SecurityOpt
-	// AND rejects requests that set MaskedPaths or ReadonlyPaths to an empty
-	// slice (the direct-API equivalent of systempaths=unconfined). Default false
+	// AND rejects any request that supplies MaskedPaths or ReadonlyPaths, empty
+	// or not (the direct-API equivalent of systempaths=unconfined). Default false
 	// for backward-compatibility.
 	DenyUnconfinedSystemPaths bool
 
@@ -1796,6 +1796,15 @@ func deviceRequestAllowed(req dockerDeviceRequest, driver string, allowlist []al
 		if entry.count != nil && req.Count != *entry.count {
 			continue
 		}
+		// A count bound says how many devices; DeviceIDs name them directly
+		// and bypass Count in the daemon (Count 0 + IDs), so a count-bounded
+		// entry without device_ids never matches a request that names IDs.
+		// A single ID can name several devices ("all", "0,1,2",
+		// "nvidia.com/gpu=all"), so bounding len(DeviceIDs) would not help.
+		if len(entry.deviceIDs) == 0 && len(req.DeviceIDs) > 0 &&
+			((entry.maxCount != nil && *entry.maxCount != -1) || (entry.count != nil && *entry.count != -1)) {
+			continue
+		}
 		if !deviceIDsAllowed(req, entry.deviceIDs) {
 			continue
 		}
@@ -1811,7 +1820,9 @@ func deviceRequestAllowed(req dockerDeviceRequest, driver string, allowlist []al
 }
 
 // deviceIDsAllowed enforces an entry's exact device_ids list. An entry with no
-// list places no constraint on the IDs. With a list, the request must name at
+// list places no constraint on the IDs, except that an entry bounded by
+// max_count or count (other than -1) refuses a request naming IDs, see
+// deviceRequestAllowed. With a list, the request must name at
 // least one ID, every ID must equal a listed one exactly (no trimming, no case
 // folding, no globbing), and Count must be zero: the Docker daemon rejects a
 // request carrying both, and a leftover Count could widen what a runtime hands
@@ -1848,14 +1859,17 @@ func deviceOptionsAllowed(reqOptions, allowed map[string]string) bool {
 }
 
 // countAllowed reports whether the request Count is permitted by maxCount.
-// If maxCount is nil, any count is allowed. Count -1 means "all devices"; it
-// is only permitted when maxCount is also -1.
+// If maxCount is nil, any count is allowed. Any negative Count means "all
+// devices" (the daemon's nvidia driver treats every Count < 0 that way, not
+// only -1), so it is only permitted when maxCount is -1, which in turn admits
+// every count. It does not bound the number of DeviceIDs, which
+// deviceRequestAllowed refuses next to a count bound.
 func countAllowed(reqCount int, maxCount *int) bool {
-	if maxCount == nil {
+	if maxCount == nil || *maxCount == -1 {
 		return true
 	}
-	if reqCount == -1 {
-		return *maxCount == -1
+	if reqCount < 0 {
+		return false
 	}
 	return reqCount <= *maxCount
 }
@@ -2740,22 +2754,24 @@ func denyWritableCgroupsReason(raw string) string {
 	return "container create denied: writable-cgroups security option is not allowed"
 }
 
-// denySystemPathsReason rejects requests that set MaskedPaths or ReadonlyPaths
-// to an explicit empty slice. The Docker CLI translates
+// denySystemPathsReason rejects requests that supply MaskedPaths or
+// ReadonlyPaths at all. The Docker CLI translates
 // --security-opt systempaths=unconfined into HostConfig.MaskedPaths=[] and
 // HostConfig.ReadonlyPaths=[] client-side (using the =unconfined form only).
-// Direct API clients can achieve the same effect without the SecurityOpt string.
-// A non-nil empty slice means the default masked/readonly path sets are being
-// deliberately cleared; nil means the field was absent and daemon defaults apply.
+// Direct API clients can achieve the same effect without the SecurityOpt
+// string, and a non-empty list replaces the daemon's default sets just as
+// well (a list naming only /x unmasks /proc/kcore and leaves /proc/sys
+// writable). nil means the field was absent or JSON null and daemon defaults
+// apply, so only an explicitly supplied list is refused.
 func (p containerCreatePolicy) denySystemPathsReason(hostConfig containerCreateHostConfig) string {
 	if !p.denyUnconfinedSystemPaths {
 		return ""
 	}
-	if hostConfig.MaskedPaths != nil && len(*hostConfig.MaskedPaths) == 0 {
-		return "container create denied: clearing MaskedPaths (systempaths=unconfined equivalent) is not allowed"
+	if hostConfig.MaskedPaths != nil {
+		return "container create denied: overriding MaskedPaths/ReadonlyPaths (systempaths=unconfined equivalent) is not allowed"
 	}
-	if hostConfig.ReadonlyPaths != nil && len(*hostConfig.ReadonlyPaths) == 0 {
-		return "container create denied: clearing ReadonlyPaths (systempaths=unconfined equivalent) is not allowed"
+	if hostConfig.ReadonlyPaths != nil {
+		return "container create denied: overriding MaskedPaths/ReadonlyPaths (systempaths=unconfined equivalent) is not allowed"
 	}
 	return ""
 }

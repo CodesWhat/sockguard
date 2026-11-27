@@ -153,9 +153,9 @@ type containerCreateHostConfig struct {
 	// MaskedPaths overrides the default set of paths that Docker masks inside
 	// the container. An empty slice signals systempaths=unconfined intent
 	// delivered via the direct API path (the Docker CLI converts
-	// --security-opt systempaths=unconfined to MaskedPaths=[] client-side).
-	// The pointer distinguishes "not set" (nil) from "explicitly set to empty"
-	// (non-nil, zero length).
+	// --security-opt systempaths=unconfined to MaskedPaths=[] client-side),
+	// and a non-empty one replaces the default set just the same. The pointer
+	// distinguishes "not set" (nil) from "explicitly supplied" (non-nil).
 	MaskedPaths   *[]string `json:"MaskedPaths"`
 	ReadonlyPaths *[]string `json:"ReadonlyPaths"`
 	// LogConfig carries the log driver's options. dockerd hands them to the

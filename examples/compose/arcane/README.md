@@ -20,6 +20,7 @@ Arcane reads its Docker endpoint from `DOCKER_HOST`, and the proxy has to be rea
 | Volume and network list and inspect, disk usage | Allowed |
 | Ping, version, info | Allowed |
 | Container logs | Allowed, `insecure_allow_read_exfiltration: true` required for the log view |
+| Container process list (`top`) | Allowed with Arcane's two fixed `ps_args` values only. It returns command lines unredacted, so any other `ps_args` is refused and the environment can't be requested through it |
 | Start, stop, restart, redeploy, remove, create | Denied |
 | Image pull, update checks that pull, prune | Denied |
 | Compose projects, volume and network create/remove, backups | Denied |

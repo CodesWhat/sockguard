@@ -375,3 +375,95 @@ func TestBootstrapInputValidation(t *testing.T) {
 		t.Error("validation failure created the dir")
 	}
 }
+
+func TestBootstrapRejectsClientFileNameCollisions(t *testing.T) {
+	for _, clients := range [][]string{{"a", "a-key"}, {"a-key", "a"}} {
+		t.Run(strings.Join(clients, "+"), func(t *testing.T) {
+			dir := filepath.Join(t.TempDir(), "pki")
+			_, err := Bootstrap(opts(dir, clients...))
+			if err == nil || !strings.Contains(err.Error(), `"a"`) || !strings.Contains(err.Error(), `"a-key"`) || !strings.Contains(err.Error(), "client-a-key.pem") {
+				t.Fatalf("err = %v, want a collision error naming both clients and the file", err)
+			}
+			if _, statErr := os.Stat(dir); !errors.Is(statErr, os.ErrNotExist) {
+				t.Fatalf("dir left behind: %v", statErr)
+			}
+		})
+	}
+}
+
+func TestBootstrapRefusesCollisionWithExistingClient(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		first, second string
+	}{
+		{"key-suffixed client after its base", "a", "a-key"},
+		{"base client after the key-suffixed one", "a-key", "a"},
+	} {
+		for _, force := range []bool{false, true} {
+			t.Run(tc.name+map[bool]string{false: "", true: " with force"}[force], func(t *testing.T) {
+				dir := filepath.Join(t.TempDir(), "pki")
+				if _, err := Bootstrap(opts(dir, tc.first)); err != nil {
+					t.Fatal(err)
+				}
+				before := readAll(t, dir)
+
+				o := opts(dir, tc.second)
+				o.Force = force
+				if _, err := Bootstrap(o); err == nil || !strings.Contains(err.Error(), "choose another name") {
+					t.Fatalf("err = %v, want a refusal to reuse the other client's file", err)
+				}
+				after := readAll(t, dir)
+				if len(after) != len(before) {
+					t.Fatalf("files changed: before %d, after %d", len(before), len(after))
+				}
+				for name, content := range before {
+					if after[name] != content {
+						t.Fatalf("%s changed", name)
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestBootstrapKeepsKeyFileOfExistingClient(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "pki")
+	if _, err := Bootstrap(opts(dir, "a")); err != nil {
+		t.Fatal(err)
+	}
+	keyBefore, err := os.ReadFile(filepath.Join(dir, ClientKeyFileName("a")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	o := opts(dir, "a-key")
+	o.Force = true
+	if _, err := Bootstrap(o); err == nil {
+		t.Fatal("collision admitted")
+	}
+	keyAfter, _ := os.ReadFile(filepath.Join(dir, ClientKeyFileName("a")))
+	if string(keyAfter) != string(keyBefore) {
+		t.Fatal("client a's private key was overwritten")
+	}
+	if b, _ := pem.Decode(keyAfter); b == nil || b.Type == "CERTIFICATE" {
+		t.Fatal("client a's key file no longer holds a private key")
+	}
+}
+
+func TestCommitRejectsDuplicateOutputFile(t *testing.T) {
+	dir := t.TempDir()
+	err := commit(dir, []file{{name: "x.pem", data: []byte("1")}, {name: "x.pem", data: []byte("2")}})
+	if err == nil || !strings.Contains(err.Error(), "duplicate output file x.pem") {
+		t.Fatalf("err = %v", err)
+	}
+	entries, _ := os.ReadDir(dir)
+	if len(entries) != 0 {
+		t.Fatalf("files left behind: %v", entries)
+	}
+}
+
+func TestBootstrapAcceptsNonCollidingHyphenatedNames(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "pki")
+	if _, err := Bootstrap(opts(dir, "a", "a-b", "key")); err != nil {
+		t.Fatalf("err = %v", err)
+	}
+}

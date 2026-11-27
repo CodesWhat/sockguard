@@ -17,32 +17,36 @@ import (
 type ExecTargetInspectResult struct {
 	ContainerID string
 	Protected   bool
+	// ConfigUser is the container's configured Config.User. Docker stores it
+	// as the User of any exec created without one, so the exec-start re-check
+	// reads it back to tell "unset" from an explicit user.
+	ConfigUser string
 }
 
 // ExecTargetInspectFunc resolves an exec target and its protection label.
 type ExecTargetInspectFunc func(context.Context, string) (ExecTargetInspectResult, bool, error)
 
-func (p execPolicy) targetDenyReason(ctx context.Context, id string) (string, string, error) {
+func (p execPolicy) targetDenyReason(ctx context.Context, id string) (ExecTargetInspectResult, string, error) {
 	if p.inspectTarget == nil {
-		return "", "", nil
+		return ExecTargetInspectResult{}, "", nil
 	}
 	if id == "" {
-		return "", "exec denied: target container could not be resolved", nil
+		return ExecTargetInspectResult{}, "exec denied: target container could not be resolved", nil
 	}
 	target, found, err := p.inspectTarget(ctx, id)
 	if err != nil {
-		return "", "", fmt.Errorf("inspect exec target: %w", err)
+		return ExecTargetInspectResult{}, "", fmt.Errorf("inspect exec target: %w", err)
 	}
 	if !found {
-		return "", "", newRequestRejectionError(http.StatusNotFound, "exec denied: target container was not found")
+		return ExecTargetInspectResult{}, "", newRequestRejectionError(http.StatusNotFound, "exec denied: target container was not found")
 	}
 	if target.Protected {
-		return "", "exec denied: target container is protected by com.sockguard.exec=deny", nil
+		return ExecTargetInspectResult{}, "exec denied: target container is protected by com.sockguard.exec=deny", nil
 	}
 	if _, err := hex.DecodeString(target.ContainerID); err != nil || len(target.ContainerID) != 64 {
-		return "", "exec denied: target container identity could not be inspected", nil
+		return ExecTargetInspectResult{}, "exec denied: target container identity could not be inspected", nil
 	}
-	return target.ContainerID, "", nil
+	return target, "", nil
 }
 
 func pinExecTarget(r *http.Request, id string) {
@@ -84,6 +88,7 @@ func NewExecTargetInspectorWithRoundTripper(rt http.RoundTripper) ExecTargetInsp
 			ID     string `json:"Id"`
 			Config *struct {
 				Labels map[string]string `json:"Labels"`
+				User   string            `json:"User"`
 			} `json:"Config"`
 		}
 		if err := json.Unmarshal(body, &decoded); err != nil {
@@ -92,6 +97,10 @@ func NewExecTargetInspectorWithRoundTripper(rt http.RoundTripper) ExecTargetInsp
 		if decoded.Config == nil {
 			return ExecTargetInspectResult{}, false, fmt.Errorf("container inspect omitted Config")
 		}
-		return ExecTargetInspectResult{ContainerID: decoded.ID, Protected: strings.EqualFold(strings.TrimSpace(decoded.Config.Labels["com.sockguard.exec"]), "deny")}, true, nil
+		return ExecTargetInspectResult{
+			ContainerID: decoded.ID,
+			Protected:   strings.EqualFold(strings.TrimSpace(decoded.Config.Labels["com.sockguard.exec"]), "deny"),
+			ConfigUser:  decoded.Config.User,
+		}, true, nil
 	}
 }

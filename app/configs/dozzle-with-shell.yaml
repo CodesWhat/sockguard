@@ -28,7 +28,10 @@
 # sockguard treats as root. allowed_users: [""] then pins the User to unset, so
 # an explicit User (root included) is refused and the shell always runs as the
 # container's configured user, which can still be root for images that default
-# to it. Treat the grant as a shell as that user in every container Dozzle
+# to it. On exec start Docker reports that configured user as the exec's User
+# when none was sent, so sockguard accepts a stored User equal to the target
+# container's Config.User as "unset". That is what lets the Shell tab work on
+# images that set USER; root is still gated by allow_root_user. Treat the grant as a shell as that user in every container Dozzle
 # lists, and put Dozzle behind its own authentication
 # (DOZZLE_AUTH_PROVIDER, with the shell role limited to admins). Containers labeled com.sockguard.exec=deny, including the official
 # sockguard image, are always refused. Keep that label on the proxy and on any

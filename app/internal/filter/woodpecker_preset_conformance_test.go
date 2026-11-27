@@ -156,6 +156,8 @@ func TestWoodpeckerPresetConformance(t *testing.T) {
 
 	// Logs are the one read-exfiltration route the agent needs. Reuse the #379
 	// catalog for every other Docker-compat exfiltration path.
+	cases = append(cases, systemPathsDeniedCases(`{"Image":"alpine:3"`, true)...)
+
 	for _, c := range exfilDenialCases {
 		if c.name == "logs-denied" || c.name == "v-prefixed-logs-denied" {
 			continue

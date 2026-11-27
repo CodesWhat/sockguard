@@ -259,15 +259,12 @@ func (f *Filter) modifyLibpodPodInspect(resp *http.Response) error {
 // libpod body is a BARE ARRAY of volume objects. The element shape is the
 // same either way — VolumeListReport embeds VolumeConfigResponse embeds
 // libpod/define.InspectVolumeData, whose host path carries `json:"Mountpoint"`,
-// the identical key Docker uses.
+// the identical key Docker uses. It carries the same Options map too.
 func (f *Filter) modifyLibpodVolumeList(resp *http.Response) error {
-	if !f.opts.RedactMountPaths {
+	if !f.redactsVolumes() {
 		return nil
 	}
-	return streamArrayResponse(resp, func(volume map[string]any) error {
-		redactStringField(volume, "Mountpoint")
-		return nil
-	}, "Mountpoint")
+	return streamArrayResponse(resp, f.redactVolume, "Mountpoint", "Options")
 }
 
 // modifyLibpodNetworkList rewrites GET /libpod/networks/json. Podman v4 and

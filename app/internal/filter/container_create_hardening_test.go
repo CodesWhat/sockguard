@@ -741,7 +741,7 @@ func TestContainerCreatePolicyEnforcesSelinuxAndSystemPathsPolicy(t *testing.T) 
 			name:       "empty MaskedPaths denied when DenyUnconfinedSystemPaths configured",
 			opts:       ContainerCreateOptions{DenyUnconfinedSystemPaths: true, AllowAllCapabilities: true},
 			body:       `{"HostConfig":{"MaskedPaths":[]}}`,
-			wantReason: "container create denied: clearing MaskedPaths (systempaths=unconfined equivalent) is not allowed",
+			wantReason: "container create denied: overriding MaskedPaths/ReadonlyPaths (systempaths=unconfined equivalent) is not allowed",
 		},
 		{
 			name: "empty MaskedPaths allowed by default (backward compat)",
@@ -752,7 +752,7 @@ func TestContainerCreatePolicyEnforcesSelinuxAndSystemPathsPolicy(t *testing.T) 
 			name:       "empty ReadonlyPaths denied when DenyUnconfinedSystemPaths configured",
 			opts:       ContainerCreateOptions{DenyUnconfinedSystemPaths: true, AllowAllCapabilities: true},
 			body:       `{"HostConfig":{"ReadonlyPaths":[]}}`,
-			wantReason: "container create denied: clearing ReadonlyPaths (systempaths=unconfined equivalent) is not allowed",
+			wantReason: "container create denied: overriding MaskedPaths/ReadonlyPaths (systempaths=unconfined equivalent) is not allowed",
 		},
 		{
 			name: "absent MaskedPaths (null/omitted) allowed even when DenyUnconfinedSystemPaths",
@@ -760,9 +760,26 @@ func TestContainerCreatePolicyEnforcesSelinuxAndSystemPathsPolicy(t *testing.T) 
 			body: `{"HostConfig":{}}`,
 		},
 		{
-			name: "non-empty MaskedPaths allowed (customization, not full removal)",
+			name:       "non-empty MaskedPaths denied (a replacement list unmasks the rest)",
+			opts:       ContainerCreateOptions{DenyUnconfinedSystemPaths: true, AllowAllCapabilities: true},
+			body:       `{"HostConfig":{"MaskedPaths":["/x"]}}`,
+			wantReason: "container create denied: overriding MaskedPaths/ReadonlyPaths (systempaths=unconfined equivalent) is not allowed",
+		},
+		{
+			name:       "non-empty ReadonlyPaths denied",
+			opts:       ContainerCreateOptions{DenyUnconfinedSystemPaths: true, AllowAllCapabilities: true},
+			body:       `{"HostConfig":{"ReadonlyPaths":["/x"]}}`,
+			wantReason: "container create denied: overriding MaskedPaths/ReadonlyPaths (systempaths=unconfined equivalent) is not allowed",
+		},
+		{
+			name: "non-empty MaskedPaths allowed when the knob is off",
+			opts: ContainerCreateOptions{AllowAllCapabilities: true},
+			body: `{"HostConfig":{"MaskedPaths":["/x"],"ReadonlyPaths":["/y"]}}`,
+		},
+		{
+			name: "null MaskedPaths and ReadonlyPaths allowed with the knob on",
 			opts: ContainerCreateOptions{DenyUnconfinedSystemPaths: true, AllowAllCapabilities: true},
-			body: `{"HostConfig":{"MaskedPaths":["/proc/kcore"]}}`,
+			body: `{"HostConfig":{"MaskedPaths":null,"ReadonlyPaths":null}}`,
 		},
 	}
 
