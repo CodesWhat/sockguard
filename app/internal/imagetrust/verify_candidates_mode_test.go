@@ -179,7 +179,7 @@ func TestVerifyCandidatesWithMode_ClassifiesDiscoveryFailures(t *testing.T) {
 	}{
 		{"transport", &url.Error{Op: "Head", URL: registryURL, Err: errors.New(internal)}, "signature discovery failed"},
 		{"HTTP status", &transport.Error{StatusCode: http.StatusForbidden, Errors: []transport.Diagnostic{{Message: internal}}}, "registry returned HTTP 403 during signature discovery"},
-		{"cancelled", &url.Error{Op: "Head", URL: registryURL, Err: context.Canceled}, "signature discovery canceled"},
+		{"canceled", &url.Error{Op: "Head", URL: registryURL, Err: context.Canceled}, "signature discovery canceled"},
 		{"deadline", &url.Error{Op: "Head", URL: registryURL, Err: context.DeadlineExceeded}, "signature discovery timed out"},
 		{"network timeout", &url.Error{Op: "Head", URL: registryURL, Err: &net.DNSError{Name: internal, IsTimeout: true}}, "signature discovery timed out"},
 		{"unsigned", fmt.Errorf("%w: %s", ErrNoSignatures, internal), "no cosign signatures found"},
