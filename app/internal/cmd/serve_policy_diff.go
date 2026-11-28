@@ -3,20 +3,25 @@ package cmd
 import (
 	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/codeswhat/sockguard/v3/app/internal/admin"
 	"github.com/codeswhat/sockguard/v3/app/internal/config"
 	"github.com/codeswhat/sockguard/v3/app/internal/reload"
 )
 
-func withPolicyDiffEndpoint(cfg *config.Config, logger *slog.Logger, versioner *admin.PolicyVersioner) func(http.Handler) http.Handler {
+func withPolicyDiffEndpoint(cfg *config.Config, logger *slog.Logger, versioner *admin.PolicyVersioner, bodyReadTimeout time.Duration) func(http.Handler) http.Handler {
 	var source func() *admin.PolicySnapshot
 	if versioner != nil {
 		source = versioner.Snapshot
 	}
 	return admin.NewPolicyDiffInterceptor(admin.PolicyDiffOptions{
-		Path: cfg.Admin.PolicyDiffPath, MaxRequestBytes: cfg.Admin.MaxRequestBytes,
-		Source: source, Compare: compareAdminPolicy, Logger: logger,
+		Path:            cfg.Admin.PolicyDiffPath,
+		MaxRequestBytes: cfg.Admin.MaxRequestBytes,
+		BodyReadTimeout: bodyReadTimeout,
+		Source:          source,
+		Compare:         compareAdminPolicy,
+		Logger:          logger,
 	})
 }
 

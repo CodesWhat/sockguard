@@ -2,9 +2,10 @@ package admin
 
 import (
 	"errors"
-	"io"
 	"log/slog"
 	"net/http"
+	"os"
+	"time"
 
 	"github.com/codeswhat/sockguard/v3/app/internal/config"
 	"github.com/codeswhat/sockguard/v3/app/internal/httpjson"
@@ -25,6 +26,7 @@ type PolicyDiffResponse struct {
 type PolicyDiffOptions struct {
 	Path            string
 	MaxRequestBytes int64
+	BodyReadTimeout time.Duration
 	Source          func() *PolicySnapshot
 	Compare         func([]byte, *PolicySnapshot) PolicyDiffResponse
 	Logger          *slog.Logger
@@ -58,13 +60,13 @@ func NewPolicyDiffInterceptor(opts PolicyDiffOptions) func(http.Handler) http.Ha
 				_ = httpjson.Write(w, http.StatusServiceUnavailable, httpjson.ErrorResponse{Message: "active policy unavailable"})
 				return
 			}
-			body := http.MaxBytesReader(w, r.Body, opts.MaxRequestBytes)
-			defer func() { _ = body.Close() }()
-			data, err := io.ReadAll(body)
+			data, err := readAdminBody(w, r, opts.MaxRequestBytes, opts.BodyReadTimeout, opts.Logger)
 			if err != nil {
 				var maxErr *http.MaxBytesError
 				if errors.As(err, &maxErr) {
 					_ = httpjson.Write(w, http.StatusRequestEntityTooLarge, httpjson.ErrorResponse{Message: "request body exceeds admin.max_request_bytes"})
+				} else if opts.BodyReadTimeout > 0 && errors.Is(err, os.ErrDeadlineExceeded) {
+					writeAdminBodyTimeout(w, r)
 				} else {
 					_ = httpjson.Write(w, http.StatusBadRequest, httpjson.ErrorResponse{Message: "failed to read request body"})
 				}
