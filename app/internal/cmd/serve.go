@@ -50,6 +50,8 @@ const readHeaderTimeout = 5 * time.Second
 const idleTimeout = 120 * time.Second
 const maxHeaderBytes = 1 << 20
 
+const sharedAdminBodyReadTimeout = 30 * time.Second
+
 var serveCmd = &cobra.Command{
 	Use:   "serve",
 	Short: "Start the proxy server",
@@ -971,11 +973,11 @@ func buildServeHandlerLayersWithRuntime(b serveHandlerBuild) ([]serveHandlerLaye
 	// them, otherwise the same path resolves on both listeners and operators
 	// lose the isolation they explicitly opted in to.
 	if cfg.Admin.Enabled && !cfg.Admin.Listen.Configured() {
-		layers = append(layers, namedServeHandlerLayer("withPolicyDiffEndpoint", mountOnGate(cfg, withPolicyDiffEndpoint(cfg, logger, versioner))))
+		layers = append(layers, namedServeHandlerLayer("withPolicyDiffEndpoint", mountOnGate(cfg, withPolicyDiffEndpoint(cfg, logger, versioner, sharedAdminBodyReadTimeout))))
 		if versioner != nil {
 			layers = append(layers, namedServeHandlerLayer("withPolicyVersionEndpoint", mountOnGate(cfg, withPolicyVersionEndpoint(cfg, logger, versioner))))
 		}
-		layers = append(layers, namedServeHandlerLayer("withAdminEndpoint", mountOnGate(cfg, withAdminEndpoint(cfg, logger))))
+		layers = append(layers, namedServeHandlerLayer("withAdminEndpoint", mountOnGate(cfg, withAdminEndpoint(cfg, logger, sharedAdminBodyReadTimeout))))
 	}
 
 	// Rate limiting and concurrency caps sit after client identity is resolved
@@ -1639,10 +1641,11 @@ func mountOnGate(cfg *config.Config, mw func(http.Handler) http.Handler) func(ht
 	}
 }
 
-func withAdminEndpoint(cfg *config.Config, logger *slog.Logger) func(http.Handler) http.Handler {
+func withAdminEndpoint(cfg *config.Config, logger *slog.Logger, bodyReadTimeout time.Duration) func(http.Handler) http.Handler {
 	return admin.NewValidateInterceptor(admin.Options{
 		Path:            cfg.Admin.Path,
 		MaxRequestBytes: cfg.Admin.MaxRequestBytes,
+		BodyReadTimeout: bodyReadTimeout,
 		Validate:        buildAdminValidator(logger),
 		Logger:          logger,
 	})
@@ -2159,8 +2162,8 @@ func buildAdminHandlerChain(cfg *config.Config, logger *slog.Logger, auditLogger
 	})
 
 	var h http.Handler = terminal
-	h = withPolicyDiffEndpoint(cfg, logger, versioner)(h)
-	h = withAdminEndpoint(cfg, logger)(h)
+	h = withPolicyDiffEndpoint(cfg, logger, versioner, 0)(h)
+	h = withAdminEndpoint(cfg, logger, 0)(h)
 	if versioner != nil {
 		h = withPolicyVersionEndpoint(cfg, logger, versioner)(h)
 	}
