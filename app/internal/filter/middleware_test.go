@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync"
 	"testing"
@@ -36,6 +37,67 @@ func verboseMiddleware(rules []*CompiledRule, logger *slog.Logger) func(http.Han
 			DenyResponseVerbosity: DenyResponseVerbosityVerbose,
 		},
 	})
+}
+
+func TestRemoteLocatorDenialMessages(t *testing.T) {
+	const locator = "https://source.invalid/artifact"
+	for _, tt := range []struct {
+		name, path, param, reason string
+	}{
+		{"remote context", "/build", "remote", "build denied: remote build context is not allowed"},
+		{"remote Dockerfile", "/libpod/build", "dockerfile", "build denied: remote Dockerfile cannot be inspected while RUN instructions are restricted"},
+		{"compat import", "/images/create", "fromSrc", "image pull denied: importing images is not allowed"},
+		{"native import", "/libpod/images/import", "URL", "libpod image import denied: importing images is not allowed"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			allow, err := CompileRule(Rule{Methods: []string{http.MethodPost}, Pattern: tt.path, Action: ActionAllow})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var access, audit bytes.Buffer
+			logger := slog.New(slog.NewJSONHandler(&access, nil))
+			auditLogger := logging.NewAuditLogger(&audit)
+			handler := verboseMiddleware([]*CompiledRule{allow}, logger)(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+				t.Error("denied request reached the upstream handler")
+			}))
+			handler = logging.AccessLogMiddleware(logger)(logging.AuditLogMiddleware(auditLogger, logging.AuditOptions{})(handler))
+			req := httptest.NewRequest(http.MethodPost, tt.path+"?"+url.Values{tt.param: {locator}}.Encode(), nil)
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+			if err := auditLogger.Close(); err != nil {
+				t.Fatal(err)
+			}
+			if rec.Code != http.StatusForbidden {
+				t.Errorf("status = %d, want %d", rec.Code, http.StatusForbidden)
+			}
+			for _, output := range []struct {
+				name string
+				buf  *bytes.Buffer
+			}{
+				{"response", rec.Body},
+				{"access log", &access},
+				{"audit log", &audit},
+			} {
+				if bytes.Contains(output.buf.Bytes(), []byte("source.invalid")) {
+					t.Errorf("%s contains the submitted locator", output.name)
+				}
+				var event struct {
+					Reason     string `json:"reason"`
+					ReasonCode string `json:"reason_code"`
+				}
+				if err := json.Unmarshal(output.buf.Bytes(), &event); err != nil {
+					t.Errorf("decode %s: %v", output.name, err)
+					continue
+				}
+				if event.Reason != tt.reason {
+					t.Errorf("%s reason = %q, want %q", output.name, event.Reason, tt.reason)
+				}
+				if output.name != "response" && event.ReasonCode != reasonCodeRequestBodyPolicyDenied {
+					t.Errorf("%s reason code = %q, want %q", output.name, event.ReasonCode, reasonCodeRequestBodyPolicyDenied)
+				}
+			}
+		})
+	}
 }
 
 type devNull struct{}

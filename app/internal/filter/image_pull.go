@@ -86,7 +86,7 @@ func (p imagePullPolicy) inspect(_ *slog.Logger, r *http.Request, normalizedPath
 			return ambiguousQueryReason("image pull", "fromSrc"), nil
 		}
 		if fromSrc != "" {
-			return fmt.Sprintf("image pull denied: importing images from %q is not allowed", strings.TrimSpace(fromSrc)), nil
+			return "image pull denied: importing images is not allowed", nil
 		}
 	}
 
@@ -192,14 +192,10 @@ func (p imagePullPolicy) inspectLibpodImport(_ *slog.Logger, r *http.Request, no
 		return "", nil
 	}
 
-	source, bodyImport := classifyLibpodImageImportSource(logging.RequestQuery(r))
 	if !p.allowImports {
-		if source == "" {
-			return libpodImageImportSubject + " denied: importing images is not allowed", nil
-		}
-		return fmt.Sprintf("%s denied: importing images from %q is not allowed", libpodImageImportSubject, source), nil
+		return libpodImageImportSubject + " denied: importing images is not allowed", nil
 	}
-	if !bodyImport || r.Body == nil {
+	if r.Body == nil || !libpodImageImportUsesBody(logging.RequestQuery(r)) {
 		return "", nil
 	}
 	if p.io.CreateTempFile == nil {
@@ -215,34 +211,18 @@ func (p imagePullPolicy) inspectLibpodImport(_ *slog.Logger, r *http.Request, no
 	return "", nil
 }
 
-func classifyLibpodImageImportSource(query map[string][]string) (source string, bodyImport bool) {
-	keys := make([]string, 0, len(query))
-	for key := range query {
-		if strings.EqualFold(key, "URL") {
-			keys = append(keys, key)
-		}
-	}
-	slices.Sort(keys)
-	if len(keys) == 0 {
-		return "", true
-	}
-
-	for _, key := range keys {
-		values := query[key]
-		if len(values) == 0 {
-			bodyImport = true
+func libpodImageImportUsesBody(query map[string][]string) bool {
+	hasURL := false
+	for key, values := range query {
+		if !strings.EqualFold(key, "URL") {
 			continue
 		}
-		effective := values[len(values)-1]
-		if effective == "" {
-			bodyImport = true
-			continue
+		if len(values) == 0 || values[len(values)-1] == "" {
+			return true
 		}
-		if source == "" {
-			source = effective
-		}
+		hasURL = true
 	}
-	return source, bodyImport
+	return !hasURL
 }
 
 // distributionInspectSubject prefixes distribution-inspect denial reasons.

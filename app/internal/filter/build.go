@@ -142,11 +142,11 @@ func (p buildPolicy) inspect(_ *slog.Logger, r *http.Request, normalizedPath str
 		if !ok {
 			return ambiguousQueryReason("build", "remote"), nil
 		}
-		if remote = strings.TrimSpace(remote); remote != "" {
+		if strings.TrimSpace(remote) != "" {
 			if p.allowRemoteContext {
 				return "build denied: remote build contexts cannot be inspected while RUN instructions are restricted", nil
 			}
-			return fmt.Sprintf("build denied: remote build context %q is not allowed", remote), nil
+			return "build denied: remote build context is not allowed", nil
 		}
 	}
 	if p.allowRunInstructions || r.Body == nil {
@@ -570,7 +570,7 @@ func buildInstructionFiles(normalizedPath, value string) ([]string, string) {
 // context, which is refused here for the same reason.
 func podmanBuildContextFile(file string) (string, string) {
 	if strings.HasPrefix(file, "http://") || strings.HasPrefix(file, "https://") {
-		return "", fmt.Sprintf("build denied: remote Dockerfile %q cannot be inspected while RUN instructions are restricted", file)
+		return "", "build denied: remote Dockerfile cannot be inspected while RUN instructions are restricted"
 	}
 	if strings.HasPrefix(file, "/") {
 		return "", fmt.Sprintf("build denied: Dockerfile %q is an absolute path, which Podman reads from the daemon host, and cannot be inspected while RUN instructions are restricted", file)
