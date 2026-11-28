@@ -61,10 +61,10 @@ func TestExactSecretLookupContext(t *testing.T) {
 }
 
 func TestSecretLookupAmbiguousPrefix(t *testing.T) {
-	if !secretLookupAmbiguousPrefix(strings.NewReader(`{"message":"more than one result secret with prefix b0: ambiguous"}`)) {
+	if !secretLookupAmbiguousPrefix([]byte(`{"message":"more than one result secret with prefix b0: ambiguous"}`)) {
 		t.Error("the ambiguous-prefix error was not recognized")
 	}
-	if secretLookupAmbiguousPrefix(strings.NewReader(`{"message":"database is locked"}`)) {
+	if secretLookupAmbiguousPrefix([]byte(`{"message":"database is locked"}`)) {
 		t.Error("an unrelated lookup failure was read as an ambiguous prefix")
 	}
 }

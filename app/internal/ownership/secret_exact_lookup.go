@@ -33,9 +33,8 @@ const secretLookupMaxBody = 1 << 20
 // and an exact ID first, so the error means neither matched.
 var secretLookupAmbiguousMarker = []byte("more than one result secret with prefix")
 
-func secretLookupAmbiguousPrefix(body io.Reader) bool {
-	data, err := io.ReadAll(io.LimitReader(body, secretLookupMaxBody))
-	return err == nil && bytes.Contains(data, secretLookupAmbiguousMarker)
+func secretLookupAmbiguousPrefix(body []byte) bool {
+	return bytes.Contains(body, secretLookupAmbiguousMarker)
 }
 
 // decodeExactSecret reads a secret inspect and reports it found only when its
