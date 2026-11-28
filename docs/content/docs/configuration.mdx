@@ -2194,8 +2194,9 @@ such as `MB` are rejected rather than guessed. The ceiling exists because every
 buffered body lives in memory, and several can be in flight at once, so size the
 limit against the memory you are willing to give the proxy times your expected
 concurrent list calls. The same limit covers the visibility and owner-isolation
-list filters, `GET /system/df`, inspect bodies, and the lookups the client ACL and
-resource-limit guard make against the daemon. It also bounds decompressed bytes
+list filters, `GET /system/df`, and metadata lookups for ownership, visibility,
+client ACLs, and resource limits. Ownership lookups for canonical networks,
+exact secrets and pinned images also keep their 1 MiB upper bound. It also bounds decompressed bytes
 when an intermediary compresses a response.
 
 A response over the limit is still refused, fail-closed, with `502 Bad Gateway`.
