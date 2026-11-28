@@ -1886,29 +1886,50 @@ func (u upstreamInspector) inspectResource(ctx context.Context, kind dockerresou
 	if err != nil {
 		return nil, false, err
 	}
-	defer func() { _, _ = io.Copy(io.Discard, resp.Body); _ = resp.Body.Close() }()
+	defer resp.Body.Close()
 
 	exact := kind == dockerresource.KindSecret && exactSecretLookup(ctx)
+	canonicalNetwork := kind == dockerresource.KindNetwork && networkDeleteName(ctx)
+	exactImage := kind == dockerresource.KindImage && imageVolumeID(ctx)
+	limit := filter.ResponseBodyLimit()
+	if exact {
+		limit = min(limit, secretLookupMaxBody)
+	}
+	if canonicalNetwork || exactImage {
+		limit = min(limit, maxOwnershipBodyBytes)
+	}
+
 	if resp.StatusCode == http.StatusNotFound {
 		return nil, false, nil
 	}
 	if resp.StatusCode != http.StatusOK {
-		if exact && secretLookupAmbiguousPrefix(resp.Body) {
-			return nil, false, nil
+		if exact {
+			body, err := httpjson.ReadResponseBody(resp, limit)
+			if err != nil {
+				return nil, false, fmt.Errorf("inspect %s %q: %w", kind, identifier, err)
+			}
+			if secretLookupAmbiguousPrefix(body) {
+				return nil, false, nil
+			}
 		}
 		return nil, false, fmt.Errorf("inspect %s %q: upstream returned %s", kind, identifier, resp.Status)
 	}
 
+	body, err := httpjson.ReadResponseBody(resp, limit)
+	if err != nil {
+		return nil, false, fmt.Errorf("inspect %s %q: %w", kind, identifier, err)
+	}
+	reader := bytes.NewReader(body)
 	if exact {
-		return decodeExactSecret(resp.Body, identifier)
+		return decodeExactSecret(reader, identifier)
 	}
-	if kind == dockerresource.KindNetwork && networkDeleteName(ctx) {
-		return decodeNetworkDeleteName(resp.Body, identifier)
+	if canonicalNetwork {
+		return decodeNetworkDeleteName(reader, identifier)
 	}
-	if kind == dockerresource.KindImage && imageVolumeID(ctx) {
-		return decodeImageVolumeID(resp.Body, identifier)
+	if exactImage {
+		return decodeImageVolumeID(reader, identifier)
 	}
-	labels, err := dockerresource.DecodeLabels(resp.Body, kind)
+	labels, err := dockerresource.DecodeLabels(reader, kind)
 	if err != nil {
 		return nil, false, err
 	}
@@ -1924,7 +1945,7 @@ func (u upstreamInspector) inspectExec(ctx context.Context, identifier string) (
 	if err != nil {
 		return "", false, err
 	}
-	defer func() { _, _ = io.Copy(io.Discard, resp.Body); _ = resp.Body.Close() }()
+	defer resp.Body.Close()
 
 	if resp.StatusCode == http.StatusNotFound {
 		return "", false, nil
@@ -1933,14 +1954,18 @@ func (u upstreamInspector) inspectExec(ctx context.Context, identifier string) (
 		return "", false, fmt.Errorf("inspect exec %q: upstream returned %s", identifier, resp.Status)
 	}
 
-	var body struct {
+	body, err := httpjson.ReadResponseBody(resp, filter.ResponseBodyLimit())
+	if err != nil {
+		return "", false, fmt.Errorf("inspect exec %q: %w", identifier, err)
+	}
+	var payload struct {
 		ContainerID string `json:"ContainerID"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+	if err := json.NewDecoder(bytes.NewReader(body)).Decode(&payload); err != nil {
 		return "", false, err
 	}
-	if body.ContainerID == "" {
+	if payload.ContainerID == "" {
 		return "", false, fmt.Errorf("inspect exec %q: empty container id", identifier)
 	}
-	return body.ContainerID, true, nil
+	return payload.ContainerID, true, nil
 }
