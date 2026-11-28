@@ -294,24 +294,27 @@ func TestClientCacheDoesNotCacheErrors(t *testing.T) {
 	}
 }
 
-func TestClientCacheCachesNotFound(t *testing.T) {
-	var calls atomic.Int32
+func TestClientCacheRechecksAnUnresolvedIdentity(t *testing.T) {
+	calls := 0
 	resolver := func(_ context.Context, _ netip.Addr) (resolvedClient, bool, error) {
-		calls.Add(1)
-		return resolvedClient{}, false, nil
+		calls++
+		if calls == 1 {
+			return resolvedClient{}, false, nil
+		}
+		return resolvedClient{ID: "newly-resolved"}, true, nil
 	}
-
-	cache := newClientCache(10*time.Second, 4, time.Now, resolver)
-	ip := mustAddr(t, "10.0.0.99")
-
-	if _, found, err := cache.Lookup(context.Background(), ip); err != nil || found {
-		t.Fatalf("first lookup = (%v, found=%v), want (nil, found=false)", err, found)
+	now := time.Unix(1_700_000_000, 0)
+	cache := newClientCache(10*time.Second, 4, func() time.Time { return now }, resolver)
+	addr := mustAddr(t, "10.0.0.99")
+	if _, found, err := cache.Lookup(t.Context(), addr); err != nil || found {
+		t.Fatalf("first lookup: found=%v, err=%v", found, err)
 	}
-	if _, found, err := cache.Lookup(context.Background(), ip); err != nil || found {
-		t.Fatalf("second lookup = (%v, found=%v), want (nil, found=false)", err, found)
+	client, found, err := cache.Lookup(t.Context(), addr)
+	if err != nil || !found || client.ID != "newly-resolved" {
+		t.Fatalf("second lookup: id=%q, found=%v, err=%v", client.ID, found, err)
 	}
-	if got := calls.Load(); got != 1 {
-		t.Fatalf("resolver calls for cached not-found = %d, want 1", got)
+	if _, found, err := cache.Lookup(t.Context(), addr); err != nil || !found || calls != 2 {
+		t.Fatalf("cached positive lookup: found=%v, err=%v, resolver calls=%d", found, err, calls)
 	}
 }
 
@@ -455,7 +458,7 @@ func fakeDockerClient(t *testing.T, handler http.Handler) *http.Client {
 func seedCacheEntry(c *clientCache, addr netip.Addr, client resolvedClient, at time.Time) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.storeLocked(addr, client, true, at)
+	c.storeLocked(addr, client, at)
 }
 
 // TestClientCacheVerifiesCachedAddressOwnership pins the cache hit-path

@@ -641,6 +641,10 @@ com.sockguard.allow.post=/containers/*/restart
 
 Every comma-separated path in a label must start with `/`, exactly as a rule's `match.path` must. Label values are globs, not regexes, and the same dialect applies: `*` stops at a `/`, `**` spans any number of segments, and `/**` is the catch-all. A path without the leading slash is refused rather than compiled, because the two families it splits into are both wrong and only one of them is obviously so. A rootless single-star path such as `containers/*` matches nothing at all, so the grant silently does nothing. A rootless path carrying `**` does the opposite: `**` alone spans every segment including the leading slash, so a label reading `com.sockguard.allow.get=**` would hand that client every `GET` the global policy allows instead of the narrow grant it looks like. Sockguard refuses the whole label set for that container, logs the offending label and path at error level, and answers `502` for its requests until the label is fixed. This is the same fail-closed path a label whose pattern cannot be compiled already takes; labels never pass through config validation, so it is the only place the shape is checked.
 
+Concurrent requests for an unresolved source address share one upstream lookup.
+Sockguard caches resolved identities and checks again on the next request after
+an unresolved lookup.
+
 **Unix socket limit:** container-label ACLs require a TCP listener and resolve
 callers by source IP. They do not resolve a Unix peer PID to a container, even on
 Linux. On a Unix socket, use `clients.unix_peer_profiles` with host-visible UID/GID

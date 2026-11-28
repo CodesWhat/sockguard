@@ -15,7 +15,7 @@ import (
 // load for normal traffic. The cache below coalesces those lookups via
 // singleflight (concurrent callers share one in-flight request) and
 // short-term TTL caching (repeated callers within the window share the
-// last result). Both knobs are kept small so dynamic IP reassignment
+// last resolved identity). Both knobs are kept small so dynamic IP reassignment
 // still works — the goal is to flatten amplification, not to memoize
 // forever.
 const (
@@ -25,7 +25,6 @@ const (
 
 type clientCacheEntry struct {
 	client resolvedClient
-	found  bool
 	at     time.Time
 }
 
@@ -52,7 +51,7 @@ type clientCache struct {
 	// nil when label ACLs are disabled.
 	augment func(resolvedClient) resolvedClient
 	// verifyLive re-checks a cached client against current daemon state before
-	// trusting a found=true cache HIT. It asks whether that container ID still
+	// trusting a cache hit. It asks whether that container ID still
 	// holds this very address — existence alone is not enough. Docker releases
 	// a container's IP back to IPAM the moment it stops, while the stopped
 	// container stays inspectable, so an existence-only check would still let
@@ -95,9 +94,8 @@ func newClientCache(
 
 // Lookup returns the resolvedClient for addr, using cached state when fresh
 // and verifyLive-confirmed (see clientCache.verifyLive), and coalescing
-// concurrent misses into one upstream call. Errors are never cached — a
-// transient upstream blip should recover on the next caller instead of being
-// pinned to a stale failure verdict.
+// concurrent misses into one upstream call. Unresolved identities and errors
+// are never cached so the next request can see newly applied labels.
 //
 // Cache hits do NOT promote the entry to the LRU front: the hit-path
 // critical section is map-lookup + two scalar reads, no list write.
@@ -117,10 +115,10 @@ func (c *clientCache) Lookup(ctx context.Context, addr netip.Addr) (resolvedClie
 			if now.Sub(node.entry.at) < c.ttl {
 				entry := node.entry
 				c.mu.Unlock()
-				// Re-verify a found=true hit against current daemon state before
+				// Re-verify a cached identity against current daemon state before
 				// trusting it — see the verifyLive doc comment on clientCache.
-				if !entry.found || c.verifyLive == nil || c.verifyLive(ctx, entry.client.ID, addr) {
-					return entry.client, entry.found, nil
+				if c.verifyLive == nil || c.verifyLive(ctx, entry.client.ID, addr) {
+					return entry.client, true, nil
 				}
 
 				// The cached container no longer answers at addr — it was removed,
@@ -134,7 +132,7 @@ func (c *clientCache) Lookup(ctx context.Context, addr netip.Addr) (resolvedClie
 					return c.resolveAndStoreLocked(ctx, addr)
 				}
 				currentEntry := current.Value.(*clientCacheNode).entry
-				if current != elem || currentEntry.at != entry.at || currentEntry.client.ID != entry.client.ID || currentEntry.found != entry.found {
+				if current != elem || currentEntry.at != entry.at || currentEntry.client.ID != entry.client.ID {
 					c.mu.Unlock()
 					continue
 				}
@@ -171,8 +169,8 @@ func (c *clientCache) resolveAndStoreLocked(ctx context.Context, addr netip.Addr
 	}
 
 	c.mu.Lock()
-	if err == nil {
-		c.storeLocked(addr, client, found, c.now())
+	if err == nil && found {
+		c.storeLocked(addr, client, c.now())
 	}
 	delete(c.inFlight, addr)
 	call.client = client
@@ -184,8 +182,8 @@ func (c *clientCache) resolveAndStoreLocked(ctx context.Context, addr netip.Addr
 	return client, found, err
 }
 
-func (c *clientCache) storeLocked(addr netip.Addr, client resolvedClient, found bool, at time.Time) {
-	entry := clientCacheEntry{client: client, found: found, at: at}
+func (c *clientCache) storeLocked(addr netip.Addr, client resolvedClient, at time.Time) {
+	entry := clientCacheEntry{client: client, at: at}
 	if elem, ok := c.entries[addr]; ok {
 		elem.Value.(*clientCacheNode).entry = entry
 		c.order.MoveToFront(elem)
