@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -115,18 +116,29 @@ func TestBuildImageTrustFieldsRegistryScope(t *testing.T) {
 	}
 }
 
-func TestClientSafeTrustFailureHidesRegistryBody(t *testing.T) {
+func TestImageTrustDenialOmitsDiscoveryErrorDetails(t *testing.T) {
 	t.Parallel()
-	terr := &transport.Error{StatusCode: http.StatusForbidden, Errors: []transport.Diagnostic{{Code: "DENIED", Message: "internal-secret-body"}}}
-	got := clientSafeTrustFailure(fmt.Errorf("fetch: %w", terr), "raw message with internal-secret-body")
-	if !strings.Contains(got, "registry returned HTTP 403") || strings.Contains(got, "internal-secret-body") {
-		t.Fatalf("got %q", got)
-	}
-	if got := clientSafeTrustFailure(errors.New("boom"), "kept message"); got != "kept message" {
-		t.Fatalf("non-transport error rewrote message: %q", got)
-	}
-	if got := clientSafeTrustFailure(nil, "kept message"); got != "kept message" {
-		t.Fatalf("nil error rewrote message: %q", got)
+	const internal = "internal-discovery-detail"
+	for _, tt := range []struct {
+		name string
+		err  error
+		want string
+	}{
+		{"registry status", &transport.Error{StatusCode: http.StatusForbidden, Errors: []transport.Diagnostic{{Message: internal}}}, "registry returned HTTP 403 during signature discovery"},
+		{"request error", &url.Error{Op: "Head", URL: "https://source.invalid/" + internal, Err: errors.New(internal)}, "signature discovery failed"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			fields := imageTrustFields{
+				cfg:      imagetrust.Config{Mode: imagetrust.ModeEnforce},
+				verifier: &mockImageVerifier{},
+				fetcher:  &mockSignatureFetcher{err: fmt.Errorf("fetch: %w", tt.err)},
+				registry: allowAllRegistryPolicy(),
+			}
+			reason, _ := verifyImageTrust(context.Background(), nil, fields, "ghcr.io/org/image:1", "container create")
+			if !strings.HasSuffix(reason, tt.want) || strings.Contains(reason, internal) {
+				t.Errorf("denial reason = %q, want safe explanation %q", reason, tt.want)
+			}
+		})
 	}
 }
 

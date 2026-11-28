@@ -22,7 +22,6 @@ import (
 	"github.com/codeswhat/sockguard/v3/app/internal/imagefetch"
 	"github.com/codeswhat/sockguard/v3/app/internal/imagetrust"
 	"github.com/google/go-containerregistry/pkg/name"
-	"github.com/google/go-containerregistry/pkg/v1/remote/transport"
 	"github.com/sigstore/sigstore-go/pkg/verify"
 )
 
@@ -543,11 +542,11 @@ func verifyImageTrust(ctx context.Context, logger *slog.Logger, f imageTrustFiel
 	if f.fetcher != nil {
 		candidates, fetchErr = f.fetcher.FetchCandidates(ctx, logger, imageRef)
 	} else {
-		fetchErr = fmt.Errorf("image trust misconfigured: no signature fetcher")
+		fetchErr = imagetrust.ErrMissingSignatureFetcher
 	}
 	outcome := imagetrust.VerifyCandidatesWithMode(ctx, f.verifier, f.cfg, logger, imageRef, candidates, fetchErr)
 	if !outcome.Allowed {
-		return fmt.Sprintf("%s denied: image trust verification failed for %s: %s", subject, imageRef, clientSafeTrustFailure(fetchErr, outcome.FailureMsg)), ""
+		return fmt.Sprintf("%s denied: image trust verification failed for %s: %s", subject, imageRef, outcome.FailureMsg), ""
 	}
 	return "", outcome.VerifiedDigest
 }
@@ -569,18 +568,6 @@ func trustDialAllowlist(allowedRegistries, allowedImages []string) []string {
 		}
 	}
 	return hosts
-}
-
-// clientSafeTrustFailure keeps a registry's response body out of the deny
-// reason. An HTTP error from signature discovery carries the registry's own
-// error text, which for a client-named host is attacker-chosen or internal
-// content. The full error is logged by imagetrust.VerifyCandidatesWithMode.
-func clientSafeTrustFailure(fetchErr error, msg string) string {
-	var terr *transport.Error
-	if errors.As(fetchErr, &terr) {
-		return fmt.Sprintf("registry returned HTTP %d during signature discovery", terr.StatusCode)
-	}
-	return msg
 }
 
 // rewriteJSONImageField returns body with its (case-insensitive) "Image" field
