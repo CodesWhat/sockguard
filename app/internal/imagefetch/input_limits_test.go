@@ -657,7 +657,7 @@ func TestFetchCandidatesReportsMalformedSignatureDiagnostics(t *testing.T) {
 		"skipping malformed cosign signature manifest",
 		"image_ref=" + ref.Name(),
 		"resolved_digest=" + subject.Digest.String(),
-		"decode signature",
+		"signature discovery failed",
 	} {
 		if !strings.Contains(logOutput, want) {
 			t.Fatalf("debug log = %q, want %q", logOutput, want)

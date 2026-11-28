@@ -1,12 +1,18 @@
 package imagetrust
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
+	"net"
+	"net/http"
+	"net/url"
 	"strings"
 	"testing"
 
+	"github.com/google/go-containerregistry/pkg/v1/remote/transport"
 	"github.com/sigstore/sigstore-go/pkg/verify"
 )
 
@@ -162,43 +168,46 @@ func TestVerifyCandidatesWithMode_Warn_AllFail_Allowed(t *testing.T) {
 	}
 }
 
-// TestVerifyCandidatesWithMode_FetchError_SurfacedInFailureMsg verifies that
-// when candidates is nil and a fetchErr is provided the failure message
-// contains the fetch error text (so operators can distinguish "no signatures"
-// from "registry unreachable").
-func TestVerifyCandidatesWithMode_FetchError_SurfacedInFailureMsg(t *testing.T) {
+func TestVerifyCandidatesWithMode_ClassifiesDiscoveryFailures(t *testing.T) {
 	t.Parallel()
-	cfg := minimalCfgForMode(t, ModeEnforce)
-	fetchErr := errors.New("registry unreachable: connection refused")
-
-	outcome := VerifyCandidatesWithMode(context.Background(), &alwaysFailVerifier{}, cfg, nil, "reg/img:tag", nil, fetchErr)
-
-	if outcome.Allowed {
-		t.Fatal("mode=enforce with no candidates must deny")
-	}
-	if !strings.Contains(outcome.FailureMsg, "registry unreachable") {
-		t.Fatalf("FailureMsg = %q; want fetch error text surfaced", outcome.FailureMsg)
-	}
-}
-
-// TestVerifyCandidatesWithMode_FetchError_WarnMode_Allowed verifies that a
-// fetch error in warn mode still allows the request but surfaces the fetch
-// error in FailureMsg.
-func TestVerifyCandidatesWithMode_FetchError_WarnMode_Allowed(t *testing.T) {
-	t.Parallel()
-	cfg := minimalCfgForMode(t, ModeWarn)
-	fetchErr := errors.New("registry unreachable: timeout")
-
-	outcome := VerifyCandidatesWithMode(context.Background(), &alwaysFailVerifier{}, cfg, nil, "reg/img:tag", nil, fetchErr)
-
-	if !outcome.Allowed {
-		t.Fatal("mode=warn must allow even on fetch error")
-	}
-	if outcome.Verifier != "warn-bypass" {
-		t.Fatalf("Verifier = %q, want warn-bypass", outcome.Verifier)
-	}
-	if !strings.Contains(outcome.FailureMsg, "registry unreachable") {
-		t.Fatalf("FailureMsg = %q; want fetch error text surfaced", outcome.FailureMsg)
+	const internal = "internal-discovery-detail"
+	registryURL := "https://source.invalid/" + internal
+	for _, tt := range []struct {
+		name string
+		err  error
+		want string
+	}{
+		{"transport", &url.Error{Op: "Head", URL: registryURL, Err: errors.New(internal)}, "signature discovery failed"},
+		{"HTTP status", &transport.Error{StatusCode: http.StatusForbidden, Errors: []transport.Diagnostic{{Message: internal}}}, "registry returned HTTP 403 during signature discovery"},
+		{"canceled", &url.Error{Op: "Head", URL: registryURL, Err: context.Canceled}, "signature discovery canceled"},
+		{"deadline", &url.Error{Op: "Head", URL: registryURL, Err: context.DeadlineExceeded}, "signature discovery timed out"},
+		{"network timeout", &url.Error{Op: "Head", URL: registryURL, Err: &net.DNSError{Name: internal, IsTimeout: true}}, "signature discovery timed out"},
+		{"unsigned", fmt.Errorf("%w: %s", ErrNoSignatures, internal), "no cosign signatures found"},
+		{"input limit", fmt.Errorf("%w: %s", ErrSignatureInputLimit, internal), "registry signature input limit exceeded"},
+		{"misconfigured", ErrMissingSignatureFetcher, "image trust misconfigured: no signature fetcher"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			for _, mode := range []Mode{ModeEnforce, ModeWarn} {
+				t.Run(string(mode), func(t *testing.T) {
+					var logs bytes.Buffer
+					logger := slog.New(slog.NewJSONHandler(&logs, nil))
+					fetchErr := fmt.Errorf("lookup: %w", tt.err)
+					outcome := VerifyCandidatesWithMode(context.Background(), &alwaysFailVerifier{}, minimalCfgForMode(t, mode), logger, "reg/img:tag", nil, fetchErr)
+					if outcome.Allowed != (mode == ModeWarn) {
+						t.Errorf("allowed = %t in %s mode", outcome.Allowed, mode)
+					}
+					if outcome.FailureMsg != tt.want {
+						t.Errorf("failure message = %q, want %q", outcome.FailureMsg, tt.want)
+					}
+					if mode == ModeWarn && !strings.Contains(logs.String(), tt.want) {
+						t.Errorf("warn log lacks safe failure message %q", tt.want)
+					}
+					if strings.Contains(logs.String(), internal) {
+						t.Error("warn log contains internal discovery details")
+					}
+				})
+			}
+		})
 	}
 }
 
@@ -388,7 +397,7 @@ func TestVerifyCandidatesWithMode_TableDriven(t *testing.T) {
 			fetchErr:      fetchErr,
 			wantAllowed:   false,
 			wantVerifier:  "denied",
-			wantFailureIn: "network error",
+			wantFailureIn: "signature discovery failed",
 		},
 		{
 			name:         "warn / all fail → allowed",

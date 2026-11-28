@@ -99,9 +99,9 @@ const (
 // ErrNoSignatures is returned when an image resolves successfully but carries no
 // cosign signature that binds to its manifest digest. Callers in enforce mode
 // must treat this as a verification failure (deny).
-var ErrNoSignatures = errors.New("no cosign signatures found")
+var ErrNoSignatures = imagetrust.ErrNoSignatures
 
-var errRegistryInputLimit = errors.New("registry signature input limit exceeded")
+var errRegistryInputLimit = imagetrust.ErrSignatureInputLimit
 
 // Fetcher discovers and reconstructs image signatures. The zero value is not
 // usable; construct one with NewFetcher.
@@ -270,7 +270,7 @@ func (f *Fetcher) FetchCandidates(ctx context.Context, logger *slog.Logger, imag
 			// can tell a verification miss apart from a silently-dropped manifest.
 			if logger != nil {
 				logger.DebugContext(ctx, "skipping malformed cosign signature manifest",
-					"image_ref", logging.SafeString(imageRef), "resolved_digest", logging.SafeString(imageDigest.String()), "error", logging.SafeString(candidateErr.Error()))
+					"image_ref", logging.SafeString(imageRef), "resolved_digest", logging.SafeString(imageDigest.String()), "error", imagetrust.DiscoveryFailureMessage(candidateErr))
 			}
 			candidateErrs = append(candidateErrs, candidateErr)
 		}

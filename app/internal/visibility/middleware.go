@@ -1697,7 +1697,7 @@ func (i upstreamInspector) inspectResource(ctx context.Context, kind dockerresou
 	if err != nil {
 		return nil, false, err
 	}
-	defer func() { _, _ = io.Copy(io.Discard, resp.Body); _ = resp.Body.Close() }()
+	defer resp.Body.Close()
 
 	if resp.StatusCode == http.StatusNotFound {
 		return nil, false, nil
@@ -1706,7 +1706,11 @@ func (i upstreamInspector) inspectResource(ctx context.Context, kind dockerresou
 		return nil, false, fmt.Errorf("inspect %s %q returned status %d", kind, identifier, resp.StatusCode)
 	}
 
-	labels, err := dockerresource.DecodeLabels(resp.Body, kind)
+	body, err := httpjson.ReadResponseBody(resp, filter.ResponseBodyLimit())
+	if err != nil {
+		return nil, false, fmt.Errorf("inspect %s %q: %w", kind, identifier, err)
+	}
+	labels, err := dockerresource.DecodeLabels(bytes.NewReader(body), kind)
 	if err != nil {
 		return nil, false, err
 	}
@@ -1722,7 +1726,7 @@ func (i upstreamInspector) inspectExec(ctx context.Context, identifier string) (
 	if err != nil {
 		return "", false, err
 	}
-	defer func() { _, _ = io.Copy(io.Discard, resp.Body); _ = resp.Body.Close() }()
+	defer resp.Body.Close()
 
 	if resp.StatusCode == http.StatusNotFound {
 		return "", false, nil
@@ -1731,10 +1735,14 @@ func (i upstreamInspector) inspectExec(ctx context.Context, identifier string) (
 		return "", false, fmt.Errorf("inspect exec %q returned status %d", identifier, resp.StatusCode)
 	}
 
+	body, err := httpjson.ReadResponseBody(resp, filter.ResponseBodyLimit())
+	if err != nil {
+		return "", false, fmt.Errorf("inspect exec %q: %w", identifier, err)
+	}
 	var payload struct {
 		ContainerID string `json:"ContainerID"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+	if err := json.NewDecoder(bytes.NewReader(body)).Decode(&payload); err != nil {
 		return "", false, err
 	}
 	if payload.ContainerID == "" {
@@ -1761,7 +1769,7 @@ func (i upstreamInspector) inspectResourceMeta(ctx context.Context, kind dockerr
 	if err != nil {
 		return nil, false, err
 	}
-	defer func() { _, _ = io.Copy(io.Discard, resp.Body); _ = resp.Body.Close() }()
+	defer resp.Body.Close()
 
 	if resp.StatusCode == http.StatusNotFound {
 		return nil, false, nil
@@ -1769,7 +1777,11 @@ func (i upstreamInspector) inspectResourceMeta(ctx context.Context, kind dockerr
 	if resp.StatusCode != http.StatusOK {
 		return nil, false, fmt.Errorf("inspect meta %s %q returned status %d", kind, identifier, resp.StatusCode)
 	}
-	meta, err := decodeResourceMeta(resp.Body, kind)
+	body, err := httpjson.ReadResponseBody(resp, filter.ResponseBodyLimit())
+	if err != nil {
+		return nil, false, fmt.Errorf("inspect meta %s %q: %w", kind, identifier, err)
+	}
+	meta, err := decodeResourceMeta(bytes.NewReader(body), kind)
 	if err != nil {
 		return nil, false, err
 	}
@@ -1789,7 +1801,7 @@ func (i upstreamInspector) inspectResourceDetails(ctx context.Context, kind dock
 	if err != nil {
 		return nil, false, err
 	}
-	defer func() { _, _ = io.Copy(io.Discard, resp.Body); _ = resp.Body.Close() }()
+	defer resp.Body.Close()
 
 	if resp.StatusCode == http.StatusNotFound {
 		return nil, false, nil
@@ -1797,7 +1809,11 @@ func (i upstreamInspector) inspectResourceDetails(ctx context.Context, kind dock
 	if resp.StatusCode != http.StatusOK {
 		return nil, false, fmt.Errorf("inspect %s %q returned status %d", kind, identifier, resp.StatusCode)
 	}
-	details, err := decodeResourceDetails(resp.Body, kind)
+	body, err := httpjson.ReadResponseBody(resp, filter.ResponseBodyLimit())
+	if err != nil {
+		return nil, false, fmt.Errorf("inspect %s %q: %w", kind, identifier, err)
+	}
+	details, err := decodeResourceDetails(bytes.NewReader(body), kind)
 	if err != nil {
 		return nil, false, err
 	}

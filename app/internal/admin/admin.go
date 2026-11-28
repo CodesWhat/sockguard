@@ -29,7 +29,9 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"os"
 	"path"
+	"time"
 
 	"github.com/codeswhat/sockguard/v3/app/internal/httpjson"
 	"github.com/codeswhat/sockguard/v3/app/internal/logging"
@@ -69,10 +71,12 @@ type Validator func(yaml []byte) ValidateResponse
 //
 // Path must start with "/". MaxRequestBytes caps the request body to prevent
 // abusive callers from forcing sockguard to parse arbitrarily large YAML.
+// BodyReadTimeout bounds body reads when the listener leaves ReadTimeout unset.
 // Validate is required.
 type Options struct {
 	Path            string
 	MaxRequestBytes int64
+	BodyReadTimeout time.Duration
 	Validate        Validator
 	Logger          *slog.Logger
 }
@@ -82,8 +86,9 @@ type Options struct {
 //
 // Method gating: anything other than POST on <path> returns 405 with
 // Allow: POST. The body is hard-capped at MaxRequestBytes via
-// http.MaxBytesReader; oversize bodies return 413. YAML parse / validation
-// failures return 422 with a structured ValidateResponse.
+// http.MaxBytesReader; oversize bodies return 413. When BodyReadTimeout is
+// set, expired reads return 408. YAML parse / validation failures return 422
+// with a structured ValidateResponse.
 func NewValidateInterceptor(opts Options) func(http.Handler) http.Handler {
 	if opts.Logger == nil {
 		opts.Logger = slog.Default()
@@ -117,11 +122,7 @@ func NewValidateInterceptor(opts Options) func(http.Handler) http.Handler {
 }
 
 func handlePOST(w http.ResponseWriter, r *http.Request, opts Options) {
-	// MaxBytesReader returns http.MaxBytesError on overflow, which we surface as 413.
-	limited := http.MaxBytesReader(w, r.Body, opts.MaxRequestBytes)
-	defer func() { _ = limited.Close() }()
-
-	body, err := io.ReadAll(limited)
+	body, err := readAdminBody(w, r, opts.MaxRequestBytes, opts.BodyReadTimeout, opts.Logger)
 	if err != nil {
 		var maxErr *http.MaxBytesError
 		if errors.As(err, &maxErr) {
@@ -129,6 +130,10 @@ func handlePOST(w http.ResponseWriter, r *http.Request, opts Options) {
 			_ = httpjson.Write(w, http.StatusRequestEntityTooLarge, httpjson.ErrorResponse{
 				Message: "request body exceeds admin.max_request_bytes",
 			})
+			return
+		}
+		if opts.BodyReadTimeout > 0 && errors.Is(err, os.ErrDeadlineExceeded) {
+			writeAdminBodyTimeout(w, r)
 			return
 		}
 		opts.Logger.WarnContext(r.Context(), "admin validate: failed to read body", "error", err)
@@ -147,6 +152,32 @@ func handlePOST(w http.ResponseWriter, r *http.Request, opts Options) {
 	if encErr := httpjson.Write(w, status, result); encErr != nil {
 		opts.Logger.WarnContext(r.Context(), "admin validate: failed to encode response", "error", encErr)
 	}
+}
+
+func readAdminBody(w http.ResponseWriter, r *http.Request, maxBytes int64, timeout time.Duration, logger *slog.Logger) ([]byte, error) {
+	if timeout > 0 {
+		controller := http.NewResponseController(w)
+		if err := controller.SetReadDeadline(time.Now().Add(timeout)); err == nil {
+			defer func() {
+				if err := controller.SetReadDeadline(time.Time{}); err != nil {
+					logger.ErrorContext(r.Context(), "admin: failed to clear body read deadline", "error", err)
+				}
+			}()
+		} else if !errors.Is(err, http.ErrNotSupported) {
+			logger.DebugContext(r.Context(), "admin: failed to set body read deadline", "error", err)
+		}
+	}
+
+	limited := http.MaxBytesReader(w, r.Body, maxBytes)
+	// net/http may drain unread bytes on Close, so close before clearing the deadline.
+	defer func() { _ = limited.Close() }()
+	return io.ReadAll(limited)
+}
+
+func writeAdminBodyTimeout(w http.ResponseWriter, r *http.Request) {
+	const message = "request body read timed out"
+	logging.SetDeniedWithCode(w, r, "admin_body_read_timeout", message, nil)
+	_ = httpjson.Write(w, http.StatusRequestTimeout, httpjson.ErrorResponse{Message: message})
 }
 
 // serviceUnavailableMiddleware returns a middleware that responds 503 for

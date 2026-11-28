@@ -120,7 +120,7 @@ func TestImagePullInspectImportAllowed(t *testing.T) {
 // is refused as ambiguous rather than read either way.
 func TestImagePullInspectGatesImportAndPullIndependently(t *testing.T) {
 	const (
-		importDenied    = `image pull denied: importing images from "-" is not allowed`
+		importDenied    = `image pull denied: importing images is not allowed`
 		pullDenied      = `image pull denied: registry "evil.example" is not allowlisted`
 		ambiguousPull   = `image pull denied: ambiguous fromImage query parameter (repeated, or not spelled "fromImage")`
 		ambiguousImport = `image pull denied: ambiguous fromSrc query parameter (repeated, or not spelled "fromSrc")`

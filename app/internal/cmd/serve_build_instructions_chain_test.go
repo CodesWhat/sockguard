@@ -372,7 +372,7 @@ func TestServeChainBuildInspectsTheFilesTheEngineBuilds(t *testing.T) {
 			podman:     true,
 			target:     "/v5.0.0/libpod/build?dockerfile=https%3A%2F%2Fexample.com%2FContainerfile",
 			wantStatus: http.StatusForbidden,
-			wantReason: `remote Dockerfile "https://example.com/Containerfile" cannot be inspected while RUN instructions are restricted`,
+			wantReason: `remote Dockerfile cannot be inspected while RUN instructions are restricted`,
 		},
 		{
 			name:       "remote Containerfile next to a decoy on Podman",
@@ -380,7 +380,7 @@ func TestServeChainBuildInspectsTheFilesTheEngineBuilds(t *testing.T) {
 			target:     "/v5.0.0/libpod/build?dockerfile=https%3A%2F%2Fexample.com%2FContainerfile",
 			context:    buildInstructionsChainContext(t, file("https:/example.com/Containerfile", harmless)),
 			wantStatus: http.StatusForbidden,
-			wantReason: `remote Dockerfile "https://example.com/Containerfile" cannot be inspected while RUN instructions are restricted`,
+			wantReason: `remote Dockerfile cannot be inspected while RUN instructions are restricted`,
 		},
 		{
 			name:       "daemon-host Containerfile next to a decoy on Podman",

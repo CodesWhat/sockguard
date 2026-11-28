@@ -134,7 +134,7 @@ func TestPolicyDiffReportsStructuralValidationAndRestart(t *testing.T) {
 	cfg := config.Defaults()
 	v := admin.NewPolicyVersioner()
 	v.Update(buildInitialPolicySnapshot(newServeTestDeps(), &cfg, nil, false, nil))
-	h := withPolicyDiffEndpoint(&cfg, newDiscardLogger(), v)(http.NotFoundHandler())
+	h := withPolicyDiffEndpoint(&cfg, newDiscardLogger(), v, 0)(http.NotFoundHandler())
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest("POST", "/admin/policy/diff", strings.NewReader("listen:\n  address: 127.0.0.1:4321\n")))
 	var result struct {
