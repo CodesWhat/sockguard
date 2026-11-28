@@ -1175,11 +1175,11 @@ func TestLibpodImageImportInspect(t *testing.T) {
 			wantReasonC: "importing images is not allowed",
 		},
 		{
-			name:        "denies a URL import and names the source",
+			name:        "denies a URL import",
 			opts:        ImagePullOptions{},
 			rawQuery:    "URL=http%3A%2F%2Fevil.example.com%2Fx.tar",
 			wantDeny:    true,
-			wantReasonC: "http://evil.example.com/x.tar",
+			wantReasonC: "importing images is not allowed",
 		},
 		{
 			// gorilla/schema matches the `URL` tag with strings.EqualFold,
@@ -1188,15 +1188,14 @@ func TestLibpodImageImportInspect(t *testing.T) {
 			opts:        ImagePullOptions{},
 			rawQuery:    "url=http%3A%2F%2Fevil.example.com%2Fx.tar",
 			wantDeny:    true,
-			wantReasonC: "http://evil.example.com/x.tar",
+			wantReasonC: "importing images is not allowed",
 		},
 		{
-			// Podman's scalar decode takes the LAST value of one repeated key.
-			name:        "names the last value of a repeated url the way Podman reads it",
+			name:        "denies a URL import with a repeated source",
 			opts:        ImagePullOptions{},
 			rawQuery:    "URL=http%3A%2F%2Ffirst.example.com%2Fx.tar&URL=http%3A%2F%2Flast.example.com%2Fx.tar",
 			wantDeny:    true,
-			wantReasonC: "http://last.example.com/x.tar",
+			wantReasonC: "importing images is not allowed",
 		},
 		{
 			name:        "denies even with a registry allowlist configured, since allow_imports is separate",
@@ -1609,7 +1608,7 @@ func TestLibpodImageImportInspectIsPathExclusive(t *testing.T) {
 		if err != nil {
 			t.Fatalf("inspect() error = %v", err)
 		}
-		if !strings.Contains(reason, "evil.example.com") {
+		if !strings.Contains(reason, "importing images is not allowed") {
 			t.Fatalf("reason = %q, want the Docker-compat import still denied", reason)
 		}
 
@@ -1768,19 +1767,19 @@ func TestLibpodImageWriteMiddlewareRouting(t *testing.T) {
 			name:       "libpod image import denies under the default posture",
 			target:     "/libpod/images/import?URL=http%3A%2F%2Fevil.example.com%2Fx.tar",
 			wantStatus: http.StatusForbidden,
-			wantReason: "evil.example.com",
+			wantReason: "importing images is not allowed",
 		},
 		{
 			name:       "libpod image import denies behind a Podman version prefix",
 			target:     "/v5.0/libpod/images/import?URL=http%3A%2F%2Fevil.example.com%2Fx.tar",
 			wantStatus: http.StatusForbidden,
-			wantReason: "evil.example.com",
+			wantReason: "importing images is not allowed",
 		},
 		{
 			name:       "libpod image import denies behind a four-component Podman prefix",
 			target:     "/v5.8.1.2/libpod/images/import?URL=http%3A%2F%2Fevil.example.com%2Fx.tar",
 			wantStatus: http.StatusForbidden,
-			wantReason: "evil.example.com",
+			wantReason: "importing images is not allowed",
 		},
 		{
 			name:       "libpod image import allows once allow_imports is set",
@@ -1798,7 +1797,7 @@ func TestLibpodImageWriteMiddlewareRouting(t *testing.T) {
 			name:       "docker fromSrc import twin still denies on the same flag",
 			target:     "/images/create?fromSrc=http%3A%2F%2Fevil.example.com%2Fx.tar",
 			wantStatus: http.StatusForbidden,
-			wantReason: "evil.example.com",
+			wantReason: "importing images is not allowed",
 		},
 		{
 			name:       "libpod local image load denies a daemon-host path",

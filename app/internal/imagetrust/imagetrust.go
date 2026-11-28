@@ -28,12 +28,14 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"regexp"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/google/go-containerregistry/pkg/v1/remote/transport"
 	"github.com/sigstore/sigstore-go/pkg/root"
 	"github.com/sigstore/sigstore-go/pkg/tuf"
 	"github.com/sigstore/sigstore-go/pkg/util"
@@ -349,9 +351,9 @@ func VerifyWithMode(ctx context.Context, v Verifier, cfg Config, logger *slog.Lo
 //     verify (or none were fetched), the failure is reported per mode — warn
 //     logs and allows, enforce denies.
 //
-// fetchErr is the error from the fetch step (e.g. unsigned image, registry
-// unreachable); it is surfaced in the failure message when no candidates are
-// present so the operator sees why verification could not proceed.
+// When there are no candidates, the failure message describes the class of
+// fetch error so operators can distinguish an unsigned image from a failure
+// to reach the registry.
 func VerifyCandidatesWithMode(ctx context.Context, v Verifier, cfg Config, logger *slog.Logger, imageRef string, candidates []Candidate, fetchErr error) VerifyOutcome {
 	start := time.Now()
 
@@ -383,7 +385,7 @@ func VerifyCandidatesWithMode(ctx context.Context, v Verifier, cfg Config, logge
 	var failMsg string
 	switch {
 	case len(candidates) == 0 && fetchErr != nil:
-		failMsg = fetchErr.Error()
+		failMsg = DiscoveryFailureMessage(fetchErr)
 	case len(candidates) == 0:
 		failMsg = fmt.Sprintf("no signatures found for %s", imageRef)
 	default:
@@ -403,6 +405,38 @@ func VerifyCandidatesWithMode(ctx context.Context, v Verifier, cfg Config, logge
 		return VerifyOutcome{Allowed: true, Verifier: "warn-bypass", FailureMsg: failMsg, ElapsedMS: elapsed}
 	default: // ModeEnforce
 		return VerifyOutcome{Allowed: false, Verifier: "denied", FailureMsg: failMsg, ElapsedMS: elapsed}
+	}
+}
+
+// ErrNoSignatures indicates discovery found no usable cosign signatures.
+var ErrNoSignatures = errors.New("no cosign signatures found")
+
+// ErrSignatureInputLimit indicates registry data exceeded a discovery limit.
+var ErrSignatureInputLimit = errors.New("registry signature input limit exceeded")
+
+// ErrMissingSignatureFetcher indicates signature discovery was not configured.
+var ErrMissingSignatureFetcher = errors.New("image trust misconfigured: no signature fetcher")
+
+// DiscoveryFailureMessage describes a signature discovery error without
+// copying registry response text or request URLs into logs or denials.
+func DiscoveryFailureMessage(err error) string {
+	var statusErr *transport.Error
+	var netErr net.Error
+	switch {
+	case errors.Is(err, context.Canceled):
+		return "signature discovery canceled"
+	case errors.Is(err, context.DeadlineExceeded), errors.As(err, &netErr) && netErr.Timeout():
+		return "signature discovery timed out"
+	case errors.As(err, &statusErr):
+		return fmt.Sprintf("registry returned HTTP %d during signature discovery", statusErr.StatusCode)
+	case errors.Is(err, ErrNoSignatures):
+		return ErrNoSignatures.Error()
+	case errors.Is(err, ErrSignatureInputLimit):
+		return ErrSignatureInputLimit.Error()
+	case errors.Is(err, ErrMissingSignatureFetcher):
+		return ErrMissingSignatureFetcher.Error()
+	default:
+		return "signature discovery failed"
 	}
 }
 
